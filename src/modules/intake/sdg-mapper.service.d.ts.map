@@ -1,0 +1,1 @@
+{"version":3,"file":"sdg-mapper.service.d.ts","sourceRoot":"","sources":["sdg-mapper.service.ts"],"names":[],"mappings":"AACA,OAAO,EAAE,OAAO,EAAe,MAAM,aAAa,CAAC;AAEnD,qBAAa,gBAAgB;IAC3B,OAAO,CAAC,QAAQ,CAAC,WAAW,CAG1B;IAEF;;;OAGG;IACI,iBAAiB,CAAC,OAAO,EAAE,MAAM,GAAG,CAAC,OAAO,GAAG,OAAO,CAAC,EAAE;IAWhE;;;OAGG;IACU,SAAS,CAAC,OAAO,EAAE,OAAO,GAAG,OAAO,CAAC,MAAM,EAAE,CAAC;CAmB5D"}

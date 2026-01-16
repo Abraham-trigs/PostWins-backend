@@ -1,0 +1,1 @@
+{"version":3,"file":"sync.service.d.ts","sourceRoot":"","sources":["sync.service.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,gBAAgB,EAAE,MAAM,aAAa,CAAC;AACxD,OAAO,EAAE,aAAa,EAAE,MAAM,kBAAkB,CAAC;AAEjD,qBAAa,WAAW;IACV,OAAO,CAAC,aAAa;gBAAb,aAAa,EAAE,aAAa;IAEhD;;OAEG;IACG,gBAAgB,CAAC,gBAAgB,EAAE,OAAO,EAAE,GAAG,OAAO,CAAC,gBAAgB,EAAE,CAAC;CAmBjF"}
