@@ -48,8 +48,14 @@ export class LedgerService {
         modulusLength: 2048,
       });
 
-      this.privateKey = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-      this.publicKey = publicKey.export({ type: "spki", format: "pem" }) as string;
+      this.privateKey = privateKey.export({
+        type: "pkcs8",
+        format: "pem",
+      }) as string;
+      this.publicKey = publicKey.export({
+        type: "spki",
+        format: "pem",
+      }) as string;
 
       fs.writeFileSync(this.privateKeyPath, this.privateKey, "utf8");
       fs.writeFileSync(this.publicKeyPath, this.publicKey, "utf8");
@@ -81,7 +87,7 @@ export class LedgerService {
    * Section L.1 & L.3: Records status changes, signs them, and returns the full record
    */
   async commit(
-    record: Omit<AuditRecord, "commitmentHash" | "signature">
+    record: Omit<AuditRecord, "commitmentHash" | "signature">,
   ): Promise<AuditRecord> {
     const commitmentHash = this.generateHash(record);
 
@@ -158,6 +164,15 @@ export class LedgerService {
   public async listByProject(projectId: string): Promise<any[]> {
     const db = this.loadTimelineDb();
     return db.entries.filter((e) => e?.projectId === projectId);
+  }
+
+  /**
+   * List all timeline entries for a postWinId (stored in payload.postWinId).
+   * Used by VerificationService reconstruction (bootstrap-seeded records).
+   */
+  public async listByPostWinId(postWinId: string): Promise<any[]> {
+    const db = this.loadTimelineDb();
+    return db.entries.filter((e) => e?.payload?.postWinId === postWinId);
   }
 
   private ensureTimelineLedger() {

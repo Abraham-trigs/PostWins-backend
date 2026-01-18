@@ -34,14 +34,126 @@ const verificationService = new VerificationService(ledgerService);
 /**
  * Helper: read idempotency metadata attached by idempotencyGuard middleware
  */
-function requireIdempotencyMeta(res: Response): { key: string; requestHash: string } {
-  const meta = (res.locals as any).idempotency as { key: string; requestHash: string } | undefined;
+function requireIdempotencyMeta(res: Response): {
+  key: string;
+  requestHash: string;
+} {
+  const meta = (res.locals as any).idempotency as
+    | { key: string; requestHash: string }
+    | undefined;
   if (!meta?.key || !meta?.requestHash) {
     // If this happens, it means the route forgot to include idempotencyGuard
-    throw new Error("Missing idempotency metadata. Ensure idempotencyGuard middleware is attached.");
+    throw new Error(
+      "Missing idempotency metadata. Ensure idempotencyGuard middleware is attached.",
+    );
   }
   return meta;
 }
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function id(prefix: string) {
+  return `${prefix}_${crypto.randomBytes(10).toString("hex")}`;
+}
+
+function seedVerificationRecords(sdgGoals: string[]) {
+  const createdAt = nowIso();
+  return sdgGoals.map((sdgGoal) => ({
+    sdgGoal,
+    requiredVerifiers: 2,
+    receivedVerifications: [],
+    consensusReached: false,
+    timestamps: { createdAt },
+  }));
+}
+
+/**
+ * ============================================================================
+ * BOOTSTRAP: Create Project + seed PostWin (UI "New PostWin" button)
+ * POST /api/intake/bootstrap
+ * - Creates: projectId + postWinId
+ * - Writes timeline entry: POSTWIN_BOOTSTRAPPED (project-scoped)
+ * - Writes audit record: INTAKE (postWin-scoped)
+ * - Seeds verificationRecords in timeline payload so VerificationService can reconstruct
+ * ============================================================================
+ */
+export const handleIntakeBootstrap = async (req: Request, res: Response) => {
+  try {
+    const { key, requestHash } = requireIdempotencyMeta(res);
+
+    const { narrative, beneficiaryId, category, location, language, sdgGoals } =
+      req.body ?? {};
+
+    if (!narrative || String(narrative).trim().length < 10) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing required fields: narrative (min 10 chars)",
+      });
+    }
+
+    const projectId = id("proj");
+    const postWinId = id("pw");
+    const createdAt = nowIso();
+
+    const goals: string[] =
+      Array.isArray(sdgGoals) && sdgGoals.length > 0
+        ? sdgGoals
+        : ["SDG_4", "SDG_5"];
+    const verificationRecords = seedVerificationRecords(goals);
+
+    // 1) Timeline truth (project-scoped)
+    const timelineEntry = {
+      id: id("led"),
+      type: "POSTWIN_BOOTSTRAPPED",
+      projectId,
+      occurredAt: createdAt,
+      recordedAt: createdAt,
+      integrity: {
+        idempotencyKey: key,
+        requestHash,
+        actorId: req.header("X-Actor-Id")?.trim() || beneficiaryId || undefined,
+        source:
+          (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
+        createdAt,
+      },
+      payload: {
+        postWinId,
+        narrative: String(narrative).trim(),
+        beneficiaryId: beneficiaryId ? String(beneficiaryId) : undefined,
+        category: category ? String(category) : undefined,
+        location: location ?? undefined,
+        language: language ? String(language) : undefined,
+        sdgGoals: goals,
+        verificationRecords,
+      },
+    };
+
+    await ledgerService.appendEntry(timelineEntry);
+
+    // 2) Audit truth (postWin-scoped) — enables VerificationService.getAuditTrail(postWinId)
+    await ledgerService.commit({
+      timestamp: Date.now(),
+      postWinId,
+      action: "INTAKE",
+      actorId: beneficiaryId || req.header("X-Actor-Id")?.trim() || "unknown",
+      previousState: "NONE",
+      newState: "PENDING_VERIFICATION",
+    });
+
+    const responsePayload = { ok: true, projectId, postWinId };
+
+    await commitIdempotencyResponse(res, responsePayload);
+    return res.status(201).json(responsePayload);
+  } catch (err: any) {
+    console.error("Bootstrap Intake Error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: "Posta System Error: bootstrap intake failed.",
+    });
+  }
+};
 
 /**
  * ============================================================================
@@ -54,20 +166,21 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
   try {
     const { key, requestHash } = requireIdempotencyMeta(res);
 
-    const {
-      projectId,
-      deliveryId,
-      occurredAt,
-      location,
-      items,
-      notes,
-    } = req.body ?? {};
+    const { projectId, deliveryId, occurredAt, location, items, notes } =
+      req.body ?? {};
 
     // Minimal validation (we can swap to @postwins/core Zod once you add it)
-    if (!projectId || !deliveryId || !occurredAt || !location || !items?.length) {
+    if (
+      !projectId ||
+      !deliveryId ||
+      !occurredAt ||
+      !location ||
+      !items?.length
+    ) {
       return res.status(400).json({
         ok: false,
-        error: "Missing required fields: projectId, deliveryId, occurredAt, location, items[]",
+        error:
+          "Missing required fields: projectId, deliveryId, occurredAt, location, items[]",
       });
     }
 
@@ -83,7 +196,8 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
         idempotencyKey: key,
         requestHash,
         actorId: req.header("X-Actor-Id")?.trim() || undefined,
-        source: (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
+        source:
+          (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
         createdAt: nowIso,
       },
       payload: {
@@ -109,7 +223,12 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
     return res.status(201).json(responsePayload);
   } catch (err: any) {
     console.error("Delivery Intake Error:", err);
-    return res.status(500).json({ ok: false, error: "Posta System Error: Delivery intake failed." });
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        error: "Posta System Error: Delivery intake failed.",
+      });
   }
 };
 
@@ -137,7 +256,8 @@ export const handleIntakeFollowup = async (req: Request, res: Response) => {
     if (!projectId || !followupId || !deliveryId || !occurredAt || !kind) {
       return res.status(400).json({
         ok: false,
-        error: "Missing required fields: projectId, followupId, deliveryId, occurredAt, kind",
+        error:
+          "Missing required fields: projectId, followupId, deliveryId, occurredAt, kind",
       });
     }
 
@@ -153,7 +273,8 @@ export const handleIntakeFollowup = async (req: Request, res: Response) => {
         idempotencyKey: key,
         requestHash,
         actorId: req.header("X-Actor-Id")?.trim() || undefined,
-        source: (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
+        source:
+          (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
         createdAt: nowIso,
       },
       payload: {
@@ -181,7 +302,12 @@ export const handleIntakeFollowup = async (req: Request, res: Response) => {
     return res.status(201).json(responsePayload);
   } catch (err: any) {
     console.error("Follow-up Intake Error:", err);
-    return res.status(500).json({ ok: false, error: "Posta System Error: Follow-up intake failed." });
+    return res
+      .status(500)
+      .json({
+        ok: false,
+        error: "Posta System Error: Follow-up intake failed.",
+      });
   }
 };
 
@@ -202,11 +328,18 @@ export const handleIntake = async (req: Request, res: Response) => {
 
     // --- SECTION F & M: INTEGRITY AUDIT ---
     const postWinSkeleton = { beneficiaryId } as PostWin;
-    const integrityFlags = await integrityService.performFullAudit(postWinSkeleton, message, deviceId);
+    const integrityFlags = await integrityService.performFullAudit(
+      postWinSkeleton,
+      message,
+      deviceId,
+    );
 
     // 1. Handle Permanent Blacklist (403)
     const isBlacklisted =
-      deviceId && integrityFlags.some((f) => f.type === "IDENTITY_MISMATCH" && f.severity === "HIGH");
+      deviceId &&
+      integrityFlags.some(
+        (f) => f.type === "IDENTITY_MISMATCH" && f.severity === "HIGH",
+      );
     if (isBlacklisted) {
       return res.status(403).json({
         status: "banned",
@@ -215,7 +348,9 @@ export const handleIntake = async (req: Request, res: Response) => {
     }
 
     // 2. Handle Rate Limiting / Cooldown (429)
-    const cooldownFlag = integrityFlags.find((f) => f.type === "SUSPICIOUS_TONE" && f.severity === "LOW");
+    const cooldownFlag = integrityFlags.find(
+      (f) => f.type === "SUSPICIOUS_TONE" && f.severity === "LOW",
+    );
     if (cooldownFlag) {
       return res.status(429).json({
         status: "throttled",
@@ -243,7 +378,8 @@ export const handleIntake = async (req: Request, res: Response) => {
 
     // --- SECTION N: LOCALIZATION & NEUTRALIZATION ---
     const localization = await localizationService.detectCulture(message);
-    const neutralizedDescription = await localizationService.neutralizeAndTranslate(message, localization);
+    const neutralizedDescription =
+      await localizationService.neutralizeAndTranslate(message, localization);
 
     // --- SECTION A, N & G.2: CONTEXT & LITERACY ---
     const detectedContext = await intakeService.detectContext(message);
@@ -295,6 +431,10 @@ export const handleIntake = async (req: Request, res: Response) => {
     journeyService.completeTask(beneficiaryId, taskCode);
   } catch (err: any) {
     console.error("Intake Controller Error:", err);
-    res.status(500).json({ error: "Posta System Error: Escalated to Human-in-the-loop (HITL)." });
+    res
+      .status(500)
+      .json({
+        error: "Posta System Error: Escalated to Human-in-the-loop (HITL).",
+      });
   }
 };

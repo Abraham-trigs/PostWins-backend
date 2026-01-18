@@ -13,27 +13,38 @@ export class VerificationService {
     const trail = this.ledgerService.getAuditTrail(postWinId);
     if (trail.length === 0) return null;
 
+    // Pull bootstrap snapshot from timeline ledger (where we seed verificationRecords)
+    const timeline = await this.ledgerService.listByPostWinId(postWinId);
+    const bootstrap = timeline.find((e) => e?.type === "POSTWIN_BOOTSTRAPPED");
+    const payload = bootstrap?.payload ?? {};
+
     // Find the original intake to get the author/beneficiary details
-    const intake = trail.find(r => r.action === 'INTAKE');
+    const intake = trail.find((r) => r.action === "INTAKE");
 
     // Reconstruct the entity to match PostWin interface exactly
     const reconstructed: PostWin = {
       id: postWinId,
-      taskId: 'ENROLL', // Default step
-      routingStatus: 'FALLBACK',
-      verificationStatus: (trail[trail.length - 1].newState as any).replace('STATUS_', '') || 'PENDING',
-      verificationRecords: [],
-      auditTrail: trail.map(r => ({
+      taskId: "ENROLL", // Default step
+      routingStatus: "FALLBACK",
+      verificationStatus:
+        (trail[trail.length - 1].newState as any)?.replace?.("STATUS_", "") ||
+        "PENDING",
+      verificationRecords: Array.isArray(payload.verificationRecords)
+        ? payload.verificationRecords
+        : [],
+      auditTrail: trail.map((r) => ({
         action: r.action,
         actor: r.actorId,
         timestamp: new Date(r.timestamp).toISOString(),
-        note: "Reconstructed from ledger"
+        note: "Reconstructed from ledger",
       })),
-      description: "Reconstructed record",
-      beneficiaryId: intake?.actorId || 'unknown',
-      authorId: intake?.actorId || 'unknown',
-      sdgGoals: ['SDG_4'],
-      mode: 'AI_AUGMENTED'
+      description: payload.narrative || "Reconstructed record",
+      beneficiaryId: payload.beneficiaryId || intake?.actorId || "unknown",
+      authorId: payload.beneficiaryId || intake?.actorId || "unknown",
+      sdgGoals: Array.isArray(payload.sdgGoals)
+        ? payload.sdgGoals
+        : ["SDG_4", "SDG_5"],
+      mode: "AI_AUGMENTED",
     };
 
     return reconstructed;
@@ -42,14 +53,20 @@ export class VerificationService {
   /**
    * SECTION D.5: Consensus Logic & Multi-Verifier tracking
    */
-  async recordVerification(postWin: PostWin, verifierId: string, sdgGoal: string): Promise<PostWin> {
+  async recordVerification(
+    postWin: PostWin,
+    verifierId: string,
+    sdgGoal: string,
+  ): Promise<PostWin> {
     // 1. Initialize records to satisfy PostWin interface
     if (!postWin.verificationRecords) {
       postWin.verificationRecords = [];
     }
 
-    const record = postWin.verificationRecords.find(r => r.sdgGoal === sdgGoal);
-    
+    const record = postWin.verificationRecords.find(
+      (r) => r.sdgGoal === sdgGoal,
+    );
+
     if (!record) throw new Error(`Verification target ${sdgGoal} not found.`);
     if (record.consensusReached) return postWin;
 
@@ -61,13 +78,13 @@ export class VerificationService {
     // 3. CAPTURE VERIFICATION ATTEMPT
     if (!record.receivedVerifications.includes(verifierId)) {
       record.receivedVerifications.push(verifierId);
-      
+
       // Update local trail
       postWin.auditTrail.push({
-        action: 'VERIFIED',
+        action: "VERIFIED",
         actor: verifierId,
         timestamp: new Date().toISOString(),
-        note: `Approval recorded for ${sdgGoal}`
+        note: `Approval recorded for ${sdgGoal}`,
       });
     }
 
@@ -75,10 +92,10 @@ export class VerificationService {
     if (record.receivedVerifications.length >= record.requiredVerifiers) {
       record.consensusReached = true;
       record.timestamps.verifiedAt = new Date().toISOString();
-      
+
       const previousStatus = postWin.verificationStatus;
-      postWin.verificationStatus = 'VERIFIED';
-      
+      postWin.verificationStatus = "VERIFIED";
+
       /**
        * SECTION L: Commit to Immutable Ledger
        * Pass only the core data to satisfy Omit<AuditRecord, 'commitmentHash' | 'signature'>
@@ -86,10 +103,10 @@ export class VerificationService {
       await this.ledgerService.commit({
         timestamp: Date.now(),
         postWinId: postWin.id,
-        action: 'VERIFIED',
+        action: "VERIFIED",
         actorId: verifierId,
         previousState: previousStatus,
-        newState: 'VERIFIED'
+        newState: "VERIFIED",
       });
     }
 
