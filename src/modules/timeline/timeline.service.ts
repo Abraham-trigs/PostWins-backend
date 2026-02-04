@@ -1,9 +1,23 @@
-import { FOLLOWUP_SCHEDULE_DAYS, FOLLOWUP_WINDOW_DAYS } from "../../utils/postwins.paths";
+import {
+  FOLLOWUP_SCHEDULE_DAYS,
+  FOLLOWUP_WINDOW_DAYS,
+} from "../../utils/postwins.paths";
 import { LedgerService } from "../intake/ledger.service";
 
 type TimelineItem =
-  | { type: "delivery"; occurredAt: string; deliveryId: string; summary: string }
-  | { type: "followup"; occurredAt: string; followupId: string; kind: string; deliveryId: string }
+  | {
+      type: "delivery";
+      occurredAt: string;
+      deliveryId: string;
+      summary: string;
+    }
+  | {
+      type: "followup";
+      occurredAt: string;
+      followupId: string;
+      kind: string;
+      deliveryId: string;
+    }
   | {
       type: "gap";
       scheduledFor: string;
@@ -19,11 +33,15 @@ export class TimelineService {
   async build(projectId: string) {
     const entries = await this.ledger.listByProject(projectId);
 
-    const deliveries = entries.filter((e: any) => e.type === "DELIVERY_RECORDED");
-    const followups = entries.filter((e: any) => e.type === "FOLLOWUP_RECORDED");
+    const deliveries = entries.filter(
+      (e: any) => e.type === "DELIVERY_RECORDED",
+    );
+    const followups = entries.filter(
+      (e: any) => e.type === "FOLLOWUP_RECORDED",
+    );
 
-    deliveries.sort((a: any, b: any) => a.occurredAt.localeCompare(b.occurredAt));
-    followups.sort((a: any, b: any) => a.occurredAt.localeCompare(b.occurredAt));
+    deliveries.sort((a: any, b: any) => Number(a.ts) - Number(b.ts));
+    followups.sort((a: any, b: any) => Number(a.ts) - Number(b.ts));
 
     const items: TimelineItem[] = [];
     const now = Date.now();
@@ -34,23 +52,27 @@ export class TimelineService {
 
       items.push({
         type: "delivery",
-        occurredAt: d.occurredAt,
+        occurredAt: new Date(Number(d.ts)).toISOString(),
         deliveryId,
-        summary: `${(delivery.items?.length ?? 0)} item types delivered to ${
+        summary: `${delivery.items?.length ?? 0} item types delivered to ${
           delivery.location?.community ?? "community"
         }`,
       });
 
-      const deliveryTime = new Date(d.occurredAt).getTime();
+      const deliveryTime = Number(d.ts);
 
       // Only consider followups tied to this delivery
-      const relatedFollowups = followups.filter((f: any) => (f.payload as any).deliveryId === deliveryId);
+      const relatedFollowups = followups.filter(
+        (f: any) => (f.payload as any).deliveryId === deliveryId,
+      );
 
       // Prevent one follow-up from satisfying multiple schedule slots
       const usedFollowupIds = new Set<string>();
 
       for (const daysFromDelivery of FOLLOWUP_SCHEDULE_DAYS) {
-        const scheduledFor = new Date(deliveryTime + daysFromDelivery * 86400000).toISOString();
+        const scheduledFor = new Date(
+          deliveryTime + daysFromDelivery * 86400000,
+        ).toISOString();
         const scheduledMs = new Date(scheduledFor).getTime();
 
         const windowStart = scheduledMs - FOLLOWUP_WINDOW_DAYS * 86400000;
@@ -61,7 +83,7 @@ export class TimelineService {
           if (!fu?.followupId) return false;
           if (usedFollowupIds.has(fu.followupId)) return false;
 
-          const t = new Date(f.occurredAt).getTime();
+          const t = Number(f.ts);
           return t >= windowStart && t <= windowEnd;
         });
 
@@ -85,7 +107,7 @@ export class TimelineService {
         const fu = f.payload as any;
         items.push({
           type: "followup",
-          occurredAt: f.occurredAt,
+          occurredAt: new Date(Number(f.ts)).toISOString(),
           followupId: fu.followupId,
           kind: fu.kind,
           deliveryId: fu.deliveryId,

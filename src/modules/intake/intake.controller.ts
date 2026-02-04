@@ -1,3 +1,4 @@
+// apps/backend/src/modules/intake/intake.controller.ts
 import crypto from "crypto";
 import { Request, Response } from "express";
 
@@ -15,8 +16,12 @@ import { ToneAdapterService } from "./tone-adapter.service";
 import { LocalizationService } from "./localization.service";
 import { SDGMapperService } from "./sdg-mapper.service";
 
-// NEW: idempotency commit helper (your middleware provides this)
+// Idempotency helper
 import { commitIdempotencyResponse } from "../../middleware/idempotency.middleware";
+
+// Prisma + UUID utils
+import { prisma } from "../../lib/prisma";
+import { assertUuid, UUID_RE } from "../../utils/uuid";
 
 // 1. Initialize Shared Infrastructure
 const ledgerService = new LedgerService();
@@ -42,7 +47,6 @@ function requireIdempotencyMeta(res: Response): {
     | { key: string; requestHash: string }
     | undefined;
   if (!meta?.key || !meta?.requestHash) {
-    // If this happens, it means the route forgot to include idempotencyGuard
     throw new Error(
       "Missing idempotency metadata. Ensure idempotencyGuard middleware is attached.",
     );
@@ -54,8 +58,31 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function id(prefix: string) {
-  return `${prefix}_${crypto.randomBytes(10).toString("hex")}`;
+function requireTenantId(req: Request): string {
+  const tenantId = req.header("X-Tenant-Id")?.trim() || "";
+  assertUuid(tenantId, "tenantId");
+  return tenantId;
+}
+
+async function resolveAuthorUserId(
+  req: Request,
+  tenantId: string,
+): Promise<string> {
+  const actorHeader = req.header("X-Actor-Id")?.trim();
+  if (actorHeader && UUID_RE.test(actorHeader)) return actorHeader;
+
+  const user = await prisma.user.findFirst({
+    where: { tenantId, isActive: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+
+  if (!user?.id) {
+    throw new Error(
+      "No active user found for this tenant. Seed a user or pass X-Actor-Id (UUID).",
+    );
+  }
+  return user.id;
 }
 
 function seedVerificationRecords(sdgGoals: string[]) {
@@ -71,17 +98,16 @@ function seedVerificationRecords(sdgGoals: string[]) {
 
 /**
  * ============================================================================
- * BOOTSTRAP: Create Project + seed PostWin (UI "New PostWin" button)
+ * BOOTSTRAP: Create Case + seed PostWin (UI "New PostWin" button)
  * POST /api/intake/bootstrap
- * - Creates: projectId + postWinId
- * - Writes timeline entry: POSTWIN_BOOTSTRAPPED (project-scoped)
- * - Writes audit record: INTAKE (postWin-scoped)
- * - Seeds verificationRecords in timeline payload so VerificationService can reconstruct
  * ============================================================================
  */
 export const handleIntakeBootstrap = async (req: Request, res: Response) => {
   try {
     const { key, requestHash } = requireIdempotencyMeta(res);
+
+    const tenantId = requireTenantId(req);
+    const authorUserId = await resolveAuthorUserId(req, tenantId);
 
     const { narrative, beneficiaryId, category, location, language, sdgGoals } =
       req.body ?? {};
@@ -93,35 +119,64 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
       });
     }
 
-    const projectId = id("proj");
-    const postWinId = id("pw");
+    // beneficiaryId is optional, but if present and not UUID, drop it
+    const beneficiaryUuid =
+      beneficiaryId && UUID_RE.test(String(beneficiaryId))
+        ? String(beneficiaryId)
+        : null;
+
+    // ✅ Create Case first to satisfy LedgerCommit.caseId FK
+    const createdCase = await prisma.case.create({
+      data: {
+        id: crypto.randomUUID(),
+        tenantId,
+        authorUserId,
+        beneficiaryId: beneficiaryUuid,
+        mode: "AI_AUGMENTED",
+        scope: "PUBLIC",
+        type: "PROGRESS",
+        summary: String(narrative).trim().slice(0, 240),
+        sdgGoal:
+          Array.isArray(sdgGoals) && sdgGoals.length > 0
+            ? String(sdgGoals[0])
+            : null,
+      },
+      select: { id: true },
+    });
+
+    const projectId = createdCase.id; // legacy name used by UI
+    const postWinId = crypto.randomUUID();
     const createdAt = nowIso();
 
     const goals: string[] =
       Array.isArray(sdgGoals) && sdgGoals.length > 0
         ? sdgGoals
         : ["SDG_4", "SDG_5"];
+
     const verificationRecords = seedVerificationRecords(goals);
 
-    // 1) Timeline truth (project-scoped)
     const timelineEntry = {
-      id: id("led"),
+      id: crypto.randomUUID(),
+      tenantId,
       type: "POSTWIN_BOOTSTRAPPED",
-      projectId,
+      projectId, // maps to caseId
       occurredAt: createdAt,
       recordedAt: createdAt,
       integrity: {
         idempotencyKey: key,
         requestHash,
-        actorId: req.header("X-Actor-Id")?.trim() || beneficiaryId || undefined,
+        actorId: authorUserId,
+        actorUserId: authorUserId,
         source:
           (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
         createdAt,
       },
       payload: {
+        tenantId,
+        caseId: projectId,
         postWinId,
         narrative: String(narrative).trim(),
-        beneficiaryId: beneficiaryId ? String(beneficiaryId) : undefined,
+        beneficiaryId: beneficiaryUuid ?? undefined,
         category: category ? String(category) : undefined,
         location: location ?? undefined,
         language: language ? String(language) : undefined,
@@ -132,44 +187,35 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
 
     await ledgerService.appendEntry(timelineEntry);
 
-    // 2) Audit truth (postWin-scoped) — enables VerificationService.getAuditTrail(postWinId)
-    await ledgerService.commit({
-      timestamp: Date.now(),
-      postWinId,
-      action: "INTAKE",
-      actorId: beneficiaryId || req.header("X-Actor-Id")?.trim() || "unknown",
-      previousState: "NONE",
-      newState: "PENDING_VERIFICATION",
-    });
-
     const responsePayload = { ok: true, projectId, postWinId };
 
     await commitIdempotencyResponse(res, responsePayload);
     return res.status(201).json(responsePayload);
-  } catch (err: any) {
-    console.error("Bootstrap Intake Error:", err);
+  } catch (err) {
+    console.error("BOOTSTRAP_FAILED", err);
     return res.status(500).json({
       ok: false,
       error: "Posta System Error: bootstrap intake failed.",
+      details: err instanceof Error ? err.message : String(err),
     });
   }
 };
 
 /**
  * ============================================================================
- * NEW: Delivery intake (for NGO ops / field team)
+ * NEW: Delivery intake
  * POST /api/intake/delivery
- * Writes to timeline ledger: type=DELIVERY_RECORDED
  * ============================================================================
  */
 export const handleIntakeDelivery = async (req: Request, res: Response) => {
   try {
     const { key, requestHash } = requireIdempotencyMeta(res);
 
+    const tenantId = requireTenantId(req);
+
     const { projectId, deliveryId, occurredAt, location, items, notes } =
       req.body ?? {};
 
-    // Minimal validation (we can swap to @postwins/core Zod once you add it)
     if (
       !projectId ||
       !deliveryId ||
@@ -184,24 +230,40 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
       });
     }
 
-    const nowIso = new Date().toISOString();
+    assertUuid(projectId, "projectId");
+
+    // ✅ Ensure case exists (avoid FK error)
+    const existing = await prisma.case.findFirst({
+      where: { id: String(projectId), tenantId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return res.status(404).json({
+        ok: false,
+        error: `Case not found for projectId=${String(projectId)}`,
+      });
+    }
+
+    const nowIsoStr = new Date().toISOString();
 
     const entry = {
-      id: "led_" + crypto.randomBytes(10).toString("hex"),
+      id: crypto.randomUUID(),
+      tenantId,
       type: "DELIVERY_RECORDED",
       projectId: String(projectId),
       occurredAt: new Date(occurredAt).toISOString(),
-      recordedAt: nowIso,
+      recordedAt: nowIsoStr,
       integrity: {
         idempotencyKey: key,
         requestHash,
         actorId: req.header("X-Actor-Id")?.trim() || undefined,
         source:
           (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
-        createdAt: nowIso,
+        createdAt: nowIsoStr,
       },
       payload: {
-        projectId: String(projectId),
+        tenantId,
+        caseId: String(projectId),
         deliveryId: String(deliveryId),
         occurredAt: new Date(occurredAt).toISOString(),
         location,
@@ -223,25 +285,25 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
     return res.status(201).json(responsePayload);
   } catch (err: any) {
     console.error("Delivery Intake Error:", err);
-    return res
-      .status(500)
-      .json({
-        ok: false,
-        error: "Posta System Error: Delivery intake failed.",
-      });
+    return res.status(500).json({
+      ok: false,
+      error: "Posta System Error: Delivery intake failed.",
+      details: err instanceof Error ? err.message : String(err),
+    });
   }
 };
 
 /**
  * ============================================================================
- * NEW: Follow-up intake (field return visit / check-in)
+ * NEW: Follow-up intake
  * POST /api/intake/followup
- * Writes to timeline ledger: type=FOLLOWUP_RECORDED
  * ============================================================================
  */
 export const handleIntakeFollowup = async (req: Request, res: Response) => {
   try {
     const { key, requestHash } = requireIdempotencyMeta(res);
+
+    const tenantId = requireTenantId(req);
 
     const {
       projectId,
@@ -261,24 +323,40 @@ export const handleIntakeFollowup = async (req: Request, res: Response) => {
       });
     }
 
-    const nowIso = new Date().toISOString();
+    assertUuid(projectId, "projectId");
+
+    // ✅ Ensure case exists (avoid FK error)
+    const existing = await prisma.case.findFirst({
+      where: { id: String(projectId), tenantId },
+      select: { id: true },
+    });
+    if (!existing) {
+      return res.status(404).json({
+        ok: false,
+        error: `Case not found for projectId=${String(projectId)}`,
+      });
+    }
+
+    const nowIsoStr = new Date().toISOString();
 
     const entry = {
-      id: "led_" + crypto.randomBytes(10).toString("hex"),
+      id: crypto.randomUUID(),
+      tenantId,
       type: "FOLLOWUP_RECORDED",
       projectId: String(projectId),
       occurredAt: new Date(occurredAt).toISOString(),
-      recordedAt: nowIso,
+      recordedAt: nowIsoStr,
       integrity: {
         idempotencyKey: key,
         requestHash,
         actorId: req.header("X-Actor-Id")?.trim() || undefined,
         source:
           (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
-        createdAt: nowIso,
+        createdAt: nowIsoStr,
       },
       payload: {
-        projectId: String(projectId),
+        tenantId,
+        caseId: String(projectId),
         followupId: String(followupId),
         deliveryId: String(deliveryId),
         occurredAt: new Date(occurredAt).toISOString(),
@@ -302,19 +380,18 @@ export const handleIntakeFollowup = async (req: Request, res: Response) => {
     return res.status(201).json(responsePayload);
   } catch (err: any) {
     console.error("Follow-up Intake Error:", err);
-    return res
-      .status(500)
-      .json({
-        ok: false,
-        error: "Posta System Error: Follow-up intake failed.",
-      });
+    return res.status(500).json({
+      ok: false,
+      error: "Posta System Error: Follow-up intake failed.",
+      details: err instanceof Error ? err.message : String(err),
+    });
   }
 };
 
 /**
  * ============================================================================
- * EXISTING: Beneficiary message intake (unchanged)
- * POST /api/intake  (legacy)
+ * EXISTING: Beneficiary message intake (legacy)
+ * POST /api/intake
  * ============================================================================
  */
 export const handleIntake = async (req: Request, res: Response) => {
@@ -326,7 +403,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "No message provided" });
     }
 
-    // --- SECTION F & M: INTEGRITY AUDIT ---
     const postWinSkeleton = { beneficiaryId } as PostWin;
     const integrityFlags = await integrityService.performFullAudit(
       postWinSkeleton,
@@ -334,7 +410,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       deviceId,
     );
 
-    // 1. Handle Permanent Blacklist (403)
     const isBlacklisted =
       deviceId &&
       integrityFlags.some(
@@ -347,7 +422,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       });
     }
 
-    // 2. Handle Rate Limiting / Cooldown (429)
     const cooldownFlag = integrityFlags.find(
       (f) => f.type === "SUSPICIOUS_TONE" && f.severity === "LOW",
     );
@@ -358,7 +432,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       });
     }
 
-    // 3. Handle Fraud/Integrity Violations (409)
     if (integrityFlags.some((f) => f.severity === "HIGH")) {
       return res.status(409).json({
         status: "flagged",
@@ -367,7 +440,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       });
     }
 
-    // --- SECTION E: JOURNEY VALIDATION ---
     const journey: Journey = journeyService.getOrCreateJourney(beneficiaryId);
     if (!journeyService.validateTaskSequence(journey, taskCode)) {
       return res.status(403).json({
@@ -376,20 +448,15 @@ export const handleIntake = async (req: Request, res: Response) => {
       });
     }
 
-    // --- SECTION N: LOCALIZATION & NEUTRALIZATION ---
     const localization = await localizationService.detectCulture(message);
     const neutralizedDescription =
       await localizationService.neutralizeAndTranslate(message, localization);
 
-    // --- SECTION A, N & G.2: CONTEXT & LITERACY ---
     const detectedContext = await intakeService.detectContext(message);
-
-    // --- SDG MAPPING ---
     const assignedGoals = sdgMapper.mapMessageToGoals(message);
 
-    // Initialize PostWin entity (Compliant with @posta/core)
     const postWin: PostWin = {
-      id: "pw_" + crypto.randomBytes(4).toString("hex"),
+      id: crypto.randomUUID(),
       taskId: taskCode,
       routingStatus: "FALLBACK",
       verificationStatus: integrityFlags.length > 0 ? "FLAGGED" : "PENDING",
@@ -403,20 +470,20 @@ export const handleIntake = async (req: Request, res: Response) => {
       localization,
     };
 
-    // --- SECTION L: IMMUTABLE AUDIT ---
+    // NOTE: legacy route does not currently provide tenantId/caseId context.
+    // Keep response working; ledger commits for this route can be added once tenant context is defined.
     const auditRecord: AuditRecord = await ledgerService.commit({
-      timestamp: Date.now(),
+      ts: Date.now(),
       postWinId: postWin.id,
       action: "INTAKE",
       actorId: beneficiaryId,
       previousState: "NONE",
       newState: "PENDING_VERIFICATION",
+      // tenantId/caseId intentionally omitted here for now
     });
 
-    // --- REQUIREMENT G.2 & G.3: TONE ADAPTATION ---
     const outcomeMessage = toneAdapter.adaptOutcome(postWin, detectedContext);
 
-    // --- SECTION G: RESPONSE ---
     res.json({
       status: "success",
       message: outcomeMessage,
@@ -427,14 +494,11 @@ export const handleIntake = async (req: Request, res: Response) => {
       journeyState: journey,
     });
 
-    // --- SECTION K: COMPLETION ---
     journeyService.completeTask(beneficiaryId, taskCode);
   } catch (err: any) {
     console.error("Intake Controller Error:", err);
-    res
-      .status(500)
-      .json({
-        error: "Posta System Error: Escalated to Human-in-the-loop (HITL).",
-      });
+    res.status(500).json({
+      error: "Posta System Error: Escalated to Human-in-the-loop (HITL).",
+    });
   }
 };

@@ -7,12 +7,22 @@ export class AnalyticsService {
   /**
    * Section O.2: Publicly track response speeds (Intake -> Execution)
    */
-  calculateLatency(postWinId: string): number {
-    const trail = this.ledgerService.getAuditTrail(postWinId);
-    const intake = trail.find(t => t.action === 'INTAKE');
-    const execution = trail.find(t => t.action === 'EXECUTED');
+  async calculateLatency(postWinId: string): Promise<number> {
+    const trail = await this.ledgerService.getAuditTrail(postWinId);
+    const intake = trail.find((t) => t.action === "INTAKE");
+    const execution = trail.find((t) => t.action === "EXECUTED");
 
-    if (!intake || !execution) return -1; // Still in progress
-    return execution.timestamp - intake.timestamp;
+    const toMs = (v: number | bigint | undefined) => {
+      if (typeof v === "bigint") return Number(v);
+      if (typeof v === "number") return v;
+      return undefined;
+    };
+
+    const intakeTs = toMs(intake?.ts);
+    const executionTs = toMs(execution?.ts);
+
+    if (intakeTs == null || executionTs == null) return 0;
+
+    return executionTs - intakeTs;
   }
 }

@@ -10,16 +10,19 @@ export class VerificationService {
    * Resolves the underline in VerificationController
    */
   public async getPostWinById(postWinId: string): Promise<PostWin | null> {
-    const trail = this.ledgerService.getAuditTrail(postWinId);
+    const trail = await this.ledgerService.getAuditTrail(postWinId);
     if (trail.length === 0) return null;
 
     // Pull bootstrap snapshot from timeline ledger (where we seed verificationRecords)
     const timeline = await this.ledgerService.listByPostWinId(postWinId);
-    const bootstrap = timeline.find((e) => e?.type === "POSTWIN_BOOTSTRAPPED");
+    const bootstrap = timeline.find(
+      (e: any) => e?.eventType === "POSTWIN_BOOTSTRAPPED",
+    );
     const payload = bootstrap?.payload ?? {};
+    const payloadAny = payload as any;
 
     // Find the original intake to get the author/beneficiary details
-    const intake = trail.find((r) => r.action === "INTAKE");
+    const intake = trail.find((r: any) => r.action === "INTAKE");
 
     // Reconstruct the entity to match PostWin interface exactly
     const reconstructed: PostWin = {
@@ -29,20 +32,29 @@ export class VerificationService {
       verificationStatus:
         (trail[trail.length - 1].newState as any)?.replace?.("STATUS_", "") ||
         "PENDING",
-      verificationRecords: Array.isArray(payload.verificationRecords)
-        ? payload.verificationRecords
+      verificationRecords: Array.isArray(payloadAny.verificationRecords)
+        ? payloadAny.verificationRecords
         : [],
-      auditTrail: trail.map((r) => ({
-        action: r.action,
-        actor: r.actorId,
-        timestamp: new Date(r.timestamp).toISOString(),
-        note: "Reconstructed from ledger",
-      })),
-      description: payload.narrative || "Reconstructed record",
-      beneficiaryId: payload.beneficiaryId || intake?.actorId || "unknown",
-      authorId: payload.beneficiaryId || intake?.actorId || "unknown",
-      sdgGoals: Array.isArray(payload.sdgGoals)
-        ? payload.sdgGoals
+      auditTrail: trail.map((r: any) => {
+        const ts =
+          r.ts == null
+            ? Date.now()
+            : typeof r.ts === "bigint"
+              ? Number(r.ts)
+              : r.ts;
+
+        return {
+          action: r.action,
+          actor: r.actorId,
+          timestamp: new Date(ts).toISOString(),
+          note: "Reconstructed from ledger",
+        };
+      }),
+      description: payloadAny.narrative || "Reconstructed record",
+      beneficiaryId: payloadAny.beneficiaryId || intake?.actorId || "unknown",
+      authorId: payloadAny.beneficiaryId || intake?.actorId || "unknown",
+      sdgGoals: Array.isArray(payloadAny.sdgGoals)
+        ? payloadAny.sdgGoals
         : ["SDG_4", "SDG_5"],
       mode: "AI_AUGMENTED",
     };
@@ -58,7 +70,6 @@ export class VerificationService {
     verifierId: string,
     sdgGoal: string,
   ): Promise<PostWin> {
-    // 1. Initialize records to satisfy PostWin interface
     if (!postWin.verificationRecords) {
       postWin.verificationRecords = [];
     }
@@ -70,16 +81,15 @@ export class VerificationService {
     if (!record) throw new Error(`Verification target ${sdgGoal} not found.`);
     if (record.consensusReached) return postWin;
 
-    // 2. Security: Prevent self-verification (Requirement D.2)
     if (verifierId === postWin.beneficiaryId) {
       throw new Error("Authors cannot self-verify claims.");
     }
 
-    // 3. CAPTURE VERIFICATION ATTEMPT
+    record.receivedVerifications ??= [];
     if (!record.receivedVerifications.includes(verifierId)) {
       record.receivedVerifications.push(verifierId);
 
-      // Update local trail
+      postWin.auditTrail ??= [];
       postWin.auditTrail.push({
         action: "VERIFIED",
         actor: verifierId,
@@ -88,20 +98,16 @@ export class VerificationService {
       });
     }
 
-    // 4. EVALUATE CONSENSUS (Section D.5)
     if (record.receivedVerifications.length >= record.requiredVerifiers) {
       record.consensusReached = true;
+      record.timestamps ??= {};
       record.timestamps.verifiedAt = new Date().toISOString();
 
       const previousStatus = postWin.verificationStatus;
       postWin.verificationStatus = "VERIFIED";
 
-      /**
-       * SECTION L: Commit to Immutable Ledger
-       * Pass only the core data to satisfy Omit<AuditRecord, 'commitmentHash' | 'signature'>
-       */
       await this.ledgerService.commit({
-        timestamp: Date.now(),
+        ts: Date.now(),
         postWinId: postWin.id,
         action: "VERIFIED",
         actorId: verifierId,

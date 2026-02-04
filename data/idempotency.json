@@ -1,1 +1,31 @@
-{ "keys": {} }
+{
+  "keys": {
+    "test-bootstrap-2": {
+      "requestHash": "d0f811bcbfb1668c391a267734c2199f9d5e17f72cfeeeacf12d31a216d4023d",
+      "response": {
+        "requestHash": "d0f811bcbfb1668c391a267734c2199f9d5e17f72cfeeeacf12d31a216d4023d",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "projectId": "df8423f1-3031-4aef-8752-7cce77730385",
+          "postWinId": "015e2406-c904-4cc8-a3f1-686ef6a3fa1e"
+        }
+      },
+      "recordedAt": "2026-02-04T15:39:04.501Z"
+    },
+    "test-delivery-1": {
+      "requestHash": "0f8285719edf8694ab3a64c9dca7a68347954e5ffb59d16245e34d70ae28915f",
+      "response": {
+        "requestHash": "0f8285719edf8694ab3a64c9dca7a68347954e5ffb59d16245e34d70ae28915f",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "type": "DELIVERY_RECORDED",
+          "projectId": "df8423f1-3031-4aef-8752-7cce77730385",
+          "deliveryId": "delivery-1"
+        }
+      },
+      "recordedAt": "2026-02-04T15:40:34.524Z"
+    }
+  }
+}

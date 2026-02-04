@@ -39,7 +39,7 @@ export class PostaMockEngine {
      *  - Records multi-actor confirmations over time
      *  - Drives PostWin toward VERIFIED or DISPUTED state
      */
-    private verifier: VerificationService
+    private verifier: VerificationService,
   ) {}
 
   /**
@@ -66,7 +66,7 @@ export class PostaMockEngine {
       //  - return a Partial<PostWin>
       const partialPW = await this.intake.handleIntake(
         "I need support for school enrollment",
-        "device_rural_001"
+        "device_rural_001",
       );
 
       // ------------------------------------------------------------------
@@ -125,11 +125,9 @@ export class PostaMockEngine {
       // Routing assigns the PostWin to the best execution body
       // based on trust, distance, and capability.
       console.log("Step 2: Routing to nearest Execution Body...");
-      const routedPW = await this.router.processPostWin(
-        mockPostWin,
-        bodies,
-        ["SDG_4"]
-      );
+      const routedPW = await this.router.processPostWin(mockPostWin, bodies, [
+        "SDG_4",
+      ]);
 
       // Guardrail:
       // If routing is blocked, we stop early.
@@ -140,7 +138,7 @@ export class PostaMockEngine {
       }
 
       console.log(
-        `Step 3: Routed to ${routedPW.assignedBodyId}. Awaiting Multi-Verifier Consensus...`
+        `Step 3: Routed to ${routedPW.assignedBodyId}. Awaiting Multi-Verifier Consensus...`,
       );
 
       // ------------------------------------------------------------------
@@ -151,13 +149,13 @@ export class PostaMockEngine {
       const stateAfterCommunity = await this.verifier.recordVerification(
         routedPW,
         "community_leader_01",
-        "SDG_4"
+        "SDG_4",
       );
 
       const finalState = await this.verifier.recordVerification(
         stateAfterCommunity,
         "ngo_staff_01",
-        "SDG_4"
+        "SDG_4",
       );
 
       // ------------------------------------------------------------------
@@ -166,23 +164,24 @@ export class PostaMockEngine {
       console.log("\n" + "=".repeat(50));
       console.log("✅ Simulation Complete.");
       console.log(`Final Status: ${finalState.verificationStatus}`);
-      console.log(`Total Audit Trail Entries: ${finalState.auditTrail.length}`);
+
+      const trail = finalState.auditTrail ?? [];
+      console.log(`Total Audit Trail Entries: ${trail.length}`);
+
       console.log("=".repeat(50));
 
       console.log("\n📜 FULL AUDIT TRAIL:");
-      finalState.auditTrail.forEach((entry, idx) => {
+      trail.forEach((entry, idx) => {
         const ts =
-          typeof entry.timestamp === "number"
-            ? new Date(entry.timestamp).toISOString()
-            : entry.timestamp;
+          typeof (entry as any).ts === "bigint"
+            ? new Date(Number((entry as any).ts)).toISOString()
+            : typeof (entry as any).ts === "number"
+              ? new Date((entry as any).ts).toISOString()
+              : "unknown-time";
 
-        console.log(
-          `[${idx + 1}] ${ts} | ${entry.action.padEnd(22)} | Actor: ${entry.actor}`
-        );
+        const action = (entry as any).action ?? "UNKNOWN_ACTION";
 
-        if (entry.note) {
-          console.log(`    Note: ${entry.note}`);
-        }
+        console.log(`[${idx + 1}] ${ts} | ${String(action).padEnd(22)}`);
       });
 
       console.log("=".repeat(50) + "\n");

@@ -134,6 +134,19 @@ model Tenant {
   ledgerCommits LedgerCommit[]
   auditEntries  AuditEntry[]
 
+  // ✅ back relations
+  roles               Role[]
+  beneficiaries       Beneficiary[]
+  messages            Message[]
+  executionBodies     ExecutionBody[]
+  verificationRecords VerificationRecord[]
+  verifications       Verification[]
+  routingDecisions    RoutingDecision[]
+  timelineEntries     TimelineEntry[]
+  evidence            Evidence[]
+  appeals             Appeal[]
+  counterfactuals     CounterfactualRecord[]
+
   @@index([createdAt])
 }
 
@@ -148,17 +161,20 @@ model User {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  roles        UserRole[]
-  sessions     Session[]
-  authoredCases Case[] @relation("CaseAuthor")
-  messages     Message[]
-  verifications Verification[]
-  appealsOpened Appeal[] @relation("AppealOpenedBy")
+  roles           UserRole[]
+  sessions        Session[]
+  authoredCases   Case[]           @relation("CaseAuthor")
+  messages        Message[]
+  verifications   Verification[]
+  appealsOpened   Appeal[]         @relation("AppealOpenedBy")
   appealsReviewed AppealDecision[] @relation("AppealReviewedBy")
 
-  // actor traces for auditability-by-default :contentReference[oaicite:8]{index=8}
   auditEntries  AuditEntry[]
   ledgerCommits LedgerCommit[]
+
+  // ✅ back-relations required by Prisma
+  caseAssignmentsAssigned CaseAssignment[]  @relation("CaseAssignmentAssignedBy")
+  routingDecisionsDecided RoutingDecision[] @relation("RoutingDecisionDecidedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId, email])
@@ -166,9 +182,9 @@ model User {
 }
 
 model Session {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId    String   @db.Uuid
-  createdAt DateTime @default(now())
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @db.Uuid
+  createdAt DateTime  @default(now())
   expiresAt DateTime
   revokedAt DateTime?
 
@@ -231,28 +247,28 @@ model Organization {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String   @db.Uuid
   name      String
-  kind      String   // e.g. NGO, SCHOOL, DONOR, TRUSTEE, REGULATOR
+  kind      String // e.g. NGO, SCHOOL, DONOR, TRUSTEE, REGULATOR
   createdAt DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  executionBody ExecutionBody?
-  grantsAsDonor Grant[] @relation("GrantDonor")
-  grantsAsImplementer Grant[] @relation("GrantImplementer")
+  executionBody       ExecutionBody?
+  grantsAsDonor       Grant[]        @relation("GrantDonor")
+  grantsAsImplementer Grant[]        @relation("GrantImplementer")
 
   @@index([tenantId, kind])
   @@index([tenantId, name])
 }
 
 model Beneficiary {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @db.Uuid
   // public-ish profile (non-sensitive)
   displayName String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   pii    BeneficiaryPII?
 
   cases Case[] @relation("CaseBeneficiary")
@@ -261,8 +277,8 @@ model Beneficiary {
 }
 
 model BeneficiaryPII {
-  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  beneficiaryId String  @unique @db.Uuid
+  id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId String @unique @db.Uuid
 
   phone         String?
   nationalId    String?
@@ -278,42 +294,42 @@ model BeneficiaryPII {
 }
 
 model Case {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-
-  // "author ≠ beneficiary" supported :contentReference[oaicite:9]{index=9}
-  authorUserId String @db.Uuid
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId      String  @db.Uuid
+  authorUserId  String  @db.Uuid
   beneficiaryId String? @db.Uuid
 
-  mode   OperationalMode
-  scope  AccessScope
-  type   CaseType
+  mode  OperationalMode
+  scope AccessScope
+  type  CaseType
 
-  status        CaseStatus   @default(INTAKED)
+  status        CaseStatus    @default(INTAKED)
   routingStatus RoutingStatus @default(UNASSIGNED)
 
-  sdgGoal   String? // keep flexible; you can formalize to enum later
-  summary   String?
-  // deterministic, internal-only reasons for non-happy paths :contentReference[oaicite:10]{index=10}
+  sdgGoal     String?
+  summary     String?
   reasonCodes CaseReasonCode[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
 
-  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  author      User        @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  author      User         @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
   beneficiary Beneficiary? @relation("CaseBeneficiary", fields: [beneficiaryId], references: [id], onDelete: SetNull)
 
-  messages          Message[]
+  messages            Message[]
   verificationRecords VerificationRecord[]
-  routingDecisions  RoutingDecision[]
-  assignment        CaseAssignment?
-  timelineEntries   TimelineEntry[]
-  auditTrail        AuditEntry[]
-  ledgerCommits     LedgerCommit[]
-  appeals           Appeal[]
-  counterfactuals   CounterfactualRecord[]
+  routingDecisions    RoutingDecision[]
+  assignment          CaseAssignment?
+  timelineEntries     TimelineEntry[]
+  auditTrail          AuditEntry[]
+  ledgerCommits       LedgerCommit[]
+  appeals             Appeal[]
+  counterfactuals     CounterfactualRecord[]
+
+  // ✅ opposite relation for GrantCase.case
+  grantLinks GrantCase[]
 
   @@index([tenantId, createdAt])
   @@index([tenantId, status, createdAt])
@@ -324,14 +340,14 @@ model Case {
 }
 
 model Message {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
 
   actorKind ActorKind
-  userId    String?  @db.Uuid // null when system message
+  userId    String?   @db.Uuid // null when system message
   body      String
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -342,53 +358,55 @@ model Message {
 }
 
 model ExecutionBody {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  orgId     String   @unique @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  orgId    String @unique @db.Uuid
 
   // e.g. trust thresholds, coverage radius, sdg capabilities
   capabilities Json
-  isFallback   Boolean @default(false) // "Khalistar as real execution body" :contentReference[oaicite:11]{index=11}
-  createdAt DateTime @default(now())
+  isFallback   Boolean  @default(false) // "Khalistar as real execution body" :contentReference[oaicite:11]{index=11}
+  createdAt    DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
-  assignments CaseAssignment[]
+  assignments      CaseAssignment[]
   routingDecisions RoutingDecision[]
 
   @@index([tenantId, isFallback])
 }
 
 model CaseAssignment {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  caseId          String   @unique @db.Uuid
-  executionBodyId String   @db.Uuid
-  assignedAt      DateTime @default(now())
-  assignedByUserId String? @db.Uuid
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caseId           String   @unique @db.Uuid
+  executionBodyId  String   @db.Uuid
+  assignedAt       DateTime @default(now())
+  assignedByUserId String?  @db.Uuid
 
-  case          Case         @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  case          Case          @relation(fields: [caseId], references: [id], onDelete: Cascade)
   executionBody ExecutionBody @relation(fields: [executionBodyId], references: [id], onDelete: Restrict)
-  assignedBy    User?        @relation(fields: [assignedByUserId], references: [id], onDelete: SetNull)
+
+  // ✅ single-line relation syntax
+  assignedBy User? @relation("CaseAssignmentAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
 
   @@index([executionBodyId, assignedAt])
 }
 
 model VerificationRecord {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
 
   // consensus target state :contentReference[oaicite:12]{index=12}
   sdgGoal           String
-  requiredVerifiers Int      @default(2)
-  consensusReached  Boolean  @default(false)
+  requiredVerifiers Int     @default(2)
+  consensusReached  Boolean @default(false)
 
   routedAt   DateTime
   verifiedAt DateTime?
 
   receivedVerifications Verification[]
-  requiredRoles VerificationRequiredRole[]
+  requiredRoles         VerificationRequiredRole[]
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -399,9 +417,9 @@ model VerificationRecord {
 }
 
 model VerificationRequiredRole {
-  id                  String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   verificationRecordId String @db.Uuid
-  roleKey             String // e.g. "NGO_PARTNER", "STAFF", etc (store deterministic policy) :contentReference[oaicite:13]{index=13}
+  roleKey              String // e.g. "NGO_PARTNER", "STAFF", etc (store deterministic policy) :contentReference[oaicite:13]{index=13}
 
   verificationRecord VerificationRecord @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
 
@@ -409,14 +427,14 @@ model VerificationRequiredRole {
 }
 
 model Verification {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
+  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String @db.Uuid
   verificationRecordId String @db.Uuid
 
-  verifierUserId String @db.Uuid
+  verifierUserId String             @db.Uuid
   status         VerificationStatus
   note           String?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime           @default(now())
 
   // optional: conflict-of-interest disclosure hook :contentReference[oaicite:14]{index=14}
   conflictDisclosed Boolean @default(false)
@@ -431,35 +449,39 @@ model Verification {
 }
 
 model RoutingDecision {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
 
-  chosenExecutionBodyId String? @db.Uuid
-  routingStatus RoutingStatus
-  decidedAt    DateTime @default(now())
+  chosenExecutionBodyId String?       @db.Uuid
+  routingStatus         RoutingStatus
+  decidedAt             DateTime      @default(now())
+
+  // ✅ THIS FIELD MUST EXIST
   decidedByUserId String? @db.Uuid
 
-  // deterministic explanation hooks
-  reasonCodes RoutingReasonCode[]
+  reasonCodes    RoutingReasonCode[]
   counterfactual CounterfactualRecord?
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
   chosenExecutionBody ExecutionBody? @relation(fields: [chosenExecutionBodyId], references: [id], onDelete: SetNull)
-  decidedBy User? @relation(fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  // ✅ SINGLE LINE ONLY (no multiline @relation)
+  decidedBy User? @relation("RoutingDecisionDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
 
   @@index([caseId, decidedAt])
   @@index([tenantId, routingStatus, decidedAt])
 }
 
 model TimelineEntry {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
 
   // matches the “unified stream” concept (messages + system events + timeline + governance) :contentReference[oaicite:15]{index=15}
-  type      String   // e.g. "DELIVERY", "FOLLOWUP", "VISIT", "NOTE"
+  type      String // e.g. "DELIVERY", "FOLLOWUP", "VISIT", "NOTE"
   body      String?
   createdAt DateTime @default(now())
 
@@ -473,19 +495,19 @@ model TimelineEntry {
 }
 
 model Evidence {
-  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId      String      @db.Uuid
-  timelineEntryId String    @db.Uuid
+  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String @db.Uuid
+  timelineEntryId String @db.Uuid
 
-  kind          EvidenceKind
+  kind       EvidenceKind
   // store object storage pointers; keep hashes even if media deleted post-verification :contentReference[oaicite:16]{index=16}
-  storageKey    String
-  sha256        String
-  mimeType      String?
-  byteSize      Int?
-  createdAt     DateTime @default(now())
+  storageKey String
+  sha256     String
+  mimeType   String?
+  byteSize   Int?
+  createdAt  DateTime     @default(now())
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   timelineEntry TimelineEntry @relation(fields: [timelineEntryId], references: [id], onDelete: Cascade)
 
   @@index([timelineEntryId])
@@ -493,15 +515,15 @@ model Evidence {
 }
 
 model AuditEntry {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String?  @db.Uuid
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String  @db.Uuid
+  caseId   String? @db.Uuid
 
   // UI trail (human-readable) vs signed ledger (LedgerCommit) :contentReference[oaicite:17]{index=17}
-  actorLabel String
-  actorUserId String? @db.Uuid
-  note      String?
-  createdAt DateTime @default(now())
+  actorLabel  String
+  actorUserId String?  @db.Uuid
+  note        String?
+  createdAt   DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -512,31 +534,28 @@ model AuditEntry {
 }
 
 model LedgerCommit {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String?  @db.Uuid
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String  @db.Uuid
+  caseId   String? @db.Uuid
 
-  eventType LedgerEventType
-  ts        BigInt   // numeric timestamp (ms)
-  actorKind ActorKind
-  actorUserId String? @db.Uuid
+  eventType   LedgerEventType
+  ts          BigInt
+  actorKind   ActorKind
+  actorUserId String?         @db.Uuid
 
-  // non-repudiation shape (hash + signature) :contentReference[oaicite:18]{index=18}
   commitmentHash String
   signature      String?
+  payload        Json
 
-  // append-only payload
-  payload Json
+  // ✅ single FK + backref (clean self relation)
+  supersedesCommitId String? @unique @db.Uuid
 
-  supersedesCommitId String? @db.Uuid
-  supersededByCommitId String? @db.Uuid
+  supersedes   LedgerCommit? @relation("LedgerSupersession", fields: [supersedesCommitId], references: [id], onDelete: SetNull)
+  supersededBy LedgerCommit? @relation("LedgerSupersession")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
-
-  supersedes   LedgerCommit? @relation("LedgerSupersession", fields: [supersedesCommitId], references: [id], onDelete: SetNull)
-  supersededBy LedgerCommit? @relation("LedgerSupersession", fields: [supersededByCommitId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, ts])
   @@index([caseId, ts])
@@ -545,10 +564,10 @@ model LedgerCommit {
 }
 
 model CaseReasonCode {
-  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  caseId   String @db.Uuid
-  code     String
-  details  String?
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caseId    String   @db.Uuid
+  code      String
+  details   String?
   createdAt DateTime @default(now())
 
   case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -558,10 +577,10 @@ model CaseReasonCode {
 }
 
 model RoutingReasonCode {
-  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  routingDecisionId String @db.Uuid
-  code           String
-  details        String?
+  id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  routingDecisionId String  @db.Uuid
+  code              String
+  details           String?
 
   routingDecision RoutingDecision @relation(fields: [routingDecisionId], references: [id], onDelete: Cascade)
 
@@ -570,32 +589,32 @@ model RoutingReasonCode {
 }
 
 model Appeal {
-  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String      @db.Uuid
-  caseId    String      @db.Uuid
+  id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String  @db.Uuid
+  caseId         String  @db.Uuid
   openedByUserId String? @db.Uuid
 
-  status    AppealStatus @default(OPEN)
-  reason    String?
-  createdAt DateTime @default(now())
+  status     AppealStatus @default(OPEN)
+  reason     String?
+  createdAt  DateTime     @default(now())
   resolvedAt DateTime?
 
   decisions AppealDecision[]
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  openedBy User? @relation("AppealOpenedBy", fields: [openedByUserId], references: [id], onDelete: SetNull)
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case     Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  openedBy User?  @relation("AppealOpenedBy", fields: [openedByUserId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, status, createdAt])
   @@index([caseId, createdAt])
 }
 
 model AppealDecision {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  appealId  String   @db.Uuid
+  id             String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  appealId       String @db.Uuid
   reviewerUserId String @db.Uuid
 
-  outcome   String   // e.g. "UPHOLD", "OVERTURN", "REQUEST_MORE_INFO"
+  outcome   String // e.g. "UPHOLD", "OVERTURN", "REQUEST_MORE_INFO"
   rationale String?
   createdAt DateTime @default(now())
 
@@ -607,20 +626,20 @@ model AppealDecision {
 }
 
 model CounterfactualRecord {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId          String  @db.Uuid
+  caseId            String  @db.Uuid
   routingDecisionId String? @unique @db.Uuid
 
-  decisionType DecisionType
-  chosen       String
+  decisionType       DecisionType
+  chosen             String
   constraintsApplied String[]
   // alternatives (deterministic, not AI) :contentReference[oaicite:19]{index=19}
-  alternatives Json
-  createdAt DateTime @default(now())
+  alternatives       Json
+  createdAt          DateTime     @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case            Case             @relation(fields: [caseId], references: [id], onDelete: Cascade)
   routingDecision RoutingDecision? @relation(fields: [routingDecisionId], references: [id], onDelete: Cascade)
 
   @@index([caseId, createdAt])
@@ -628,21 +647,21 @@ model CounterfactualRecord {
 }
 
 model Grant {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
 
   donorOrgId       String @db.Uuid
   implementerOrgId String @db.Uuid
 
-  status    GrantStatus @default(DRAFT)
-  currency  String @default("USD")
-  totalAmount Decimal @db.Decimal(18, 2)
+  status      GrantStatus @default(DRAFT)
+  currency    String      @default("USD")
+  totalAmount Decimal     @db.Decimal(18, 2)
 
   policyVersion String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  activatedAt DateTime?
-  closedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  activatedAt   DateTime?
+  closedAt      DateTime?
 
   // binding to cases/projects: keep flexible (many-to-many)
   caseLinks GrantCase[]
@@ -673,8 +692,8 @@ model GrantCase {
 }
 
 model GrantConstraint {
-  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  grantId   String @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grantId String @db.Uuid
 
   // store donor structured rules (earmarks/caps/floors/allow-deny/tranche rules)
   kind      String
@@ -688,11 +707,11 @@ model GrantConstraint {
 }
 
 model BudgetAllocation {
-  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  grantId   String @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grantId String @db.Uuid
 
   category  String
-  amount    Decimal @db.Decimal(18, 2)
+  amount    Decimal  @db.Decimal(18, 2)
   percent   Decimal? @db.Decimal(6, 3)
   createdAt DateTime @default(now())
 
@@ -703,14 +722,14 @@ model BudgetAllocation {
 }
 
 model Tranche {
-  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  grantId   String @db.Uuid
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  grantId String @db.Uuid
 
-  sequence  Int
-  plannedPercent Decimal @db.Decimal(6, 3)
+  sequence       Int
+  plannedPercent Decimal  @db.Decimal(6, 3)
   plannedAmount  Decimal? @db.Decimal(18, 2)
 
-  status    TrancheStatus @default(PLANNED)
+  status     TrancheStatus @default(PLANNED)
   releasedAt DateTime?
   reversedAt DateTime?
 
@@ -725,8 +744,8 @@ model Tranche {
 }
 
 model TrancheEvent {
-  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  trancheId String @db.Uuid
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  trancheId String   @db.Uuid
   type      String
   payload   Json
   createdAt DateTime @default(now())

@@ -1,35 +1,32 @@
 {
   "name": "@posta/backend",
   "version": "2.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "main": "dist/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --watch src --ext ts --exec \"ts-node -r tsconfig-paths/register src/server.ts\"",
-    "start": "ts-node -r tsconfig-paths/register src/server.ts",
-    "start:mock": "cross-env MODE=MOCK ts-node-dev -r tsconfig-paths/register --respawn src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev:backend": "pnpm run dev",
-    "build:core": "pnpm --filter @posta/core build",
-    "posta:mock": "pnpm run start:mock"
+    "start:mock": "cross-env MODE=MOCK node dist/server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "packageManager": "pnpm@10.18.2",
+  "dependencies": {
+    "@posta/core": "workspace:*",
+    "@prisma/client": "^6.19.2",
+    "express": "^5.2.1"
+  },
   "devDependencies": {
-    "@changesets/cli": "^2.29.8",
     "@types/express": "^5.0.6",
     "@types/node": "^25.0.5",
     "cross-env": "^10.1.0",
     "nodemon": "^3.1.11",
+    "prisma": "^6.19.2",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.9.3"
   },
-  "dependencies": {
-    "@posta/core": "workspace:*"
+  "prisma": {
+    "seed": "ts-node ./prisma/seed.ts"
   }
 }

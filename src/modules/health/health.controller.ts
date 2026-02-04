@@ -1,14 +1,13 @@
 // apps/backend/src/modules/health/health.controller.ts
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { LedgerService } from "../intake/ledger.service";
 
-const router = Router();
+const router: Router = Router();
 const ledgerService = new LedgerService();
 
-router.get("/health/ledger", (req, res) => {
-  const healthData = ledgerService.getStatus();
-  
-  // Return 200 for healthy, 503 for corruption
+// NOTE: This router will be mounted by app.ts (e.g. app.use("/api", healthRoutes))
+router.get("/health/ledger", async (_req: Request, res: Response) => {
+  const healthData = await ledgerService.getStatus();
   const statusCode = healthData.status === "HEALTHY" ? 200 : 503;
   res.status(statusCode).json(healthData);
 });

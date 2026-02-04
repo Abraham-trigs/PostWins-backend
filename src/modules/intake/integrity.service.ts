@@ -45,7 +45,7 @@ export class IntegrityService {
   public async performFullAudit(
     postWin: PostWin,
     rawMessage: string,
-    deviceId?: string
+    deviceId?: string,
   ): Promise<IntegrityFlag[]> {
     // 1. Section M.5: Instant rejection if on Blacklist
     if (deviceId && this.blacklist.has(deviceId)) {
@@ -72,13 +72,21 @@ export class IntegrityService {
 
     // 4. Ghost Beneficiary Detection (Section M.1)
     if (deviceId) {
-      const ghostFlag = this.detectGhostBeneficiary(deviceId, postWin.beneficiaryId);
+      const ghostFlag = this.detectGhostBeneficiary(
+        deviceId,
+        postWin.beneficiaryId ?? "unknown",
+      );
+
       if (ghostFlag) flags.push(ghostFlag);
     }
 
     // 5. Adversarial Input Shield (Section M.2)
     if (this.isAdversarial(rawMessage)) {
-      flags.push({ type: "SUSPICIOUS_TONE", severity: "HIGH", timestamp: Date.now() });
+      flags.push({
+        type: "SUSPICIOUS_TONE",
+        severity: "HIGH",
+        timestamp: Date.now(),
+      });
     }
 
     // 6. Section M.5: Update Violation Counters and trigger Blacklist
@@ -112,13 +120,20 @@ export class IntegrityService {
   public checkDuplicate(message: string): IntegrityFlag | null {
     const hash = message.toLowerCase().trim();
     if (this.processedHashes.has(hash)) {
-      return { type: "DUPLICATE_CLAIM", severity: "HIGH", timestamp: Date.now() };
+      return {
+        type: "DUPLICATE_CLAIM",
+        severity: "HIGH",
+        timestamp: Date.now(),
+      };
     }
     this.processedHashes.add(hash);
     return null;
   }
 
-  private detectGhostBeneficiary(deviceId: string, beneficiaryId: string): IntegrityFlag | null {
+  private detectGhostBeneficiary(
+    deviceId: string,
+    beneficiaryId: string,
+  ): IntegrityFlag | null {
     const linkedBeneficiaries = this.deviceRegistry.get(deviceId) || [];
     if (!linkedBeneficiaries.includes(beneficiaryId)) {
       linkedBeneficiaries.push(beneficiaryId);
@@ -126,13 +141,21 @@ export class IntegrityService {
       this.saveRegistry();
     }
     if (linkedBeneficiaries.length > 3) {
-      return { type: "IDENTITY_MISMATCH", severity: "HIGH", timestamp: Date.now() };
+      return {
+        type: "IDENTITY_MISMATCH",
+        severity: "HIGH",
+        timestamp: Date.now(),
+      };
     }
     return null;
   }
 
   private isAdversarial(message: string): boolean {
-    const patterns = [/ignore previous instructions/i, /system override/i, /<script/i];
+    const patterns = [
+      /ignore previous instructions/i,
+      /system override/i,
+      /<script/i,
+    ];
     return patterns.some((pattern) => pattern.test(message));
   }
 
@@ -144,7 +167,9 @@ export class IntegrityService {
    * Get an idempotency record by key.
    * Returns null if not found.
    */
-  public async get(key: string): Promise<{ requestHash: string; response: unknown } | null> {
+  public async get(
+    key: string,
+  ): Promise<{ requestHash: string; response: unknown } | null> {
     const db = this.loadIdempotency();
     const record = db.keys[key];
     if (!record) return null;
@@ -155,7 +180,11 @@ export class IntegrityService {
    * Save an idempotency record (key -> requestHash + response).
    * This allows safe retry + replay across restarts.
    */
-  public async save(key: string, requestHash: string, response: unknown): Promise<void> {
+  public async save(
+    key: string,
+    requestHash: string,
+    response: unknown,
+  ): Promise<void> {
     const db = this.loadIdempotency();
     db.keys[key] = {
       requestHash,
@@ -183,7 +212,8 @@ export class IntegrityService {
       const raw = fs.readFileSync(this.idempotencyPath, "utf8");
       const parsed = JSON.parse(raw);
       return {
-        keys: typeof parsed?.keys === "object" && parsed?.keys ? parsed.keys : {},
+        keys:
+          typeof parsed?.keys === "object" && parsed?.keys ? parsed.keys : {},
       };
     } catch {
       return { keys: {} };
@@ -206,7 +236,11 @@ export class IntegrityService {
 
   private saveRegistry(): void {
     try {
-      const data = JSON.stringify(Object.fromEntries(this.deviceRegistry), null, 2);
+      const data = JSON.stringify(
+        Object.fromEntries(this.deviceRegistry),
+        null,
+        2,
+      );
       fs.writeFileSync(this.registryPath, data);
     } catch (e) {
       console.error("Registry save failed:", e);

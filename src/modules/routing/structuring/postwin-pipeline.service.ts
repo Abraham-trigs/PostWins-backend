@@ -1,14 +1,14 @@
 // filepath: src/modules/routing/postwin-pipeline.service.ts
 import { PostWin, ExecutionBody } from "@posta/core";
 import { TaskService } from "./task.service";
-import { JourneyService } from "./journey.service";
+import { JourneyService } from "../journey.service";
 import { PostWinRoutingService } from "./postwin-routing.service";
 
 export class PostWinPipelineService {
   constructor(
     private taskService: TaskService,
     private journeyService: JourneyService,
-    private routingService: PostWinRoutingService
+    private routingService: PostWinRoutingService,
   ) {}
 
   /**
@@ -19,20 +19,23 @@ export class PostWinPipelineService {
     message: string,
     beneficiaryId: string,
     availableBodies: ExecutionBody[],
-    partnerId?: string
+    partnerId?: string,
   ): Promise<PostWin> {
     // 1. Process intake
-    const partialPostWin = await this.taskService.processIntake(message, partnerId);
+    const partialPostWin = await this.taskService.processIntake(
+      message,
+      partnerId,
+    );
     partialPostWin.beneficiaryId = beneficiaryId;
 
     // Assign default task if none provided
-    if (!partialPostWin.taskId) partialPostWin.taskId = 'ENROLL'; // default first SDG 4 task
+    if (!partialPostWin.taskId) partialPostWin.taskId = "ENROLL"; // default first SDG 4 task
 
     // 2. Pass through routing & execution logic (includes integrity checks)
     const fullPostWin = await this.routingService.processPostWin(
       partialPostWin as PostWin,
       availableBodies,
-      partialPostWin.sdgGoals
+      partialPostWin.sdgGoals,
     );
 
     return fullPostWin;

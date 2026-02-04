@@ -38,14 +38,19 @@ export class PostWinOfflineService {
       for (const item of itemsToSync) {
         try {
           const processed = await this.pipeline.intakeAndRoute(
-            item.postWin.description,
-            item.postWin.beneficiaryId,
+            item.postWin.description ?? "",
+            item.postWin.beneficiaryId ?? "",
             item.availableBodies,
-            item.postWin.authorId
+            item.postWin.authorId,
           );
-          console.log(`Synced PostWin for beneficiary ${processed.beneficiaryId}`);
+          console.log(
+            `Synced PostWin for beneficiary ${processed.beneficiaryId}`,
+          );
         } catch (err) {
-          console.error(`Failed to sync PostWin for ${item.postWin.beneficiaryId}`, err);
+          console.error(
+            `Failed to sync PostWin for ${item.postWin.beneficiaryId}`,
+            err,
+          );
           // Requeue for next sync attempt
           this.queue.push(item);
         }

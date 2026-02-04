@@ -1,4 +1,4 @@
-import { AuditRecord as CoreAuditRecord } from "@posta/core";
+// apps/backend/src/modules/intake/ledger.service.ts
 import {
   createHash,
   createSign,
@@ -8,6 +8,114 @@ import {
 import fs from "fs";
 import path from "path";
 import { prisma } from "../../lib/prisma";
+import { assertUuid } from "../../utils/uuid";
+
+type LedgerHealthStatus = "HEALTHY" | "CORRUPTED";
+
+export type LedgerHealth = {
+  status: LedgerHealthStatus;
+  checkedAt: number;
+  recordCount: number;
+  publicKeyPresent: boolean;
+  note?: string;
+};
+
+export type LedgerAuditRecord = {
+  action?: string;
+  newState?: string;
+  previousState?: string;
+  actorId?: string;
+  actorKind?: string;
+  ts?: number | bigint;
+  [k: string]: any;
+};
+
+export type LedgerCommitInput = {
+  // always provided by callers
+  ts: number | bigint;
+
+  // legacy fields (your controllers/services are sending these)
+  postWinId?: string;
+  action?: string;
+  actorId?: string;
+  previousState?: string;
+  newState?: string;
+
+  // new fields (schema-driven commit)
+  tenantId?: string;
+  caseId?: string | null;
+  eventType?: string;
+  actorKind?: string;
+  actorUserId?: string | null;
+  payload?: unknown;
+  supersedesCommitId?: string | null;
+
+  // allow any extras without type-fighting
+  [k: string]: any;
+};
+
+// Local enum-safe guards/mappers (avoid Prisma enums imports everywhere)
+type ActorKindEnum = "HUMAN" | "SYSTEM";
+type LedgerEventTypeEnum =
+  | "CASE_CREATED"
+  | "CASE_UPDATED"
+  | "CASE_FLAGGED"
+  | "CASE_REJECTED"
+  | "CASE_ARCHIVED"
+  | "ROUTED"
+  | "ROUTING_SUPERSEDED"
+  | "VERIFICATION_SUBMITTED"
+  | "VERIFIED"
+  | "APPEAL_OPENED"
+  | "APPEAL_RESOLVED"
+  | "GRANT_CREATED"
+  | "GRANT_POLICY_APPLIED"
+  | "BUDGET_ALLOCATED"
+  | "TRANCHE_RELEASED"
+  | "BUDGET_SUPERSEDED"
+  | "TRANCHE_REVERSED";
+
+const LEDGER_EVENT_TYPES: Set<string> = new Set([
+  "CASE_CREATED",
+  "CASE_UPDATED",
+  "CASE_FLAGGED",
+  "CASE_REJECTED",
+  "CASE_ARCHIVED",
+  "ROUTED",
+  "ROUTING_SUPERSEDED",
+  "VERIFICATION_SUBMITTED",
+  "VERIFIED",
+  "APPEAL_OPENED",
+  "APPEAL_RESOLVED",
+  "GRANT_CREATED",
+  "GRANT_POLICY_APPLIED",
+  "BUDGET_ALLOCATED",
+  "TRANCHE_RELEASED",
+  "BUDGET_SUPERSEDED",
+  "TRANCHE_REVERSED",
+]);
+
+function mapActorKind(input: unknown): ActorKindEnum {
+  return input === "HUMAN" ? "HUMAN" : "SYSTEM";
+}
+
+function mapEventType(
+  input: unknown,
+  fallbackFromAction?: unknown,
+): LedgerEventTypeEnum {
+  const raw = String(input ?? "").trim();
+  if (LEDGER_EVENT_TYPES.has(raw)) return raw as LedgerEventTypeEnum;
+
+  const action = String(fallbackFromAction ?? "").trim();
+
+  // legacy/controller values → schema LedgerEventType
+  if (raw === "POSTWIN_BOOTSTRAPPED" || action === "INTAKE")
+    return "CASE_CREATED";
+  if (raw === "DELIVERY_RECORDED" || raw === "FOLLOWUP_RECORDED")
+    return "CASE_UPDATED";
+
+  return "CASE_UPDATED";
+}
 
 export class LedgerService {
   private dataDir = path.join(process.cwd(), "data");
@@ -37,6 +145,7 @@ export class LedgerService {
       const { privateKey, publicKey } = generateKeyPairSync("rsa", {
         modulusLength: 2048,
       });
+
       this.privateKey = privateKey.export({
         type: "pkcs8",
         format: "pem",
@@ -45,124 +154,315 @@ export class LedgerService {
         type: "spki",
         format: "pem",
       }) as string;
+
       fs.writeFileSync(this.privateKeyPath, this.privateKey, "utf8");
       fs.writeFileSync(this.publicKeyPath, this.publicKey, "utf8");
     }
   }
 
-  // --- AUDIT LEDGER ---
+  /**
+   * Used by GET /health/ledger
+   */
+  public async getStatus(): Promise<LedgerHealth> {
+    const checkedAt = Date.now();
+    const recordCount = await prisma.ledgerCommit.count();
+    const ok = await this.verifyLedgerIntegrity();
 
-  public async getAuditTrail(postWinId: string): Promise<CoreAuditRecord[]> {
-    const rows = await prisma.auditRecord.findMany({
-      where: { postWinId },
-      orderBy: { timestamp: "asc" },
+    return {
+      status: ok ? "HEALTHY" : "CORRUPTED",
+      checkedAt,
+      recordCount,
+      publicKeyPresent: Boolean(this.publicKey),
+      note: ok
+        ? undefined
+        : "Ledger integrity check failed (hash/signature mismatch).",
+    };
+  }
+
+  /**
+   * Minimal “audit trail” by postWinId stored in payload (JSON path query).
+   * Works with your schema: LedgerCommit.payload Json.
+   */
+  public async getAuditTrail(postWinId: string): Promise<LedgerAuditRecord[]> {
+    const rows = await prisma.ledgerCommit.findMany({
+      where: {
+        payload: {
+          path: ["postWinId"],
+          equals: postWinId,
+        },
+      },
+      orderBy: { ts: "asc" },
+      select: {
+        ts: true,
+        tenantId: true,
+        caseId: true,
+        eventType: true,
+        actorKind: true,
+        actorUserId: true,
+        payload: true,
+        commitmentHash: true,
+        signature: true,
+      },
     });
 
-    // Shape rows into @posta/core AuditRecord shape
     return rows.map((r) => ({
-      timestamp: Number(r.timestamp),
-      postWinId: r.postWinId,
-      action: r.action,
-      actorId: r.actorId,
-      previousState: r.previousState,
-      newState: r.newState,
+      ts: Number(r.ts),
+      tenantId: r.tenantId,
+      caseId: r.caseId,
+      eventType: String(r.eventType),
+      actorKind: String(r.actorKind),
+      actorUserId: r.actorUserId,
+      payload: r.payload,
       commitmentHash: r.commitmentHash,
       signature: r.signature,
+
+      // legacy-friendly projections (so .action/.actorId compile everywhere)
+      action: (r.payload as any)?.action ?? undefined,
+      actorId: (r.payload as any)?.actorId ?? undefined,
+      previousState: (r.payload as any)?.previousState ?? undefined,
+      newState: (r.payload as any)?.newState ?? undefined,
+      postWinId: (r.payload as any)?.postWinId ?? undefined,
     }));
   }
 
-  public async commit(
-    record: Omit<CoreAuditRecord, "commitmentHash" | "signature">,
-  ): Promise<CoreAuditRecord> {
-    const commitmentHash = this.generateHash(record);
+  /**
+   * --------------------------------------------------------------------------
+   * Back-compat wrappers (older controller/service call sites)
+   * --------------------------------------------------------------------------
+   */
+
+  /**
+   * Older code calls ledgerService.appendEntry(timelineEntry).
+   * This now routes through commit() to ensure:
+   * - UUID correctness for tenantId/caseId/actorUserId
+   * - enum-safe actorKind + eventType mapping
+   * - signature/hash always present so integrity checks pass
+   */
+  public async appendEntry(entry: any) {
+    const tenantId = String(entry?.tenantId ?? entry?.payload?.tenantId ?? "");
+    assertUuid(tenantId, "tenantId");
+
+    const maybeCaseId = entry?.caseId ?? entry?.projectId ?? null;
+    const caseId = maybeCaseId == null ? null : String(maybeCaseId);
+    if (caseId) assertUuid(caseId, "caseId");
+
+    const ts = BigInt(
+      typeof entry?.ts === "number"
+        ? entry.ts
+        : Date.parse(
+            entry?.recordedAt ?? entry?.occurredAt ?? new Date().toISOString(),
+          ),
+    );
+
+    const maybeActorUserId =
+      entry?.integrity?.actorUserId ??
+      entry?.actorUserId ??
+      entry?.integrity?.actorId ??
+      null;
+
+    const actorUserId = maybeActorUserId ? String(maybeActorUserId) : null;
+    if (actorUserId) assertUuid(actorUserId, "actorUserId");
+
+    const actorKind = mapActorKind(entry?.actorKind);
+    const eventType = mapEventType(entry?.eventType ?? entry?.type);
+
+    return this.commit({
+      ts,
+      tenantId,
+      caseId,
+      eventType,
+      actorKind,
+      actorUserId,
+      payload: entry?.payload ?? entry,
+    });
+  }
+
+  /**
+   * Older code calls listByProject(projectId).
+   * Maps "project" → caseId.
+   */
+  public async listByProject(projectId: string) {
+    return prisma.ledgerCommit.findMany({
+      where: { caseId: String(projectId) },
+      orderBy: { ts: "asc" },
+      select: {
+        ts: true,
+        tenantId: true,
+        caseId: true,
+        eventType: true,
+        actorKind: true,
+        actorUserId: true,
+        payload: true,
+        commitmentHash: true,
+        signature: true,
+      },
+    });
+  }
+
+  /**
+   * Older code calls listByPostWinId(postWinId).
+   * Returns timeline-like rows where payload.postWinId == postWinId.
+   */
+  public async listByPostWinId(postWinId: string) {
+    return prisma.ledgerCommit.findMany({
+      where: {
+        payload: {
+          path: ["postWinId"],
+          equals: postWinId,
+        },
+      },
+      orderBy: { ts: "asc" },
+      select: {
+        ts: true,
+        tenantId: true,
+        caseId: true,
+        eventType: true,
+        actorKind: true,
+        actorUserId: true,
+        payload: true,
+        commitmentHash: true,
+        signature: true,
+      },
+    });
+  }
+
+  /**
+   * Create a new LedgerCommit record with a deterministic hash + RSA signature.
+   * Supports both legacy commits (action/actorId/previousState/newState/postWinId)
+   * and schema-shaped commits (tenantId/caseId/eventType/actorKind/payload).
+   *
+   * IMPORTANT:
+   * - tenantId MUST be a UUID (FK → Tenant.id)
+   * - caseId/actorUserId if present MUST be UUIDs
+   * - actorKind MUST be HUMAN|SYSTEM
+   * - eventType MUST be a LedgerEventType enum value
+   */
+  public async commit(input: LedgerCommitInput) {
+    const tenantId = String(input.tenantId ?? "");
+    assertUuid(tenantId, "tenantId");
+
+    const caseId = input.caseId == null ? null : String(input.caseId);
+    if (caseId) assertUuid(caseId, "caseId");
+
+    const actorUserId =
+      input.actorUserId == null ? null : String(input.actorUserId);
+    if (actorUserId) assertUuid(actorUserId, "actorUserId");
+
+    const eventType = mapEventType(input.eventType, input.action);
+    const actorKind = mapActorKind(input.actorKind);
+
+    const payload =
+      input.payload ??
+      ({
+        postWinId: input.postWinId ?? null,
+        action: input.action ?? null,
+        actorId: input.actorId ?? null,
+        previousState: input.previousState ?? null,
+        newState: input.newState ?? null,
+      } as const);
+
+    const normalized: LedgerCommitInput = {
+      ...input,
+      tenantId,
+      caseId,
+      eventType,
+      actorKind,
+      actorUserId,
+      payload,
+    };
+
+    const commitmentHash = this.generateCommitmentHash(normalized);
 
     const sign = createSign("SHA256");
     sign.update(commitmentHash);
     const signature = sign.sign(this.privateKey, "hex");
 
-    const fullRecord: CoreAuditRecord = {
-      ...record,
-      commitmentHash,
-      signature,
-    };
-
-    await prisma.auditRecord.create({
+    return prisma.ledgerCommit.create({
       data: {
-        postWinId: fullRecord.postWinId,
-        action: fullRecord.action,
-        actorId: fullRecord.actorId,
-        previousState: fullRecord.previousState,
-        newState: fullRecord.newState,
-        timestamp: BigInt(fullRecord.timestamp),
-        commitmentHash: fullRecord.commitmentHash,
-        signature: fullRecord.signature,
+        tenantId,
+        caseId,
+        eventType: eventType as any,
+        ts: BigInt(
+          typeof normalized.ts === "bigint" ? normalized.ts : normalized.ts,
+        ),
+        actorKind: actorKind as any,
+        actorUserId,
+        payload: payload as any,
+        commitmentHash,
+        signature,
+        supersedesCommitId: normalized.supersedesCommitId ?? null,
       },
     });
-
-    return fullRecord;
   }
 
   public async verifyLedgerIntegrity(): Promise<boolean> {
-    const records = await prisma.auditRecord.findMany({
-      orderBy: { createdAt: "asc" },
+    const records = await prisma.ledgerCommit.findMany({
+      orderBy: { ts: "asc" },
+      select: {
+        tenantId: true,
+        caseId: true,
+        eventType: true,
+        ts: true,
+        actorKind: true,
+        actorUserId: true,
+        payload: true,
+        supersedesCommitId: true,
+        commitmentHash: true,
+        signature: true,
+      },
     });
 
     for (const r of records) {
-      const { commitmentHash, signature, ...data } = r as any;
-
-      // Rebuild the original signed payload
       const reconstructed = {
-        timestamp: Number(r.timestamp),
-        postWinId: r.postWinId,
-        action: r.action,
-        actorId: r.actorId,
-        previousState: r.previousState,
-        newState: r.newState,
+        tenantId: r.tenantId,
+        caseId: r.caseId ?? null,
+        eventType: String(r.eventType),
+        ts: Number(r.ts),
+        actorKind: String(r.actorKind),
+        actorUserId: r.actorUserId ?? null,
+        supersedesCommitId: r.supersedesCommitId ?? null,
+        payload: r.payload,
       };
 
-      if (this.generateHash(reconstructed) !== commitmentHash) return false;
+      const expected = this.generateHash(reconstructed);
+      if (expected !== r.commitmentHash) return false;
+
+      if (!r.signature) return false;
 
       const verify = createVerify("SHA256");
-      verify.update(commitmentHash);
+      verify.update(r.commitmentHash);
 
-      if (!verify.verify(this.publicKey, signature, "hex")) return false;
+      if (!verify.verify(this.publicKey, r.signature, "hex")) return false;
     }
 
     return true;
   }
 
-  public generateHash(data: any): string {
-    return createHash("sha256").update(JSON.stringify(data)).digest("hex");
-  }
-
-  // --- TIMELINE LEDGER ---
-
-  public async appendEntry(entry: any): Promise<void> {
-    await prisma.timelineEntry.create({
-      data: {
-        id: String(entry.id),
-        projectId: String(entry.projectId),
-        type: String(entry.type),
-        occurredAt: new Date(entry.occurredAt),
-        recordedAt: new Date(entry.recordedAt),
-        integrity: entry.integrity ?? undefined,
-        payload: entry.payload ?? undefined,
+  private generateCommitmentHash(input: LedgerCommitInput): string {
+    const payload = {
+      tenantId: input.tenantId ?? "unknown",
+      caseId: input.caseId ?? null,
+      postWinId: input.postWinId ?? undefined,
+      eventType: input.eventType ?? input.action ?? "LEGACY_EVENT",
+      ts:
+        typeof input.ts === "bigint" ? Number(input.ts) : (input.ts as number),
+      actorKind: input.actorKind ?? "SYSTEM",
+      actorUserId: input.actorUserId ?? null,
+      supersedesCommitId: input.supersedesCommitId ?? null,
+      payload: input.payload ?? {
+        postWinId: input.postWinId ?? null,
+        action: input.action ?? null,
+        actorId: input.actorId ?? null,
+        previousState: input.previousState ?? null,
+        newState: input.newState ?? null,
       },
-    });
+    };
+
+    return this.generateHash(payload);
   }
 
-  public async listByProject(projectId: string): Promise<any[]> {
-    return prisma.timelineEntry.findMany({
-      where: { projectId },
-      orderBy: { recordedAt: "asc" },
-    });
-  }
-
-  public async listByPostWinId(postWinId: string): Promise<any[]> {
-    return prisma.timelineEntry.findMany({
-      where: { payload: { path: ["postWinId"], equals: postWinId } },
-      orderBy: { recordedAt: "asc" },
-    });
+  private generateHash(data: unknown): string {
+    return createHash("sha256").update(JSON.stringify(data)).digest("hex");
   }
 
   private ensureDir(dir: string) {

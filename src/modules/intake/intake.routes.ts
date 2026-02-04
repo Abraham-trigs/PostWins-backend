@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Router as ExpressRouter } from "express";
 import {
   handleIntake,
   handleIntakeBootstrap,
@@ -7,7 +7,7 @@ import {
 } from "./intake.controller";
 import { idempotencyGuard } from "../../middleware/idempotency.middleware";
 
-const router = Router();
+const router: ExpressRouter = Router();
 
 /**
  * BOOTSTRAP intake (creates Project + seeds PostWin)
@@ -27,6 +27,7 @@ router.post("/", idempotencyGuard, handleIntake);
  * DELIVERY intake
  * POST /api/intake/delivery
  */
+
 router.post("/delivery", idempotencyGuard, handleIntakeDelivery);
 
 /**

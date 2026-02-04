@@ -1,98 +1,54 @@
-// apps/backend/src/modules/verification/verification.service.ts
-import { PostWin, VerificationRecord, AuditRecord } from "@posta/core";
+// apps/backend/src/modules/verification/verification.controller.ts
+import type { Request, Response } from "express";
 import { LedgerService } from "../intake/ledger.service";
+import { VerificationService } from "./verification.service";
 
-export class VerificationService {
-  constructor(private ledgerService: LedgerService) {}
+const ledger = new LedgerService();
+const verificationService = new VerificationService(ledger);
 
-  /**
-   * SECTION D: Retrieve PostWin state from Ledger
-   * Resolves the underline in VerificationController
-   */
-  public async getPostWinById(postWinId: string): Promise<PostWin | null> {
-    const trail = this.ledgerService.getAuditTrail(postWinId);
-    if (trail.length === 0) return null;
-
-    // Find the original intake to get the author/beneficiary details
-    const intake = trail.find(r => r.action === 'INTAKE');
-
-    // Reconstruct the entity to match PostWin interface exactly
-    const reconstructed: PostWin = {
-      id: postWinId,
-      taskId: 'ENROLL', // Default step
-      routingStatus: 'FALLBACK',
-      verificationStatus: (trail[trail.length - 1].newState as any).replace('STATUS_', '') || 'PENDING',
-      verificationRecords: [],
-      auditTrail: trail.map(r => ({
-        action: r.action,
-        actor: r.actorId,
-        timestamp: new Date(r.timestamp).toISOString(),
-        note: "Reconstructed from ledger"
-      })),
-      description: "Reconstructed record",
-      beneficiaryId: intake?.actorId || 'unknown',
-      authorId: intake?.actorId || 'unknown',
-      sdgGoals: ['SDG_4'],
-      mode: 'AI_AUGMENTED'
-    };
-
-    return reconstructed;
+/**
+ * GET /api/verification/:postWinId
+ */
+export async function getPostWin(req: Request, res: Response) {
+  const postWinId = String(req.params.postWinId || "").trim();
+  if (!postWinId) {
+    return res.status(400).json({ ok: false, error: "Missing postWinId" });
   }
 
-  /**
-   * SECTION D.5: Consensus Logic & Multi-Verifier tracking
-   */
-  async recordVerification(postWin: PostWin, verifierId: string, sdgGoal: string): Promise<PostWin> {
-    // 1. Initialize records to satisfy PostWin interface
-    if (!postWin.verificationRecords) {
-      postWin.verificationRecords = [];
-    }
-
-    const record = postWin.verificationRecords.find(r => r.sdgGoal === sdgGoal);
-    
-    if (!record) throw new Error(`Verification target ${sdgGoal} not found.`);
-    if (record.consensusReached) return postWin;
-
-    // 2. Security: Prevent self-verification (Requirement D.2)
-    if (verifierId === postWin.beneficiaryId) {
-      throw new Error("Authors cannot self-verify claims.");
-    }
-
-    // 3. CAPTURE VERIFICATION ATTEMPT
-    if (!record.receivedVerifications.includes(verifierId)) {
-      record.receivedVerifications.push(verifierId);
-      
-      // Update local trail
-      postWin.auditTrail.push({
-        action: 'VERIFIED',
-        actor: verifierId,
-        timestamp: new Date().toISOString(),
-        note: `Approval recorded for ${sdgGoal}`
-      });
-    }
-
-    // 4. EVALUATE CONSENSUS (Section D.5)
-    if (record.receivedVerifications.length >= record.requiredVerifiers) {
-      record.consensusReached = true;
-      record.timestamps.verifiedAt = new Date().toISOString();
-      
-      const previousStatus = postWin.verificationStatus;
-      postWin.verificationStatus = 'VERIFIED';
-      
-      /**
-       * SECTION L: Commit to Immutable Ledger
-       * Pass only the core data to satisfy Omit<AuditRecord, 'commitmentHash' | 'signature'>
-       */
-      await this.ledgerService.commit({
-        timestamp: Date.now(),
-        postWinId: postWin.id,
-        action: 'VERIFIED',
-        actorId: verifierId,
-        previousState: previousStatus,
-        newState: 'VERIFIED'
-      });
-    }
-
-    return postWin;
+  const postWin = await verificationService.getPostWinById(postWinId);
+  if (!postWin) {
+    return res.status(404).json({ ok: false, error: "PostWin not found" });
   }
+
+  return res.status(200).json({ ok: true, postWin });
+}
+
+/**
+ * POST /api/verification/verify
+ * body: { postWinId, verifierId, sdgGoal }
+ */
+export async function verifyPostWin(req: Request, res: Response) {
+  const postWinId = String(req.body?.postWinId || "").trim();
+  const verifierId = String(req.body?.verifierId || "").trim();
+  const sdgGoal = String(req.body?.sdgGoal || "").trim();
+
+  if (!postWinId || !verifierId || !sdgGoal) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing required fields: postWinId, verifierId, sdgGoal",
+    });
+  }
+
+  const postWin = await verificationService.getPostWinById(postWinId);
+  if (!postWin) {
+    return res.status(404).json({ ok: false, error: "PostWin not found" });
+  }
+
+  const updated = await verificationService.recordVerification(
+    postWin,
+    verifierId,
+    sdgGoal,
+  );
+
+  return res.status(200).json({ ok: true, postWin: updated });
 }
