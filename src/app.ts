@@ -2,6 +2,7 @@ import express, { type Express } from "express";
 import intakeRoutes from "./modules/intake/intake.routes";
 import timelineRoutes from "./modules/timeline/timeline.route";
 import verificationRouter from "./modules/verification/verification.routes";
+import { casesRouter } from "./modules/cases/cases.routes";
 
 const app: Express = express();
 
@@ -28,6 +29,7 @@ app.get("/health", (_req, res) => {
 
 // Routes
 app.use("/api/intake", intakeRoutes);
+app.use("/api/cases", casesRouter);
 app.use("/api/timeline", timelineRoutes);
 app.use("/api/verification", verificationRouter);
 

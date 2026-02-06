@@ -1,3 +1,4 @@
+// apps/backend/src/modules/timeline/timeline.service.ts
 import {
   FOLLOWUP_SCHEDULE_DAYS,
   FOLLOWUP_WINDOW_DAYS,
@@ -27,17 +28,28 @@ type TimelineItem =
       daysFromDelivery: number;
     };
 
+function normalizeLocation(loc: unknown): string {
+  if (!loc) return "community";
+  if (typeof loc === "string") return loc;
+  if (typeof loc === "object") {
+    const anyLoc = loc as any;
+    return anyLoc.community ?? anyLoc.name ?? anyLoc.region ?? "community";
+  }
+  return "community";
+}
+
 export class TimelineService {
   private ledger = new LedgerService();
 
   async build(projectId: string) {
     const entries = await this.ledger.listByProject(projectId);
 
+    // ✅ ledger rows use eventType, not type
     const deliveries = entries.filter(
-      (e: any) => e.type === "DELIVERY_RECORDED",
+      (e: any) => String(e.eventType) === "DELIVERY_RECORDED",
     );
     const followups = entries.filter(
-      (e: any) => e.type === "FOLLOWUP_RECORDED",
+      (e: any) => String(e.eventType) === "FOLLOWUP_RECORDED",
     );
 
     deliveries.sort((a: any, b: any) => Number(a.ts) - Number(b.ts));
@@ -47,26 +59,24 @@ export class TimelineService {
     const now = Date.now();
 
     for (const d of deliveries) {
-      const delivery = d.payload as any;
-      const deliveryId = delivery.deliveryId as string;
+      const delivery = (d.payload ?? {}) as any;
+      const deliveryId = String(delivery.deliveryId ?? "");
 
       items.push({
         type: "delivery",
         occurredAt: new Date(Number(d.ts)).toISOString(),
         deliveryId,
-        summary: `${delivery.items?.length ?? 0} item types delivered to ${
-          delivery.location?.community ?? "community"
-        }`,
+        summary: `${delivery.items?.length ?? 0} item types delivered to ${normalizeLocation(
+          delivery.location,
+        )}`,
       });
 
       const deliveryTime = Number(d.ts);
 
-      // Only consider followups tied to this delivery
       const relatedFollowups = followups.filter(
-        (f: any) => (f.payload as any).deliveryId === deliveryId,
+        (f: any) => String((f.payload as any)?.deliveryId ?? "") === deliveryId,
       );
 
-      // Prevent one follow-up from satisfying multiple schedule slots
       const usedFollowupIds = new Set<string>();
 
       for (const daysFromDelivery of FOLLOWUP_SCHEDULE_DAYS) {
@@ -81,7 +91,7 @@ export class TimelineService {
         const matched = relatedFollowups.find((f: any) => {
           const fu = f.payload as any;
           if (!fu?.followupId) return false;
-          if (usedFollowupIds.has(fu.followupId)) return false;
+          if (usedFollowupIds.has(String(fu.followupId))) return false;
 
           const t = Number(f.ts);
           return t >= windowStart && t <= windowEnd;
@@ -89,7 +99,7 @@ export class TimelineService {
 
         if (matched) {
           const fu = matched.payload as any;
-          usedFollowupIds.add(fu.followupId);
+          usedFollowupIds.add(String(fu.followupId));
         } else {
           items.push({
             type: "gap",
@@ -102,15 +112,14 @@ export class TimelineService {
         }
       }
 
-      // Add actual follow-ups (so UI sees reality even if outside windows)
       for (const f of relatedFollowups) {
         const fu = f.payload as any;
         items.push({
           type: "followup",
           occurredAt: new Date(Number(f.ts)).toISOString(),
-          followupId: fu.followupId,
-          kind: fu.kind,
-          deliveryId: fu.deliveryId,
+          followupId: String(fu.followupId ?? ""),
+          kind: String(fu.kind ?? ""),
+          deliveryId: String(fu.deliveryId ?? deliveryId),
         });
       }
     }

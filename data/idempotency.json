@@ -26,6 +26,33 @@
         }
       },
       "recordedAt": "2026-02-04T15:40:34.524Z"
+    },
+    "test-bootstrap-3": {
+      "requestHash": "d0f811bcbfb1668c391a267734c2199f9d5e17f72cfeeeacf12d31a216d4023d",
+      "response": {
+        "requestHash": "d0f811bcbfb1668c391a267734c2199f9d5e17f72cfeeeacf12d31a216d4023d",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "projectId": "e5dc8785-3c30-4d43-9317-fa87e1779ac0",
+          "postWinId": "210b7eb8-4ab0-4bbc-b006-7e3643e52402"
+        }
+      },
+      "recordedAt": "2026-02-04T19:57:59.994Z"
+    },
+    "test-delivery-1b": {
+      "requestHash": "946b661efde13469ec293d9b385065962f34aa4349a3b1ff3a46139f76a8d755",
+      "response": {
+        "requestHash": "946b661efde13469ec293d9b385065962f34aa4349a3b1ff3a46139f76a8d755",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "type": "DELIVERY_RECORDED",
+          "projectId": "e5dc8785-3c30-4d43-9317-fa87e1779ac0",
+          "deliveryId": "delivery-1"
+        }
+      },
+      "recordedAt": "2026-02-04T20:03:06.924Z"
     }
   }
 }
