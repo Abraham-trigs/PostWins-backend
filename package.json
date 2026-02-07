@@ -13,7 +13,8 @@
   "dependencies": {
     "@posta/core": "workspace:*",
     "@prisma/client": "^6.19.2",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

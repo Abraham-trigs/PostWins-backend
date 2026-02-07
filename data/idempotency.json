@@ -53,6 +53,33 @@
         }
       },
       "recordedAt": "2026-02-04T20:03:06.924Z"
+    },
+    "delivery_28b5e608-55a3-4ef9-ade3-2eb5c62286ee": {
+      "requestHash": "c641bacb73056d3bb651d929db6750f042db86eada2a5417c2ba5517363b8f56",
+      "response": {
+        "requestHash": "c641bacb73056d3bb651d929db6750f042db86eada2a5417c2ba5517363b8f56",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "type": "DELIVERY_RECORDED",
+          "projectId": "e5dc8785-3c30-4d43-9317-fa87e1779ac0",
+          "deliveryId": "delivery_d462a0d6-e5d9-4a1d-9900-2a32f5e1067e"
+        }
+      },
+      "recordedAt": "2026-02-07T02:12:05.793Z"
+    },
+    "918f8254-60e2-4ab8-b19d-f2e9b810c00e": {
+      "requestHash": "b037894597bc29520180fe70d85cec393e6c5c1b5402f2c70b3fee0fde32cead",
+      "response": {
+        "requestHash": "b037894597bc29520180fe70d85cec393e6c5c1b5402f2c70b3fee0fde32cead",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "projectId": "71293f01-2f35-45d7-acbc-30d7287134e0",
+          "postWinId": "00a7ee89-f004-4d07-b031-8d3115781c07"
+        }
+      },
+      "recordedAt": "2026-02-07T02:13:08.832Z"
     }
   }
 }

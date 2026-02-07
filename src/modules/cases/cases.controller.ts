@@ -1,10 +1,19 @@
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
+import { validate as isUuid } from "uuid";
 
 export async function listCases(req: Request, res: Response) {
   const tenantId = String(req.header("X-Tenant-Id") || "").trim();
+
   if (!tenantId) {
     return res.status(400).json({ ok: false, error: "Missing X-Tenant-Id" });
+  }
+
+  if (!isUuid(tenantId)) {
+    return res.status(400).json({
+      ok: false,
+      error: "X-Tenant-Id must be a valid UUID",
+    });
   }
 
   const rows = await prisma.case.findMany({
