@@ -3,6 +3,10 @@ import { LedgerService } from "../intake/ledger.service";
 import { CaseLifecycle } from "@prisma/client";
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
 
+// NOTE:
+// Verification reaching consensus is a MEANINGFUL decision.
+// Case.lifecycle transitions here MUST be ledger-backed.
+
 export class VerificationService {
   constructor(private ledgerService: LedgerService) {}
 
@@ -104,7 +108,7 @@ export class VerificationService {
       record.timestamps ??= {};
       record.timestamps.verifiedAt = new Date().toISOString();
 
-      const previousStatus = postWin.verificationStatus;
+      const previousUiStatus = postWin.verificationStatus;
       postWin.verificationStatus = "VERIFIED";
 
       // Existing PostWin ledger commit (domain narrative)

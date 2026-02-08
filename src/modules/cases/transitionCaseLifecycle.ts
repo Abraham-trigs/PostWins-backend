@@ -4,6 +4,15 @@ import { deriveCaseStatus } from "./deriveCaseStatus";
 import { CASE_LIFECYCLE_TRANSITIONS } from "./caseLifecycle.transitions";
 
 /**
+ * NOTE:
+ * Case.lifecycle is AUTHORITATIVE state.
+ *
+ * - Use this helper for internal / non-decision transitions.
+ * - If a transition represents a human or system decision,
+ *   use transitionCaseLifecycleWithLedger instead.
+ */
+
+/**
  * Transition a case between lifecycle states.
  *
  * ⚠️ Lifecycle is AUTHORITATIVE.
@@ -11,6 +20,7 @@ import { CASE_LIFECYCLE_TRANSITIONS } from "./caseLifecycle.transitions";
  *
  * This function centralizes lifecycle mutation.
  */
+
 export async function transitionCaseLifecycle(params: {
   caseId: string;
   from: CaseLifecycle;

@@ -3,6 +3,16 @@ import { CaseLifecycle, ActorKind } from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
 
+/**
+ * NOTE:
+ * This is the preferred path for meaningful lifecycle transitions.
+ *
+ * - A LedgerCommit is written first (CAUSE)
+ * - Case.lifecycle is updated as a projection (EFFECT)
+ *
+ * Do not bypass this helper for decision-driven changes.
+ */
+
 export async function transitionCaseLifecycleWithLedger(params: {
   caseId: string;
   from: CaseLifecycle;
