@@ -1,6 +1,7 @@
-// apps/backend/src/modules/verification/verification.service.ts
-import { PostWin, VerificationRecord, AuditRecord } from "@posta/core";
+import { PostWin } from "@posta/core";
 import { LedgerService } from "../intake/ledger.service";
+import { CaseLifecycle } from "@prisma/client";
+import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
 
 export class VerificationService {
   constructor(private ledgerService: LedgerService) {}
@@ -24,10 +25,9 @@ export class VerificationService {
     // Find the original intake to get the author/beneficiary details
     const intake = trail.find((r: any) => r.action === "INTAKE");
 
-    // Reconstruct the entity to match PostWin interface exactly
     const reconstructed: PostWin = {
       id: postWinId,
-      taskId: "ENROLL", // Default step
+      taskId: "ENROLL",
       routingStatus: "FALLBACK",
       verificationStatus:
         (trail[trail.length - 1].newState as any)?.replace?.("STATUS_", "") ||
@@ -98,6 +98,7 @@ export class VerificationService {
       });
     }
 
+    // ✅ DECISION POINT (quorum reached)
     if (record.receivedVerifications.length >= record.requiredVerifiers) {
       record.consensusReached = true;
       record.timestamps ??= {};
@@ -106,6 +107,7 @@ export class VerificationService {
       const previousStatus = postWin.verificationStatus;
       postWin.verificationStatus = "VERIFIED";
 
+      // Existing PostWin ledger commit (domain narrative)
       await this.ledgerService.commit({
         ts: Date.now(),
         postWinId: postWin.id,
@@ -113,6 +115,18 @@ export class VerificationService {
         actorId: verifierId,
         previousState: previousStatus,
         newState: "VERIFIED",
+      });
+
+      // ✅ Case lifecycle transition backed by ledger (authoritative)
+      await transitionCaseLifecycleWithLedger({
+        caseId: postWin.id, // PostWin.id === Case.id in current model
+        from: CaseLifecycle.ROUTED,
+        to: CaseLifecycle.VERIFIED,
+        actorUserId: verifierId,
+        intentContext: {
+          verificationRecordId: record.id,
+          sdgGoal,
+        },
       });
     }
 

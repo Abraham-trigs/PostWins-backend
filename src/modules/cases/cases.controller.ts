@@ -48,9 +48,14 @@ export async function listCases(req: Request, res: Response) {
 
   const cases = rows.map((row) => ({
     id: row.id,
+
+    // authoritative
     lifecycle: row.lifecycle,
+
+    // advisory
     status: row.status,
     routingOutcome: row.routingDecisions[0]?.routingOutcome ?? "UNASSIGNED",
+
     type: row.type,
     scope: row.scope,
     sdgGoal: row.sdgGoal,
