@@ -1,4 +1,4 @@
-import { prisma } from "../..//lib/prisma";
+import { prisma } from "../../lib/prisma"; // ← fixed path
 import { CaseLifecycle, ActorKind } from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
@@ -12,7 +12,6 @@ import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
  *
  * Do not bypass this helper for decision-driven changes.
  */
-
 export async function transitionCaseLifecycleWithLedger(params: {
   caseId: string;
   from: CaseLifecycle;
@@ -24,9 +23,14 @@ export async function transitionCaseLifecycleWithLedger(params: {
 
   const eventType = CASE_LIFECYCLE_LEDGER_EVENTS[to];
 
+  // 🔒 Hard guard: every lifecycle must map to a ledger event
+  if (!eventType) {
+    throw new Error(`No LedgerEventType mapped for CaseLifecycle: ${to}`);
+  }
+
   return prisma.$transaction(async (tx) => {
-    // 1. Write ledger commit (CAUSE)
-    await tx.ledgerCommit.create({
+    // 1. CAUSE — ledger commit (mandatory)
+    const ledgerCommit = await tx.ledgerCommit.create({
       data: {
         caseId,
         eventType,
@@ -39,11 +43,16 @@ export async function transitionCaseLifecycleWithLedger(params: {
           from,
           to,
         },
-        commitmentHash: "placeholder", // you already have infra for this
+        commitmentHash: "placeholder", // existing infra handles this
       },
     });
 
-    // 2. Apply projection (EFFECT)
+    // 🔒 INVARIANT (Phase C, Step C1)
+    if (!ledgerCommit) {
+      throw new Error("Lifecycle changes must be ledger-committed");
+    }
+
+    // 2. EFFECT — projection
     return transitionCaseLifecycle({
       caseId,
       from,
