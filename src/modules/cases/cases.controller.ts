@@ -1,3 +1,7 @@
+// NOTE:
+// Lifecycle is authoritative.
+// If this change represents a decision, use transitionCaseLifecycleWithLedger.
+
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
 import { validate as isUuid } from "uuid";
@@ -46,23 +50,32 @@ export async function listCases(req: Request, res: Response) {
     },
   });
 
-  const cases = rows.map((row) => ({
-    id: row.id,
+  const cases = rows.map((row) => {
+    // ⚠️ advisory / presentation-only state
+    const uiStatus = row.status;
 
-    // authoritative
-    lifecycle: row.lifecycle,
+    // ⚠️ decision metadata
+    const decisionOutcome =
+      row.routingDecisions[0]?.routingOutcome ?? "UNASSIGNED";
 
-    // advisory
-    status: row.status,
-    routingOutcome: row.routingDecisions[0]?.routingOutcome ?? "UNASSIGNED",
+    return {
+      id: row.id,
 
-    type: row.type,
-    scope: row.scope,
-    sdgGoal: row.sdgGoal,
-    summary: row.summary,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }));
+      // authoritative
+      lifecycle: row.lifecycle,
+
+      // advisory (payload unchanged)
+      status: uiStatus,
+      routingOutcome: decisionOutcome,
+
+      type: row.type,
+      scope: row.scope,
+      sdgGoal: row.sdgGoal,
+      summary: row.summary,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  });
 
   return res.status(200).json({ ok: true, cases });
 }
