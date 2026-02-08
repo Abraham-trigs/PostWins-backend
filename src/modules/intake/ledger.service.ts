@@ -1,4 +1,16 @@
 // apps/backend/src/modules/intake/ledger.service.ts
+
+/**
+ * IMPORTANT LEDGER BOUNDARY
+ *
+ * - LedgerCommit records immutable facts only.
+ * - It MUST NOT infer or encode workflow, lifecycle, or task semantics.
+ * - TaskId (currentTask) is a Case field and is NEVER derived from ledger data.
+ * - Legacy fields (action, previousState, newState) are transport metadata only.
+ *
+ * The ledger must never become a shadow workflow engine.
+ */
+
 import {
   createHash,
   createSign,
@@ -34,14 +46,14 @@ export type LedgerCommitInput = {
   // always provided by callers
   ts: number | bigint;
 
-  // legacy fields (your controllers/services are sending these)
+  // legacy fields (controllers/services still sending these)
   postWinId?: string;
   action?: string;
   actorId?: string;
   previousState?: string;
   newState?: string;
 
-  // new fields (schema-driven commit)
+  // schema-driven fields
   tenantId?: string;
   caseId?: string | null;
   eventType?: string;
@@ -54,7 +66,7 @@ export type LedgerCommitInput = {
   [k: string]: any;
 };
 
-// Local enum-safe guards/mappers (avoid Prisma enums imports everywhere)
+// Local enum-safe guards/mappers (avoid Prisma enum imports everywhere)
 type ActorKindEnum = "HUMAN" | "SYSTEM";
 type LedgerEventTypeEnum =
   | "CASE_CREATED"
@@ -109,6 +121,8 @@ function mapEventType(
   const action = String(fallbackFromAction ?? "").trim();
 
   // legacy/controller values → schema LedgerEventType
+  // NOTE: These map transport-era labels to factual ledger events.
+  // They MUST NOT be interpreted as task, lifecycle, or workflow state.
   if (raw === "POSTWIN_BOOTSTRAPPED" || action === "INTAKE")
     return "CASE_CREATED";
   if (raw === "DELIVERY_RECORDED" || raw === "FOLLOWUP_RECORDED")
@@ -180,8 +194,8 @@ export class LedgerService {
   }
 
   /**
-   * Minimal “audit trail” by postWinId stored in payload (JSON path query).
-   * Works with your schema: LedgerCommit.payload Json.
+   * Minimal audit trail by postWinId stored in payload (JSON path query).
+   * Ledger remains factual; projections are convenience-only.
    */
   public async getAuditTrail(postWinId: string): Promise<LedgerAuditRecord[]> {
     const rows = await prisma.ledgerCommit.findMany({
@@ -216,7 +230,7 @@ export class LedgerService {
       commitmentHash: r.commitmentHash,
       signature: r.signature,
 
-      // legacy-friendly projections (so .action/.actorId compile everywhere)
+      // legacy transport metadata (NOT domain state)
       action: (r.payload as any)?.action ?? undefined,
       actorId: (r.payload as any)?.actorId ?? undefined,
       previousState: (r.payload as any)?.previousState ?? undefined,
@@ -231,13 +245,6 @@ export class LedgerService {
    * --------------------------------------------------------------------------
    */
 
-  /**
-   * Older code calls ledgerService.appendEntry(timelineEntry).
-   * This now routes through commit() to ensure:
-   * - UUID correctness for tenantId/caseId/actorUserId
-   * - enum-safe actorKind + eventType mapping
-   * - signature/hash always present so integrity checks pass
-   */
   public async appendEntry(entry: any) {
     const tenantId = String(entry?.tenantId ?? entry?.payload?.tenantId ?? "");
     assertUuid(tenantId, "tenantId");
@@ -277,10 +284,6 @@ export class LedgerService {
     });
   }
 
-  /**
-   * Older code calls listByProject(projectId).
-   * Maps "project" → caseId.
-   */
   public async listByProject(projectId: string) {
     return prisma.ledgerCommit.findMany({
       where: { caseId: String(projectId) },
@@ -299,10 +302,6 @@ export class LedgerService {
     });
   }
 
-  /**
-   * Older code calls listByPostWinId(postWinId).
-   * Returns timeline-like rows where payload.postWinId == postWinId.
-   */
   public async listByPostWinId(postWinId: string) {
     return prisma.ledgerCommit.findMany({
       where: {
@@ -327,15 +326,14 @@ export class LedgerService {
   }
 
   /**
-   * Create a new LedgerCommit record with a deterministic hash + RSA signature.
-   * Supports both legacy commits (action/actorId/previousState/newState/postWinId)
-   * and schema-shaped commits (tenantId/caseId/eventType/actorKind/payload).
+   * Create a new LedgerCommit with deterministic hash + RSA signature.
+   * Supports legacy transport commits and schema-shaped commits.
    *
-   * IMPORTANT:
-   * - tenantId MUST be a UUID (FK → Tenant.id)
-   * - caseId/actorUserId if present MUST be UUIDs
-   * - actorKind MUST be HUMAN|SYSTEM
-   * - eventType MUST be a LedgerEventType enum value
+   * Ledger invariants:
+   * - tenantId MUST be a UUID
+   * - caseId / actorUserId if present MUST be UUIDs
+   * - actorKind MUST be HUMAN | SYSTEM
+   * - eventType MUST be a LedgerEventType
    */
   public async commit(input: LedgerCommitInput) {
     const tenantId = String(input.tenantId ?? "");
@@ -426,12 +424,10 @@ export class LedgerService {
 
       const expected = this.generateHash(reconstructed);
       if (expected !== r.commitmentHash) return false;
-
       if (!r.signature) return false;
 
       const verify = createVerify("SHA256");
       verify.update(r.commitmentHash);
-
       if (!verify.verify(this.publicKey, r.signature, "hex")) return false;
     }
 

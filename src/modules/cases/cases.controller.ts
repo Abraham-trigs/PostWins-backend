@@ -32,6 +32,9 @@ export async function listCases(req: Request, res: Response) {
       // ⚠️ ADVISORY
       status: true,
 
+      // ✅ CANONICAL TASK IDENTIFIER (LABEL ONLY)
+      currentTask: true,
+
       type: true,
       scope: true,
       sdgGoal: true,
@@ -39,7 +42,7 @@ export async function listCases(req: Request, res: Response) {
       createdAt: true,
       updatedAt: true,
 
-      // latest routing decision (if any)
+      // decision metadata (snapshot only)
       routingDecisions: {
         orderBy: { decidedAt: "desc" },
         take: 1,
@@ -51,10 +54,6 @@ export async function listCases(req: Request, res: Response) {
   });
 
   const cases = rows.map((row) => {
-    // ⚠️ advisory / presentation-only state
-    const uiStatus = row.status;
-
-    // ⚠️ decision metadata
     const decisionOutcome =
       row.routingDecisions[0]?.routingOutcome ?? "UNASSIGNED";
 
@@ -64,8 +63,13 @@ export async function listCases(req: Request, res: Response) {
       // authoritative
       lifecycle: row.lifecycle,
 
-      // advisory (payload unchanged)
-      status: uiStatus,
+      // advisory
+      status: row.status,
+
+      // ✅ task label (no semantics attached)
+      currentTask: row.currentTask,
+
+      // decision metadata
       routingOutcome: decisionOutcome,
 
       type: row.type,

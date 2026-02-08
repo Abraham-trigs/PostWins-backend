@@ -19,6 +19,14 @@ enum CaseLifecycle {
   FLAGGED
   HUMAN_REVIEW
 }
+enum TaskId {
+  START
+  ENROLL
+  ATTEND
+  MODULE_1
+  MODULE_2
+}
+
 
 enum OperationalMode {
   MOCK
@@ -330,6 +338,8 @@ model Case {
   summary     String?
   reasonCodes CaseReasonCode[]
 
+  currentTask TaskId @default(START)
+  
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   archivedAt DateTime?

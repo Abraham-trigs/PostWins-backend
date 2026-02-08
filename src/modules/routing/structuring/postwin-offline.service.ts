@@ -1,6 +1,9 @@
 // filepath: src/modules/routing/postwin-offline.service.ts
 import { PostWin, ExecutionBody } from "@posta/core";
 import { PostWinPipelineService } from "./postwin-pipeline.service";
+// NOTE:
+// Offline queue is transport-only.
+// Must not infer, modify, or advance taskId or lifecycle.
 
 // Simple offline queue
 interface OfflineQueueItem {

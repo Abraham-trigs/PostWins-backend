@@ -5,12 +5,20 @@ export class AnalyticsService {
   constructor(private ledgerService: LedgerService) {}
 
   /**
-   * Section O.2: Publicly track response speeds (Intake -> Execution)
+   * Section O.2: Publicly track response speeds
+   *
+   * NOTE:
+   * - Measures time between two factual ledger events
+   * - Does NOT infer task, lifecycle, or workflow state
    */
   async calculateLatency(postWinId: string): Promise<number> {
     const trail = await this.ledgerService.getAuditTrail(postWinId);
-    const intake = trail.find((t) => t.action === "INTAKE");
-    const execution = trail.find((t) => t.action === "EXECUTED");
+
+    // factual intake record (creation / receipt)
+    const intake = trail.find((t) => t.action === "INTAKE_RECEIVED");
+
+    // factual execution completion record
+    const execution = trail.find((t) => t.action === "EXECUTION_COMPLETED");
 
     const toMs = (v: number | bigint | undefined) => {
       if (typeof v === "bigint") return Number(v);

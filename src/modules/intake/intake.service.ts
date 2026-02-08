@@ -1,6 +1,6 @@
 import { PostWin, PostaContext, AuditRecord } from "@posta/core";
+import { TaskId } from "../../domain/tasks/taskIds";
 import { IntegrityService } from "./integrity.service";
-import { TaskService } from "../routing/structuring/task.service";
 
 /**
  * Interface to extend PostaContext with literacy metadata for ToneAdapter
@@ -11,10 +11,7 @@ export interface EnrichedContext extends PostaContext {
 }
 
 export class IntakeService {
-  constructor(
-    private integrityService: IntegrityService,
-    private taskService: TaskService,
-  ) {}
+  constructor(private integrityService: IntegrityService) {}
 
   /**
    * ✅ Canonical public entrypoint for intake
@@ -26,7 +23,7 @@ export class IntakeService {
   ): Promise<Partial<PostWin>> {
     const ctx = await this.detectContext(message);
 
-    // This already performs integrity audit + returns partial fields
+    // Performs integrity audit + returns partial fields
     const partial = await this.processInternalOrchestration(message, deviceId);
 
     const audit: AuditRecord = {
@@ -39,25 +36,24 @@ export class IntakeService {
     return {
       ...partial,
 
-      // Keep these stable for downstream pipeline expectations:
+      // Stable downstream expectations
       auditTrail: [...(partial.auditTrail ?? []), audit],
 
-      // Optional but helpful (only if PostWin allows it)
+      // Context snapshot (advisory only)
       context: ctx as unknown as PostaContext,
 
-      // If your pipeline expects an initial taskId, set a safe default
-      taskId: (partial as any).taskId ?? "START",
+      // ✅ Deterministic, canonical task assignment
+      taskId: TaskId.START,
     };
   }
 
   /**
    * Section A & N: Implicit Context & Literacy Detection
-   * Analyzes the message to determine role and literacy level (Requirement G.2)
    */
   public async detectContext(message: string): Promise<EnrichedContext> {
     const msg = message.toLowerCase();
 
-    // 1. Role Detection (Requirement A.1)
+    // Role Detection
     let role: PostaContext["role"] = "BENEFICIARY";
     if (
       msg.includes("partner") ||
@@ -67,7 +63,7 @@ export class IntakeService {
       role = "NGO_PARTNER";
     }
 
-    // 2. Literacy Scoring (Requirement G.2)
+    // Literacy Scoring
     const words = message.trim().split(/\s+/);
     const avgWordLength = message.length / (words.length || 1);
 
@@ -90,9 +86,8 @@ export class IntakeService {
     message: string,
     deviceId: string,
   ): Promise<Partial<PostWin>> {
-    const context = await this.detectContext(message);
-
     const tempPostWin = { beneficiaryId: "pending" } as PostWin;
+
     const flags = await this.integrityService.performFullAudit(
       tempPostWin,
       message,
@@ -115,7 +110,6 @@ export class IntakeService {
 
   /**
    * Resolve GhanaPost Digital Address → GPS coordinates
-   * Used by web intake questionnaire (Step 1)
    */
   public async resolveGhanaPostAddress(digitalAddress: string): Promise<{
     digitalAddress: string;
@@ -123,7 +117,6 @@ export class IntakeService {
     lng: number;
     bounds: [[number, number], [number, number]];
   }> {
-    // GhanaPost format sanity check
     if (!/^[A-Z]{2}-\d{3}-\d{4}$/i.test(digitalAddress)) {
       throw new Error("INVALID_ADDRESS");
     }
@@ -151,7 +144,6 @@ export class IntakeService {
     }
 
     const data = (await res.json()) as any;
-
     const record = data?.Table?.[0];
     if (!record) {
       throw new Error("NOT_FOUND");
@@ -164,7 +156,6 @@ export class IntakeService {
       throw new Error("NOT_FOUND");
     }
 
-    // Conservative bounding box (~50m)
     const delta = 0.0005;
 
     return {
