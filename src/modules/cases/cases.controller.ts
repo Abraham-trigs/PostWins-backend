@@ -21,16 +21,43 @@ export async function listCases(req: Request, res: Response) {
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
+
+      // ✅ AUTHORITATIVE
+      lifecycle: true,
+
+      // ⚠️ ADVISORY
       status: true,
-      routingStatus: true,
+
       type: true,
       scope: true,
       sdgGoal: true,
       summary: true,
       createdAt: true,
       updatedAt: true,
+
+      // latest routing decision (if any)
+      routingDecisions: {
+        orderBy: { decidedAt: "desc" },
+        take: 1,
+        select: {
+          routingOutcome: true,
+        },
+      },
     },
   });
 
-  return res.status(200).json({ ok: true, cases: rows });
+  const cases = rows.map((row) => ({
+    id: row.id,
+    lifecycle: row.lifecycle,
+    status: row.status,
+    routingOutcome: row.routingDecisions[0]?.routingOutcome ?? "UNASSIGNED",
+    type: row.type,
+    scope: row.scope,
+    sdgGoal: row.sdgGoal,
+    summary: row.summary,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }));
+
+  return res.status(200).json({ ok: true, cases });
 }

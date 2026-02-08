@@ -5,10 +5,74 @@ declare global {
   var prisma: PrismaClient | undefined;
 }
 
-export const prisma =
-  globalThis.prisma ??
-  new PrismaClient({
-    log: ["error", "warn"],
-  });
+/**
+ * Prisma client singleton.
+ *
+ * DOMAIN INVARIANTS (DO NOT VIOLATE):
+ * - Case.lifecycle is the ONLY authoritative state
+ * - Case.status is advisory / derived (UI + ops only)
+ * - RoutingOutcome is decision metadata, not lifecycle
+ *
+ * This client WARNs (does not block) on direct advisory writes.
+ */
+const basePrisma = new PrismaClient({
+  log: ["error", "warn"],
+});
 
-if (process.env.NODE_ENV !== "production") globalThis.prisma = prisma;
+const prismaWithGuards = basePrisma.$extends({
+  query: {
+    case: {
+      async update({ args, query }) {
+        warnOnCaseAdvisoryWrite(args.data);
+        return query(args);
+      },
+      async updateMany({ args, query }) {
+        warnOnCaseAdvisoryWrite(args.data);
+        return query(args);
+      },
+    },
+    routingDecision: {
+      async update({ args, query }) {
+        warnOnRoutingOutcomeWrite(args.data);
+        return query(args);
+      },
+      async updateMany({ args, query }) {
+        warnOnRoutingOutcomeWrite(args.data);
+        return query(args);
+      },
+    },
+  },
+});
+
+function warnOnCaseAdvisoryWrite(data: unknown) {
+  if (!data || typeof data !== "object") return;
+
+  const keys = Object.keys(data as Record<string, unknown>);
+
+  if (keys.includes("status")) {
+    console.warn(
+      "[domain-warning] Direct write to Case.status detected.",
+      "Case.status is NON-AUTHORITATIVE and must be derived from Case.lifecycle.",
+      "Use deriveCaseStatus(...) and centralized helpers.",
+    );
+  }
+}
+
+function warnOnRoutingOutcomeWrite(data: unknown) {
+  if (!data || typeof data !== "object") return;
+
+  const keys = Object.keys(data as Record<string, unknown>);
+
+  if (keys.includes("routingOutcome")) {
+    console.warn(
+      "[domain-warning] Direct write to RoutingDecision.routingOutcome detected.",
+      "RoutingOutcome is decision metadata, not lifecycle state.",
+    );
+  }
+}
+
+export const prisma = globalThis.prisma ?? prismaWithGuards;
+
+if (process.env.NODE_ENV !== "production") {
+  globalThis.prisma = prisma;
+}
