@@ -4,6 +4,7 @@ import {
   handleIntakeBootstrap,
   handleIntakeDelivery,
   handleIntakeFollowup,
+  handleResolveLocation, // ✅ ADD
 } from "./intake.controller";
 import { idempotencyGuard } from "../../middleware/idempotency.middleware";
 
@@ -11,14 +12,12 @@ const router: ExpressRouter = Router();
 
 /**
  * BOOTSTRAP intake (creates Project + seeds PostWin)
- * Idempotent by design (offline-first safe)
  * POST /api/intake/bootstrap
  */
 router.post("/bootstrap", idempotencyGuard, handleIntakeBootstrap);
 
 /**
- * RECORD intake (creates PostWin container - legacy)
- * Idempotent by design (offline-first safe)
+ * RECORD intake (legacy)
  * POST /api/intake
  */
 router.post("/", idempotencyGuard, handleIntake);
@@ -27,7 +26,6 @@ router.post("/", idempotencyGuard, handleIntake);
  * DELIVERY intake
  * POST /api/intake/delivery
  */
-
 router.post("/delivery", idempotencyGuard, handleIntakeDelivery);
 
 /**
@@ -35,5 +33,12 @@ router.post("/delivery", idempotencyGuard, handleIntakeDelivery);
  * POST /api/intake/followup
  */
 router.post("/followup", idempotencyGuard, handleIntakeFollowup);
+
+/**
+ * RESOLVE LOCATION (GhanaPost → GPS)
+ * POST /api/intake/resolve-location
+ * Non-idempotent, non-ledgered
+ */
+router.get("/resolve-location", handleResolveLocation);
 
 export default router;

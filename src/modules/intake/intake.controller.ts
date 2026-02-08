@@ -18,7 +18,6 @@ import { SDGMapperService } from "./sdg-mapper.service";
 
 // Idempotency helper
 import { commitIdempotencyResponse } from "../../middleware/idempotency.middleware";
-
 // Prisma + UUID utils
 import { prisma } from "../../lib/prisma";
 import { assertUuid, UUID_RE } from "../../utils/uuid";
@@ -95,7 +94,49 @@ function seedVerificationRecords(sdgGoals: string[]) {
     timestamps: { createdAt },
   }));
 }
+export const handleResolveLocation = async (req: Request, res: Response) => {
+  try {
+    const code = String(req.query.code ?? "").trim();
 
+    if (!code) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing required query param: code",
+      });
+    }
+
+    const result = await intakeService.resolveGhanaPostAddress(code);
+
+    // IMPORTANT: frontend expects raw geo fields
+    return res.status(200).json({
+      lat: result.lat,
+      lng: result.lng,
+      bounds: result.bounds,
+    });
+  } catch (err: any) {
+    if (err instanceof Error) {
+      if (err.message === "INVALID_ADDRESS") {
+        return res.status(400).json({
+          ok: false,
+          error: "Invalid GhanaPost Digital Address",
+        });
+      }
+
+      if (err.message === "NOT_FOUND") {
+        return res.status(404).json({
+          ok: false,
+          error: "Address not found",
+        });
+      }
+    }
+
+    console.error("Resolve Location Error:", err);
+    return res.status(502).json({
+      ok: false,
+      error: "Failed to resolve location",
+    });
+  }
+};
 /**
  * ============================================================================
  * BOOTSTRAP: Create Case + seed PostWin (UI "New PostWin" button)

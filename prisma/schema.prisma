@@ -12,6 +12,14 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum CaseLifecycle {
+  INTAKE
+  ROUTED
+  VERIFIED
+  FLAGGED
+  HUMAN_REVIEW
+}
+
 enum OperationalMode {
   MOCK
   ASSISTED
@@ -47,8 +55,7 @@ enum CaseStatus {
   ARCHIVED
 }
 
-enum RoutingStatus {
-  // Must match runtime: UNASSIGNED, MATCHED, FALLBACK, BLOCKED :contentReference[oaicite:7]{index=7}
+enum RoutingOutcome {
   UNASSIGNED
   MATCHED
   FALLBACK
@@ -303,8 +310,8 @@ model Case {
   scope AccessScope
   type  CaseType
 
-  status        CaseStatus    @default(INTAKED)
-  routingStatus RoutingStatus @default(UNASSIGNED)
+  lifecycle CaseLifecycle @default(INTAKE)
+  status    CaseStatus    @default(INTAKED)
 
   sdgGoal     String?
   summary     String?
@@ -327,13 +334,11 @@ model Case {
   ledgerCommits       LedgerCommit[]
   appeals             Appeal[]
   counterfactuals     CounterfactualRecord[]
-
-  // ✅ opposite relation for GrantCase.case
-  grantLinks GrantCase[]
+  grantLinks          GrantCase[]
 
   @@index([tenantId, createdAt])
+  @@index([tenantId, lifecycle, createdAt])
   @@index([tenantId, status, createdAt])
-  @@index([tenantId, routingStatus, createdAt])
   @@index([tenantId, sdgGoal])
   @@index([authorUserId, createdAt])
   @@index([beneficiaryId, createdAt])
@@ -397,8 +402,6 @@ model VerificationRecord {
   tenantId String @db.Uuid
   caseId   String @db.Uuid
 
-  // consensus target state :contentReference[oaicite:12]{index=12}
-  sdgGoal           String
   requiredVerifiers Int     @default(2)
   consensusReached  Boolean @default(false)
 
@@ -411,9 +414,8 @@ model VerificationRecord {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
-  @@index([caseId, sdgGoal])
+  @@index([caseId])
   @@index([tenantId, consensusReached])
-  @@index([tenantId, routedAt])
 }
 
 model VerificationRequiredRole {
@@ -453,12 +455,11 @@ model RoutingDecision {
   tenantId String @db.Uuid
   caseId   String @db.Uuid
 
-  chosenExecutionBodyId String?       @db.Uuid
-  routingStatus         RoutingStatus
-  decidedAt             DateTime      @default(now())
+  routingOutcome        RoutingOutcome
+  chosenExecutionBodyId String?        @db.Uuid
 
-  // ✅ THIS FIELD MUST EXIST
-  decidedByUserId String? @db.Uuid
+  decidedAt       DateTime @default(now())
+  decidedByUserId String?  @db.Uuid
 
   reasonCodes    RoutingReasonCode[]
   counterfactual CounterfactualRecord?
@@ -468,11 +469,10 @@ model RoutingDecision {
 
   chosenExecutionBody ExecutionBody? @relation(fields: [chosenExecutionBodyId], references: [id], onDelete: SetNull)
 
-  // ✅ SINGLE LINE ONLY (no multiline @relation)
   decidedBy User? @relation("RoutingDecisionDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
 
   @@index([caseId, decidedAt])
-  @@index([tenantId, routingStatus, decidedAt])
+  @@index([tenantId, routingOutcome, decidedAt])
 }
 
 model TimelineEntry {
@@ -519,7 +519,6 @@ model AuditEntry {
   tenantId String  @db.Uuid
   caseId   String? @db.Uuid
 
-  // UI trail (human-readable) vs signed ledger (LedgerCommit) :contentReference[oaicite:17]{index=17}
   actorLabel  String
   actorUserId String?  @db.Uuid
   note        String?
@@ -538,20 +537,25 @@ model LedgerCommit {
   tenantId String  @db.Uuid
   caseId   String? @db.Uuid
 
-  eventType   LedgerEventType
-  ts          BigInt
-  actorKind   ActorKind
-  actorUserId String?         @db.Uuid
+  eventType LedgerEventType
+  ts        BigInt
+
+  // ACTOR + AUTHORITY
+  actorKind      ActorKind
+  actorUserId    String?   @db.Uuid
+  authorityProof String
+
+  // INTENT (WHY)
+  intentContext Json?
 
   commitmentHash String
   signature      String?
-  payload        Json
 
-  // ✅ single FK + backref (clean self relation)
-  supersedesCommitId String? @unique @db.Uuid
+  payload Json
 
-  supersedes   LedgerCommit? @relation("LedgerSupersession", fields: [supersedesCommitId], references: [id], onDelete: SetNull)
-  supersededBy LedgerCommit? @relation("LedgerSupersession")
+  supersedesCommitId String?       @unique @db.Uuid
+  supersedes         LedgerCommit? @relation("LedgerSupersession", fields: [supersedesCommitId], references: [id], onDelete: Restrict)
+  supersededBy       LedgerCommit? @relation("LedgerSupersession")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -560,7 +564,6 @@ model LedgerCommit {
   @@index([tenantId, ts])
   @@index([caseId, ts])
   @@index([eventType, ts])
-  @@index([commitmentHash])
 }
 
 model CaseReasonCode {
