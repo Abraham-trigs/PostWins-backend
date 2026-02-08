@@ -44,6 +44,10 @@ enum CaseType {
 }
 
 enum CaseStatus {
+  // ⚠️ NON-AUTHORITATIVE
+  // UI / operational convenience ONLY
+  // MUST NOT be used to infer lifecycle, audit state, or compliance
+  // Always derive from Case.lifecycle
   INTAKED
   IN_REVIEW
   VERIFIED
@@ -56,6 +60,9 @@ enum CaseStatus {
 }
 
 enum RoutingOutcome {
+  // ⚠️ DECISION METADATA ONLY
+  // Snapshot of a routing decision
+  // Does NOT represent case lifecycle or state progression
   UNASSIGNED
   MATCHED
   FALLBACK
@@ -310,8 +317,14 @@ model Case {
   scope AccessScope
   type  CaseType
 
+  /// ✅ AUTHORITATIVE SOURCE OF TRUTH
+  /// Governs lifecycle, audit meaning, and compliance state
   lifecycle CaseLifecycle @default(INTAKE)
-  status    CaseStatus    @default(INTAKED)
+
+  /// ⚠️ NON-AUTHORITATIVE
+  /// Derived / advisory only (UI, ops)
+  /// MUST NOT be used for lifecycle, history, or governance decisions
+  status CaseStatus @default(INTAKED)
 
   sdgGoal     String?
   summary     String?
