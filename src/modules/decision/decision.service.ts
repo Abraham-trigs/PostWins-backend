@@ -7,24 +7,36 @@ import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecy
 /**
  * Explicit lifecycle outcomes per decision.
  *
- * ⚠️ This maps DECISION → TARGET LIFECYCLE
- * It does NOT encode transition validity.
- * Validity is enforced elsewhere.
+ * ⚠️ Maps DECISION → TARGET LIFECYCLE
+ * - Does NOT encode transition validity
+ * - Does NOT imply execution or reversal
+ * - Lifecycle is a projection of authoritative intent only
  */
-const DECISION_OUTCOME_LIFECYCLE: Record<DecisionType, CaseLifecycle> = {
-  ROUTING: CaseLifecycle.ROUTED,
-  VERIFICATION: CaseLifecycle.VERIFIED,
-  FLAGGING: CaseLifecycle.FLAGGED,
-  APPEAL: CaseLifecycle.HUMAN_REVIEW,
-};
+const DECISION_OUTCOME_LIFECYCLE: Partial<Record<DecisionType, CaseLifecycle>> =
+  {
+    ROUTING: CaseLifecycle.ROUTED,
+    VERIFICATION: CaseLifecycle.VERIFIED,
+    FLAGGING: CaseLifecycle.FLAGGED,
+    APPEAL: CaseLifecycle.HUMAN_REVIEW,
+
+    // Phase 4.3 — Budget is authorization, not execution
+    BUDGET: CaseLifecycle.ROUTED,
+
+    // NOTE:
+    // TRANCHE intentionally excluded.
+    // Tranche effects are handled in Phase 4.4 (explicit reversal),
+    // not via lifecycle projection.
+  };
 
 export class DecisionService {
   /**
-   * Apply a decision that may move Case.lifecycle.
+   * Apply an authoritative decision.
    *
-   * Phase 4 invariant:
-   * - Decisions may supersede prior decisions
-   * - Superseded decisions remain true but non-authoritative
+   * Phase 4 invariants:
+   * - History is never rewritten
+   * - Decisions may be superseded explicitly
+   * - Only the latest non-superseded decision of a type is authoritative
+   * - Lifecycle reflects authoritative intent, not execution state
    */
   async applyDecision(params: {
     tenantId: string;
@@ -37,7 +49,7 @@ export class DecisionService {
     reason?: string;
     intentContext?: Record<string, unknown>;
 
-    // 🔁 Phase 4 — optional supersession
+    // 🔁 Phase 4 — explicit supersession
     supersedesDecisionId?: string;
   }) {
     const {
@@ -65,17 +77,20 @@ export class DecisionService {
     const to = DECISION_OUTCOME_LIFECYCLE[decisionType];
 
     if (!to) {
-      throw new Error(`Unhandled DecisionType: ${decisionType}`);
+      throw new Error(
+        `DecisionType ${decisionType} does not project lifecycle`,
+      );
     }
 
     await prisma.$transaction(async (tx) => {
-      // 2️⃣ Explicitly supersede prior decision (if provided)
+      // 2️⃣ Explicit supersession (same-type only)
       if (supersedesDecisionId) {
         const prior = await tx.decision.findFirst({
           where: {
             id: supersedesDecisionId,
             tenantId,
             caseId,
+            decisionType,
             supersededAt: null,
           },
         });
@@ -108,7 +123,7 @@ export class DecisionService {
         },
       });
 
-      // 4️⃣ AUTHORITATIVE lifecycle projection (ledger-backed)
+      // 4️⃣ Lifecycle projection (ledger-backed, append-only)
       await transitionCaseLifecycleWithLedger({
         caseId,
         from,
