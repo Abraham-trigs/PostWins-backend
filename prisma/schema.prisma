@@ -369,6 +369,25 @@ model Case {
   @@index([beneficiaryId, createdAt])
 }
 
+model PolicyEvaluation {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId     String   @db.Uuid
+  caseId       String   @db.Uuid
+
+  policyKey    String
+  outcome      String?
+  evaluatedAt  DateTime @default(now())
+
+  context      Json?
+  constraints  Json?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, policyKey, evaluatedAt])
+  @@index([caseId, evaluatedAt])
+}
+
 model Message {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
