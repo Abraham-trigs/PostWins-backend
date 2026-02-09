@@ -3,11 +3,34 @@ import { TaskId } from "../../domain/tasks/taskIds";
 import { IntegrityService } from "./integrity.service";
 
 /**
- * Interface to extend PostaContext with literacy metadata for ToneAdapter
+ * Phase 1.5 — Explicit Intake Metadata
+ * -----------------------------------
+ * These are resolved during intake and MUST be persisted downstream.
+ */
+export type IntakeMetadata = {
+  mode: "MOCK" | "ASSISTED" | "AI_AUGMENTED";
+  scope: "PUBLIC" | "PARTNER" | "INTERNAL";
+  intent: "PROGRESS" | "REQUEST" | "EXECUTION";
+};
+
+/**
+ * Interface to extend PostaContext with literacy metadata (advisory only)
  */
 export interface EnrichedContext extends PostaContext {
   literacyLevel: "LOW" | "STANDARD";
-  intent: string;
+}
+
+/**
+ * Guardrail — fail fast if intake metadata is incomplete.
+ */
+function assertIntakeMetadata(
+  meta: Partial<IntakeMetadata>,
+): asserts meta is IntakeMetadata {
+  if (!meta.mode || !meta.scope || !meta.intent) {
+    throw new Error(
+      "Intake metadata must be fully resolved before persistence",
+    );
+  }
 }
 
 export class IntakeService {
@@ -20,8 +43,17 @@ export class IntakeService {
   public async handleIntake(
     message: string,
     deviceId: string,
-  ): Promise<Partial<PostWin>> {
+  ): Promise<Partial<PostWin> & IntakeMetadata> {
     const ctx = await this.detectContext(message);
+
+    // Phase 1.5 — resolve intake metadata once
+    const intakeMeta: Partial<IntakeMetadata> = {
+      mode: "AI_AUGMENTED",
+      scope: ctx.role === "NGO_PARTNER" ? "PARTNER" : "PUBLIC",
+      intent: "REQUEST",
+    };
+
+    assertIntakeMetadata(intakeMeta);
 
     // Performs integrity audit + returns partial fields
     const partial = await this.processInternalOrchestration(message, deviceId);
@@ -30,30 +62,35 @@ export class IntakeService {
       timestamp: Date.now(),
       action: "INTAKE_RECEIVED",
       actor: deviceId,
-      note: `role=${ctx.role}, literacy=${ctx.literacyLevel}, intent=${ctx.intent}`,
+      note: `role=${ctx.role}, literacy=${ctx.literacyLevel}, intent=${intakeMeta.intent}`,
     };
 
     return {
       ...partial,
 
+      // ✅ Phase 1.5 — explicit intake metadata (to be persisted by caller)
+      mode: intakeMeta.mode,
+      scope: intakeMeta.scope,
+      intent: intakeMeta.intent,
+
       // Stable downstream expectations
       auditTrail: [...(partial.auditTrail ?? []), audit],
 
-      // Context snapshot (advisory only)
+      // Context snapshot (advisory only, non-authoritative)
       context: ctx as unknown as PostaContext,
 
-      // ✅ Deterministic, canonical task assignment
+      // Deterministic task assignment
       taskId: TaskId.START,
     };
   }
 
   /**
    * Section A & N: Implicit Context & Literacy Detection
+   * (No persistence responsibility)
    */
   public async detectContext(message: string): Promise<EnrichedContext> {
     const msg = message.toLowerCase();
 
-    // Role Detection
     let role: PostaContext["role"] = "BENEFICIARY";
     if (
       msg.includes("partner") ||
@@ -63,7 +100,6 @@ export class IntakeService {
       role = "NGO_PARTNER";
     }
 
-    // Literacy Scoring
     const words = message.trim().split(/\s+/);
     const avgWordLength = message.length / (words.length || 1);
 
@@ -74,7 +110,6 @@ export class IntakeService {
       role,
       isImplicit: true,
       literacyLevel,
-      intent: "CLAIM_SUBMISSION",
     };
   }
 
@@ -103,7 +138,6 @@ export class IntakeService {
     return {
       description: this.sanitizeDescription(message),
       verificationStatus: flags.length > 0 ? "FLAGGED" : "PENDING",
-      mode: "AI_AUGMENTED",
       routingStatus: "UNASSIGNED",
     };
   }

@@ -17,40 +17,15 @@ import { IntakeService } from "../../intake/intake.service";
 import { PostWinRoutingService } from "./postwin-routing.service";
 import { VerificationService } from "../../verification/verification.service";
 import { PostWin, ExecutionBody } from "@posta/core";
+import { TaskId } from "../../../domain/tasks/taskIds";
 
 export class PostaMockEngine {
   constructor(
-    /**
-     * IntakeService
-     *  - Canonical entrypoint for all new PostWins
-     *  - Responsible for integrity checks, context detection, audit bootstrapping
-     */
     private intake: IntakeService,
-
-    /**
-     * PostWinRoutingService
-     *  - Assigns a PostWin to a trusted ExecutionBody
-     *  - Evaluates distance, capability, trust score, SDG alignment
-     */
     private router: PostWinRoutingService,
-
-    /**
-     * VerificationService
-     *  - Records multi-actor confirmations over time
-     *  - Drives PostWin toward VERIFIED or DISPUTED state
-     */
     private verifier: VerificationService,
   ) {}
 
-  /**
-   * runSimulation
-   * -----------------------------------------------------------------
-   * Executes a full mock lifecycle:
-   *  1. Intake (message → partial PostWin)
-   *  2. Routing (assign execution body)
-   *  3. Verification (multi-actor consensus)
-   *  4. Audit trail inspection
-   */
   async runSimulation() {
     try {
       console.log("🚀 Starting Mock Simulation: SDG 4 - Primary Education");
@@ -58,12 +33,6 @@ export class PostaMockEngine {
       // ------------------------------------------------------------------
       // STEP 1: INTAKE
       // ------------------------------------------------------------------
-      // Simulates a beneficiary submitting a real-world request.
-      // IntakeService is expected to:
-      //  - detect context & literacy
-      //  - run integrity checks
-      //  - initialize audit trail
-      //  - return a Partial<PostWin>
       const partialPW = await this.intake.handleIntake(
         "I need support for school enrollment",
         "device_rural_001",
@@ -72,8 +41,6 @@ export class PostaMockEngine {
       // ------------------------------------------------------------------
       // STEP 2: EXECUTION BODIES (Mock Data)
       // ------------------------------------------------------------------
-      // Execution bodies represent NGOs / community actors capable
-      // of fulfilling a PostWin. In production these come from registry.
       const bodies: ExecutionBody[] = [
         {
           id: "NGO_LOCAL",
@@ -87,51 +54,35 @@ export class PostaMockEngine {
       // ------------------------------------------------------------------
       // STEP 3: POSTWIN CONSTRUCTION
       // ------------------------------------------------------------------
-      // We now promote the partial PostWin into a routable candidate.
-      //
-      // NOTE:
-      //  - taskId is set to "START" to satisfy TaskService validation
-      //  - verificationRecords are initialized with SDG keys
-      //  - auditTrail is preserved from intake
       const mockPostWin: PostWin = {
         ...partialPW,
 
-        // Identity
         id: "pw_mock_123",
         beneficiaryId: "ben_001",
 
-        // Workflow bootstrap
-        taskId: "START",
+        // Phase 1.5: deterministic, canonical task
+        taskId: TaskId.START,
 
-        // Domain fields required for routing
         location: { lat: 5.101, lng: -0.101 },
         sdgGoals: ["SDG_4"],
 
-        // Governance + trust
         auditTrail: partialPW.auditTrail || [],
         verificationRecords: { SDG_4: [] } as any,
 
-        // Initial state flags
         routingStatus: "UNASSIGNED",
         verificationStatus: "PENDING",
 
-        // Human-readable summary
         description: "School support",
       } as PostWin;
 
       // ------------------------------------------------------------------
       // STEP 4: ROUTING
       // ------------------------------------------------------------------
-      // Routing assigns the PostWin to the best execution body
-      // based on trust, distance, and capability.
       console.log("Step 2: Routing to nearest Execution Body...");
       const routedPW = await this.router.processPostWin(mockPostWin, bodies, [
         "SDG_4",
       ]);
 
-      // Guardrail:
-      // If routing is blocked, we stop early.
-      // This prevents invalid verification attempts.
       if (routedPW.routingStatus === "BLOCKED") {
         console.error(`❌ Routing Blocked: ${routedPW.notes}`);
         return;
@@ -144,8 +95,6 @@ export class PostaMockEngine {
       // ------------------------------------------------------------------
       // STEP 5: MULTI-ACTOR VERIFICATION
       // ------------------------------------------------------------------
-      // Verification is sequential and stateful.
-      // Each call returns an updated PostWin.
       const stateAfterCommunity = await this.verifier.recordVerification(
         routedPW,
         "community_leader_01",
@@ -180,17 +129,11 @@ export class PostaMockEngine {
               : "unknown-time";
 
         const action = (entry as any).action ?? "UNKNOWN_ACTION";
-
         console.log(`[${idx + 1}] ${ts} | ${String(action).padEnd(22)}`);
       });
 
       console.log("=".repeat(50) + "\n");
     } catch (error) {
-      // ------------------------------------------------------------------
-      // FAILURE HANDLING
-      // ------------------------------------------------------------------
-      // Any failure here indicates a broken domain contract.
-      // This is intentional: the mock engine should fail loudly.
       console.error("❌ Mock Simulation Failed:", error);
     }
   }

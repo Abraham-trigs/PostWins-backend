@@ -1,19 +1,28 @@
-// filepath: src/modules/routing/postwin-pipeline.service.ts
+// filepath: apps/backend/src/modules/routing/postwin-pipeline.service.ts
+// Purpose: Intake → routing → verification pipeline
+//
+// Phase 1.5 INVARIANT:
+// - TaskService is injected but NOT USED
+// - No task inference, sequencing, or defaults beyond TaskId.START
+// - Tasks are identifiers only
+
 import { PostWin, ExecutionBody } from "@posta/core";
-import { TaskService } from "./task.service";
+import { TaskService } from "./task.service"; // Phase 2 (intentionally dormant)
 import { JourneyService } from "../journey.service";
 import { PostWinRoutingService } from "./postwin-routing.service";
+import { TaskId } from "../../../domain/tasks/taskIds";
+import { assertValidTask } from "@/domain/tasks/assertValidTask";
 
 export class PostWinPipelineService {
   constructor(
-    private taskService: TaskService,
+    private taskService: TaskService, // kept for Phase 2
     private journeyService: JourneyService,
     private routingService: PostWinRoutingService,
   ) {}
 
   /**
    * Complete intake → routing → verification pipeline
-   * Includes fraud/integrity hooks
+   * Phase 1.5: task-agnostic
    */
   async intakeAndRoute(
     message: string,
@@ -21,21 +30,26 @@ export class PostWinPipelineService {
     availableBodies: ExecutionBody[],
     partnerId?: string,
   ): Promise<PostWin> {
-    // 1. Process intake
-    const partialPostWin = await this.taskService.processIntake(
-      message,
-      partnerId,
-    );
-    partialPostWin.beneficiaryId = beneficiaryId;
+    /**
+     * STEP 1: Minimal intake normalization
+     * (No task inference, no classification)
+     */
+    const partialPostWin: Partial<PostWin> = {
+      description: message.trim(),
+      beneficiaryId,
+      authorId: partnerId,
+      taskId: TaskId.START, // canonical, deterministic
+    };
 
-    // Assign default task if none provided
-    if (!partialPostWin.taskId) partialPostWin.taskId = "ENROLL"; // default first SDG 4 task
+    assertValidTask(partialPostWin.taskId);
 
-    // 2. Pass through routing & execution logic (includes integrity checks)
+    /**
+     * STEP 2: Routing (task-agnostic)
+     * TaskService intentionally NOT invoked in Phase 1.5
+     */
     const fullPostWin = await this.routingService.processPostWin(
       partialPostWin as PostWin,
       availableBodies,
-      partialPostWin.sdgGoals,
     );
 
     return fullPostWin;
@@ -48,31 +62,3 @@ export class PostWinPipelineService {
     this.routingService.addVerifierApproval(postWin, verifierId, sdgGoal);
   }
 }
-
-/* Example usage:
-(async () => {
-  const taskService = new TaskService();
-  const journeyService = new JourneyService();
-  const routingService = new PostWinRoutingService(taskService, journeyService);
-  const pipelineService = new PostWinPipelineService(taskService, journeyService, routingService);
-
-  const availableBodies = [
-    { id: 'ngo_1', capabilities: ['SDG_4'], location: { lat: 5.6, lng: -0.2 }, trustScore: 0.9 },
-    { id: 'ngo_2', capabilities: ['SDG_4'], location: { lat: 5.7, lng: -0.25 }, trustScore: 0.85 },
-  ];
-
-  const postWin = await pipelineService.intakeAndRoute(
-    "Learner completed literacy module",
-    "beneficiary_123",
-    availableBodies,
-    "partner_456"
-  );
-
-  console.log(postWin);
-
-  // Add verifier approval
-  pipelineService.addVerification(postWin, "verifier_1", "SDG_4");
-  pipelineService.addVerification(postWin, "verifier_2", "SDG_4");
-  console.log(postWin.verificationRecords);
-})();
-*/
