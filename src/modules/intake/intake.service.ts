@@ -1,6 +1,7 @@
 import { PostWin, PostaContext, AuditRecord } from "@posta/core";
 import { TaskId } from "../../domain/tasks/taskIds";
 import { IntegrityService } from "./integrity.service";
+import { TaskService } from "../routing/structuring/task.service";
 
 /**
  * Phase 1.5 — Explicit Intake Metadata
@@ -34,7 +35,10 @@ function assertIntakeMetadata(
 }
 
 export class IntakeService {
-  constructor(private integrityService: IntegrityService) {}
+  constructor(
+    private integrityService: IntegrityService,
+    private taskService: TaskService, // reserved for Phase 2
+  ) {}
 
   /**
    * ✅ Canonical public entrypoint for intake
