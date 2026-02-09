@@ -169,7 +169,7 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
         type: intakeResult.intent,
 
         lifecycle: "INTAKE",
-        currentTask: "START",
+        currentTask: intakeResult.taskId,
 
         summary: String(narrative).trim().slice(0, 240),
         sdgGoal:
