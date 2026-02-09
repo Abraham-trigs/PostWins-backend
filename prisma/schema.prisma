@@ -124,9 +124,11 @@ enum AppealStatus {
 
 enum DecisionType {
   ROUTING
+  VERIFICATION
+  FLAGGING
+  APPEAL
   BUDGET
   TRANCHE
-  FLAGGING
 }
 
 enum GrantStatus {
@@ -471,6 +473,40 @@ model Verification {
 
   @@unique([verificationRecordId, verifierUserId]) // prevents double voting
   @@index([verifierUserId, createdAt])
+}
+
+model Decision {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @db.Uuid
+
+  decisionType DecisionType
+  actorKind   ActorKind
+  actorUserId String? @db.Uuid
+
+  reason        String?
+  intentContext Json?
+
+  decidedAt DateTime @default(now())
+
+  // 🔁 Phase 4 — supersession
+  supersedesDecisionId String?       @db.Uuid
+  supersededAt         DateTime?
+
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  supersedes Decision? @relation(
+    "DecisionSupersession",
+    fields: [supersedesDecisionId],
+    references: [id],
+    onDelete: Restrict
+  )
+  supersededBy Decision? @relation("DecisionSupersession")
+
+  @@index([caseId, decidedAt])
+  @@index([tenantId, decisionType, decidedAt])
 }
 
 model RoutingDecision {
