@@ -94,6 +94,7 @@ function seedVerificationRecords(sdgGoals: string[]) {
     timestamps: { createdAt },
   }));
 }
+
 export const handleResolveLocation = async (req: Request, res: Response) => {
   try {
     const code = String(req.query.code ?? "").trim();
@@ -107,29 +108,12 @@ export const handleResolveLocation = async (req: Request, res: Response) => {
 
     const result = await intakeService.resolveGhanaPostAddress(code);
 
-    // IMPORTANT: frontend expects raw geo fields
     return res.status(200).json({
       lat: result.lat,
       lng: result.lng,
       bounds: result.bounds,
     });
   } catch (err: any) {
-    if (err instanceof Error) {
-      if (err.message === "INVALID_ADDRESS") {
-        return res.status(400).json({
-          ok: false,
-          error: "Invalid GhanaPost Digital Address",
-        });
-      }
-
-      if (err.message === "NOT_FOUND") {
-        return res.status(404).json({
-          ok: false,
-          error: "Address not found",
-        });
-      }
-    }
-
     console.error("Resolve Location Error:", err);
     return res.status(502).json({
       ok: false,
@@ -137,6 +121,7 @@ export const handleResolveLocation = async (req: Request, res: Response) => {
     });
   }
 };
+
 /**
  * ============================================================================
  * BOOTSTRAP: Create Case + seed PostWin (UI "New PostWin" button)
@@ -160,22 +145,32 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
       });
     }
 
-    // beneficiaryId is optional, but if present and not UUID, drop it
     const beneficiaryUuid =
       beneficiaryId && UUID_RE.test(String(beneficiaryId))
         ? String(beneficiaryId)
         : null;
 
-    // ✅ Create Case first to satisfy LedgerCommit.caseId FK
+    // ✅ Phase 1.5 — canonical intake resolution
+    const intakeResult = await intakeService.handleIntake(
+      String(narrative),
+      req.header("X-Device-Id") ?? "unknown",
+    );
+
+    // ✅ Persist resolved intake metadata (NO defaults)
     const createdCase = await prisma.case.create({
       data: {
         id: crypto.randomUUID(),
         tenantId,
         authorUserId,
         beneficiaryId: beneficiaryUuid,
-        mode: "AI_AUGMENTED",
-        scope: "PUBLIC",
-        type: "PROGRESS",
+
+        mode: intakeResult.mode,
+        scope: intakeResult.scope,
+        type: intakeResult.intent,
+
+        lifecycle: "INTAKE",
+        currentTask: "START",
+
         summary: String(narrative).trim().slice(0, 240),
         sdgGoal:
           Array.isArray(sdgGoals) && sdgGoals.length > 0
@@ -185,7 +180,7 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
       select: { id: true },
     });
 
-    const projectId = createdCase.id; // legacy name used by UI
+    const projectId = createdCase.id;
     const postWinId = crypto.randomUUID();
     const createdAt = nowIso();
 
@@ -200,7 +195,7 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
       id: crypto.randomUUID(),
       tenantId,
       type: "POSTWIN_BOOTSTRAPPED",
-      projectId, // maps to caseId
+      projectId,
       occurredAt: createdAt,
       recordedAt: createdAt,
       integrity: {
@@ -229,8 +224,8 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
     await ledgerService.appendEntry(timelineEntry);
 
     const responsePayload = { ok: true, projectId, postWinId };
-
     await commitIdempotencyResponse(res, responsePayload);
+
     return res.status(201).json(responsePayload);
   } catch (err) {
     console.error("BOOTSTRAP_FAILED", err);
@@ -273,7 +268,6 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
 
     assertUuid(projectId, "projectId");
 
-    // ✅ Ensure case exists (avoid FK error)
     const existing = await prisma.case.findFirst({
       where: { id: String(projectId), tenantId },
       select: { id: true },
@@ -366,7 +360,6 @@ export const handleIntakeFollowup = async (req: Request, res: Response) => {
 
     assertUuid(projectId, "projectId");
 
-    // ✅ Ensure case exists (avoid FK error)
     const existing = await prisma.case.findFirst({
       where: { id: String(projectId), tenantId },
       select: { id: true },
@@ -511,8 +504,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       localization,
     };
 
-    // NOTE: legacy route does not currently provide tenantId/caseId context.
-    // Keep response working; ledger commits for this route can be added once tenant context is defined.
     const auditRecord: AuditRecord = await ledgerService.commit({
       ts: Date.now(),
       postWinId: postWin.id,
@@ -520,7 +511,6 @@ export const handleIntake = async (req: Request, res: Response) => {
       actorId: beneficiaryId,
       previousState: "NONE",
       newState: "PENDING_VERIFICATION",
-      // tenantId/caseId intentionally omitted here for now
     });
 
     const outcomeMessage = toneAdapter.adaptOutcome(postWin, detectedContext);
