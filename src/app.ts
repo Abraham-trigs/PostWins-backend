@@ -3,16 +3,14 @@ import intakeRoutes from "./modules/intake/intake.routes";
 import timelineRoutes from "./modules/timeline/timeline.route";
 import verificationRouter from "./modules/verification/verification.routes";
 import { casesRouter } from "./modules/cases/cases.routes";
+import decisionQueryRoutes from "./modules/decision/decision.query.routes";
 
 const app: Express = express();
-
-// 🔎 HARD PROOF DEBUG (remove after fix)
-console.log("🔥 casesRouter loaded:", typeof casesRouter);
 
 // Middleware
 app.use(express.json({ limit: "1mb" }));
 
-// 🔎 HARD PROOF ROUTE
+// Debug ping
 app.get("/__ping", (_req, res) => {
   res.status(200).send("pong");
 });
@@ -23,7 +21,13 @@ app.get("/", (_req, res) => {
     ok: true,
     service: "posta-backend",
     health: "/health",
-    routes: ["/api/intake", "/api/cases", "/api/verification", "/api/timeline"],
+    routes: [
+      "/api/intake",
+      "/api/cases",
+      "/api/verification",
+      "/api/timeline",
+      "/api/cases/:id/decisions",
+    ],
   });
 });
 
@@ -37,9 +41,10 @@ app.get("/health", (_req, res) => {
 
 // Routes
 app.use("/api/intake", intakeRoutes);
-app.use("/api/cases", casesRouter); // ← THIS MUST EXIST AT RUNTIME
+app.use("/api/cases", casesRouter);
 app.use("/api/timeline", timelineRoutes);
 app.use("/api/verification", verificationRouter);
+app.use("/api", decisionQueryRoutes);
 
 // 404 fallback
 app.use((_req, res) => {

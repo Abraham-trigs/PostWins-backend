@@ -1,5 +1,5 @@
 import { prisma } from "../../lib/prisma";
-import { DecisionType } from "@prisma/client";
+import { Decision, DecisionType } from "@prisma/client";
 import { DecisionExplanation } from "./decision.types";
 
 /**
@@ -11,8 +11,11 @@ import { DecisionExplanation } from "./decision.types";
 export class DecisionQueryService {
   /**
    * Internal mapper — explicit and boring by design.
+   *
+   * Accepts a Prisma Decision model and projects
+   * it into a read-only explanation DTO.
    */
-  private toDecisionExplanation(decision: any): DecisionExplanation {
+  private toDecisionExplanation(decision: Decision): DecisionExplanation {
     return {
       decisionId: decision.id,
       decisionType: decision.decisionType,
