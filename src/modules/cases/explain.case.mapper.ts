@@ -57,14 +57,14 @@ export function mapExplainableCaseToResponse(
       payload: l.payload ?? undefined,
     })),
 
-    policies: payload.policies?.map((p: any) => ({
+    policies: (payload.policies ?? []).map((p: any) => ({
       policyKey: p.policyKey,
       version: p.policyVersion ?? "unknown",
       evaluatedAt: p.evaluatedAt.toISOString(),
       result: p.context ?? {},
     })),
 
-    counterfactuals: payload.counterfactuals?.map((c: any) => ({
+    counterfactuals: (payload.counterfactuals ?? []).map((c: any) => ({
       decisionType: c.decisionType,
       chosen: c.chosen,
       alternatives: c.alternatives,

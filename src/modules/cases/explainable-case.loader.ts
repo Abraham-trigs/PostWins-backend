@@ -16,7 +16,7 @@ export class ExplainableCaseLoader {
 
     // Loader responsibility: existence truth
     if (!caseRow) {
-      throw new CaseNotFoundError({ tenantId, caseId });
+      throw new CaseNotFoundError(`Case not found: ${caseId}`);
     }
 
     const decisions = await prisma.decision.findMany({
