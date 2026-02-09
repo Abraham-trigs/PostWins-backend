@@ -1,4 +1,6 @@
+// explainable-case.loader.ts
 import { prisma } from "../../lib/prisma";
+import { CaseNotFoundError } from "./case.errors";
 
 export class ExplainableCaseLoader {
   async load(params: { tenantId: string; caseId: string }) {
@@ -7,16 +9,15 @@ export class ExplainableCaseLoader {
     const caseRow = await prisma.case.findFirst({
       where: { id: caseId, tenantId },
       include: {
-        auditTrail: {
-          orderBy: { createdAt: "asc" },
-        },
-        timelineEntries: {
-          orderBy: { createdAt: "asc" },
-        },
+        auditTrail: { orderBy: { createdAt: "asc" } },
+        timelineEntries: { orderBy: { createdAt: "asc" } },
       },
     });
 
-    if (!caseRow) throw new Error("Case not found");
+    // Loader responsibility: existence truth
+    if (!caseRow) {
+      throw new CaseNotFoundError({ tenantId, caseId });
+    }
 
     const decisions = await prisma.decision.findMany({
       where: { tenantId, caseId },

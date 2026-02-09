@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { CaseRef } from "./case-ref";
+import { ResolverError, CaseNotFoundError } from "./case.errors";
 
 export class CaseRefResolver {
   async resolve(ref: CaseRef, tenantId: string): Promise<{ caseId: string }> {
@@ -9,7 +10,7 @@ export class CaseRefResolver {
           where: { id: ref.id, tenantId },
           select: { id: true },
         });
-        if (!exists) throw new Error("Case not found");
+        if (!exists) throw new CaseNotFoundError();
         return { caseId: ref.id };
       }
 
@@ -18,17 +19,17 @@ export class CaseRefResolver {
           where: { id: ref.id, tenantId },
           select: { caseId: true },
         });
-        if (!decision) throw new Error("Decision not found");
+        if (!decision) throw new ResolverError("Decision not found");
         return { caseId: decision.caseId };
       }
 
       case "POLICY": {
         const evalRow = await prisma.policyEvaluation.findFirst({
-          where: { policyKey: ref.policyKey, tenantId },
+          where: { tenantId, policyKey: ref.policyKey },
           orderBy: { evaluatedAt: "desc" },
           select: { caseId: true },
         });
-        if (!evalRow) throw new Error("Policy reference not found");
+        if (!evalRow) throw new ResolverError("Policy reference not found");
         return { caseId: evalRow.caseId };
       }
 
@@ -37,7 +38,8 @@ export class CaseRefResolver {
           where: { id: ref.id, tenantId },
           select: { caseId: true },
         });
-        if (!commit?.caseId) throw new Error("Ledger reference not found");
+        if (!commit?.caseId)
+          throw new ResolverError("Ledger reference not found");
         return { caseId: commit.caseId };
       }
 
@@ -50,12 +52,12 @@ export class CaseRefResolver {
           orderBy: { evaluatedAt: "desc" },
           select: { caseId: true },
         });
-        if (!evalRow) throw new Error("Tag reference not found");
+        if (!evalRow) throw new ResolverError("Tag reference not found");
         return { caseId: evalRow.caseId };
       }
 
       default:
-        throw new Error("Unsupported CaseRef");
+        throw new ResolverError("Unsupported CaseRef");
     }
   }
 }
