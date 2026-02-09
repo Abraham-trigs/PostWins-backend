@@ -1,3 +1,6 @@
+import { caseExplainService } from "./case-explain.service";
+import { mapExplainableCaseToResponse } from "./explain.case.mapper";
+import { ExplainCaseRequest } from "./explain.case.contract";
 import {
   CaseNotFoundError,
   CaseForbiddenError,
@@ -6,13 +9,17 @@ import {
 
 export async function explainCaseController(req, res) {
   try {
-    const result = await caseExplainService.explain({
+    const body = req.body as ExplainCaseRequest;
+
+    const payload = await caseExplainService.explain({
       tenantId: req.tenantId,
-      ref: req.body.ref,
+      ref: body.ref,
       viewer: req.viewer,
     });
 
-    return res.status(200).json(result);
+    const response = mapExplainableCaseToResponse(payload);
+
+    return res.status(200).json(response);
   } catch (err) {
     if (err instanceof CaseNotFoundError) {
       return res.status(404).json({ error: "Case not found" });
@@ -26,6 +33,6 @@ export async function explainCaseController(req, res) {
       return res.status(404).json({ error: "Invalid reference" });
     }
 
-    throw err; // true 500
+    throw err;
   }
 }
