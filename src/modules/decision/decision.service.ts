@@ -1,8 +1,9 @@
 import crypto from "crypto";
 import { prisma } from "../../lib/prisma";
-import { CaseLifecycle, ActorKind, DecisionType, Prisma } from "@prisma/client";
+import { CaseLifecycle, DecisionType, Prisma } from "@prisma/client";
 
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
+import { ApplyDecisionParams } from "./decision.types";
 
 /**
  * Explicit lifecycle outcomes per decision.
@@ -39,20 +40,7 @@ export class DecisionService {
    * - Lifecycle reflects authoritative intent, not execution state
    */
   async applyDecision(
-    params: {
-      tenantId: string;
-      caseId: string;
-
-      decisionType: DecisionType;
-      actorKind: ActorKind;
-      actorUserId?: string;
-
-      reason?: string;
-      intentContext?: Record<string, unknown>;
-
-      // 🔁 Phase 4 — explicit supersession
-      supersedesDecisionId?: string;
-    },
+    params: ApplyDecisionParams,
     tx: Prisma.TransactionClient = prisma,
   ) {
     const {
