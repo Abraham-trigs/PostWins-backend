@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { prisma } from "../../lib/prisma";
-import { CaseLifecycle, ActorKind, DecisionType } from "@prisma/client";
+import { CaseLifecycle, ActorKind, DecisionType, Prisma } from "@prisma/client";
 
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
 
@@ -38,20 +38,23 @@ export class DecisionService {
    * - Only the latest non-superseded decision of a type is authoritative
    * - Lifecycle reflects authoritative intent, not execution state
    */
-  async applyDecision(params: {
-    tenantId: string;
-    caseId: string;
+  async applyDecision(
+    params: {
+      tenantId: string;
+      caseId: string;
 
-    decisionType: DecisionType;
-    actorKind: ActorKind;
-    actorUserId?: string;
+      decisionType: DecisionType;
+      actorKind: ActorKind;
+      actorUserId?: string;
 
-    reason?: string;
-    intentContext?: Record<string, unknown>;
+      reason?: string;
+      intentContext?: Record<string, unknown>;
 
-    // 🔁 Phase 4 — explicit supersession
-    supersedesDecisionId?: string;
-  }) {
+      // 🔁 Phase 4 — explicit supersession
+      supersedesDecisionId?: string;
+    },
+    tx: Prisma.TransactionClient = prisma,
+  ) {
     const {
       tenantId,
       caseId,
@@ -64,7 +67,7 @@ export class DecisionService {
     } = params;
 
     // 1️⃣ Load authoritative current lifecycle
-    const existing = await prisma.case.findFirst({
+    const existing = await tx.case.findFirst({
       where: { id: caseId, tenantId },
       select: { lifecycle: true },
     });
@@ -82,49 +85,49 @@ export class DecisionService {
       );
     }
 
-    await prisma.$transaction(async (tx) => {
-      // 2️⃣ Explicit supersession (same-type only)
-      if (supersedesDecisionId) {
-        const prior = await tx.decision.findFirst({
-          where: {
-            id: supersedesDecisionId,
-            tenantId,
-            caseId,
-            decisionType,
-            supersededAt: null,
-          },
-        });
-
-        if (!prior) {
-          throw new Error(
-            `Decision ${supersedesDecisionId} cannot be superseded`,
-          );
-        }
-
-        await tx.decision.update({
-          where: { id: supersedesDecisionId },
-          data: { supersededAt: new Date() },
-        });
-      }
-
-      // 3️⃣ Persist new authoritative decision
-      const decision = await tx.decision.create({
-        data: {
-          id: crypto.randomUUID(),
+    // 2️⃣ Explicit supersession (same-type only)
+    if (supersedesDecisionId) {
+      const prior = await tx.decision.findFirst({
+        where: {
+          id: supersedesDecisionId,
           tenantId,
           caseId,
           decisionType,
-          actorKind,
-          actorUserId,
-          reason,
-          intentContext,
-          decidedAt: new Date(),
-          supersedesDecisionId: supersedesDecisionId ?? null,
+          supersededAt: null,
         },
       });
 
-      // 4️⃣ Lifecycle projection (ledger-backed, append-only)
-      await transitionCaseLifecycleWithLedger({
+      if (!prior) {
+        throw new Error(
+          `Decision ${supersedesDecisionId} cannot be superseded`,
+        );
+      }
+
+      await tx.decision.update({
+        where: { id: supersedesDecisionId },
+        data: { supersededAt: new Date() },
+      });
+    }
+
+    // 3️⃣ Persist new authoritative decision
+    const decision = await tx.decision.create({
+      data: {
+        id: crypto.randomUUID(),
+        tenantId,
+        caseId,
+        decisionType,
+        actorKind,
+        actorUserId,
+        reason,
+        intentContext,
+        decidedAt: new Date(),
+        supersedesDecisionId: supersedesDecisionId ?? null,
+      },
+    });
+
+    // 4️⃣ Ledger-backed lifecycle projection
+    await transitionCaseLifecycleWithLedger(
+      {
         caseId,
         from,
         to,
@@ -136,7 +139,8 @@ export class DecisionService {
           reason,
           ...intentContext,
         },
-      });
-    });
+      },
+      tx,
+    );
   }
 }
