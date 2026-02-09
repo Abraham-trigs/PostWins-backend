@@ -65,7 +65,6 @@ export class DecisionService {
     const to = DECISION_OUTCOME_LIFECYCLE[decisionType];
 
     if (!to) {
-      // This should be unreachable if the enum + map stay in sync
       throw new Error(`Unhandled DecisionType: ${decisionType}`);
     }
 
