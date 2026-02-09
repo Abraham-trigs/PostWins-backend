@@ -1,139 +1,175 @@
-import { PostWin } from "@posta/core";
+import { prisma } from "../../lib/prisma";
 import { LedgerService } from "../intake/ledger.service";
-import { CaseLifecycle } from "@prisma/client";
+import {
+  VerificationStatus,
+  ActorKind,
+  CaseLifecycle,
+  VerificationRecord,
+} from "@prisma/client";
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
 
-// NOTE:
-// Verification reaching consensus is a MEANINGFUL decision.
-// Case.lifecycle transitions here MUST be ledger-backed.
+type VerificationResult = {
+  consensusReached: boolean;
+  record: VerificationRecord | null;
+};
 
 export class VerificationService {
-  constructor(private ledgerService: LedgerService) {}
+  constructor(private ledger: LedgerService) {}
 
   /**
-   * SECTION D: Retrieve PostWin state from Ledger
-   * Resolves the underline in VerificationController
+   * Read-only retrieval of a verification record
    */
-  public async getPostWinById(postWinId: string): Promise<PostWin | null> {
-    const trail = await this.ledgerService.getAuditTrail(postWinId);
-    if (trail.length === 0) return null;
-
-    // Pull bootstrap snapshot from timeline ledger (where we seed verificationRecords)
-    const timeline = await this.ledgerService.listByPostWinId(postWinId);
-    const bootstrap = timeline.find(
-      (e: any) => e?.eventType === "POSTWIN_BOOTSTRAPPED",
-    );
-    const payload = bootstrap?.payload ?? {};
-    const payloadAny = payload as any;
-
-    // Find the original intake to get the author/beneficiary details
-    const intake = trail.find((r: any) => r.action === "INTAKE");
-
-    const reconstructed: PostWin = {
-      id: postWinId,
-      taskId: "ENROLL",
-      routingStatus: "FALLBACK",
-      verificationStatus:
-        (trail[trail.length - 1].newState as any)?.replace?.("STATUS_", "") ||
-        "PENDING",
-      verificationRecords: Array.isArray(payloadAny.verificationRecords)
-        ? payloadAny.verificationRecords
-        : [],
-      auditTrail: trail.map((r: any) => {
-        const ts =
-          r.ts == null
-            ? Date.now()
-            : typeof r.ts === "bigint"
-              ? Number(r.ts)
-              : r.ts;
-
-        return {
-          action: r.action,
-          actor: r.actorId,
-          timestamp: new Date(ts).toISOString(),
-          note: "Reconstructed from ledger",
-        };
-      }),
-      description: payloadAny.narrative || "Reconstructed record",
-      beneficiaryId: payloadAny.beneficiaryId || intake?.actorId || "unknown",
-      authorId: payloadAny.beneficiaryId || intake?.actorId || "unknown",
-      sdgGoals: Array.isArray(payloadAny.sdgGoals)
-        ? payloadAny.sdgGoals
-        : ["SDG_4", "SDG_5"],
-      mode: "AI_AUGMENTED",
-    };
-
-    return reconstructed;
+  async getVerificationRecordById(verificationRecordId: string) {
+    return prisma.verificationRecord.findUnique({
+      where: { id: verificationRecordId },
+      include: {
+        requiredRoles: true,
+        receivedVerifications: true,
+      },
+    });
   }
 
   /**
-   * SECTION D.5: Consensus Logic & Multi-Verifier tracking
+   * Authoritative moment:
+   * A verifier submits a vote. Consensus may be reached.
    */
   async recordVerification(
-    postWin: PostWin,
-    verifierId: string,
-    sdgGoal: string,
-  ): Promise<PostWin> {
-    if (!postWin.verificationRecords) {
-      postWin.verificationRecords = [];
-    }
-
-    const record = postWin.verificationRecords.find(
-      (r) => r.sdgGoal === sdgGoal,
-    );
-
-    if (!record) throw new Error(`Verification target ${sdgGoal} not found.`);
-    if (record.consensusReached) return postWin;
-
-    if (verifierId === postWin.beneficiaryId) {
-      throw new Error("Authors cannot self-verify claims.");
-    }
-
-    record.receivedVerifications ??= [];
-    if (!record.receivedVerifications.includes(verifierId)) {
-      record.receivedVerifications.push(verifierId);
-
-      postWin.auditTrail ??= [];
-      postWin.auditTrail.push({
-        action: "VERIFIED",
-        actor: verifierId,
-        timestamp: new Date().toISOString(),
-        note: `Approval recorded for ${sdgGoal}`,
-      });
-    }
-
-    // ✅ DECISION POINT (quorum reached)
-    if (record.receivedVerifications.length >= record.requiredVerifiers) {
-      record.consensusReached = true;
-      record.timestamps ??= {};
-      record.timestamps.verifiedAt = new Date().toISOString();
-
-      const previousUiStatus = postWin.verificationStatus;
-      postWin.verificationStatus = "VERIFIED";
-
-      // Existing PostWin ledger commit (domain narrative)
-      await this.ledgerService.commit({
-        ts: Date.now(),
-        postWinId: postWin.id,
-        action: "VERIFIED",
-        actorId: verifierId,
-        previousState: previousStatus,
-        newState: "VERIFIED",
-      });
-
-      // ✅ Case lifecycle transition backed by ledger (authoritative)
-      await transitionCaseLifecycleWithLedger({
-        caseId: postWin.id, // PostWin.id === Case.id in current model
-        from: CaseLifecycle.ROUTED,
-        to: CaseLifecycle.VERIFIED,
-        actorUserId: verifierId,
-        intentContext: {
-          verificationRecordId: record.id,
-          sdgGoal,
+    verificationRecordId: string,
+    verifierUserId: string,
+    status: VerificationStatus,
+    note?: string,
+  ): Promise<VerificationResult> {
+    return prisma.$transaction(async (tx) => {
+      // 1️⃣ Load verification record
+      const record = await tx.verificationRecord.findUnique({
+        where: { id: verificationRecordId },
+        include: {
+          requiredRoles: true,
+          receivedVerifications: true,
+          case: true,
         },
       });
-    }
 
-    return postWin;
+      if (!record) {
+        throw new Error("Verification record not found");
+      }
+
+      if (record.consensusReached) {
+        throw new Error("Verification already finalized");
+      }
+
+      // 2️⃣ Resolve verifier roles
+      const verifierRoles = await tx.userRole.findMany({
+        where: { userId: verifierUserId },
+        include: { role: true },
+      });
+
+      const allowedRoles = new Set(record.requiredRoles.map((r) => r.roleKey));
+
+      const authorized = verifierRoles.some((ur) =>
+        allowedRoles.has(ur.role.key),
+      );
+
+      if (!authorized) {
+        throw new Error("User not authorized to verify this claim");
+      }
+
+      // 3️⃣ Prevent duplicate votes (fast-path check)
+      const alreadyVoted = record.receivedVerifications.some(
+        (v) => v.verifierUserId === verifierUserId,
+      );
+
+      if (alreadyVoted) {
+        throw new Error("Verifier has already voted");
+      }
+
+      // 4️⃣ Record vote (DB-level uniqueness is authoritative)
+      try {
+        await tx.verification.create({
+          data: {
+            tenantId: record.tenantId,
+            verificationRecordId: record.id,
+            verifierUserId,
+            status,
+            note,
+          },
+        });
+      } catch (err: any) {
+        if (err.code === "P2002") {
+          throw new Error("Verifier has already voted");
+        }
+        throw err;
+      }
+
+      // 5️⃣ Recompute consensus (explicit semantics)
+      const [acceptedCount, rejectedCount] = await Promise.all([
+        tx.verification.count({
+          where: {
+            verificationRecordId: record.id,
+            status: VerificationStatus.ACCEPTED,
+          },
+        }),
+        tx.verification.count({
+          where: {
+            verificationRecordId: record.id,
+            status: VerificationStatus.REJECTED,
+          },
+        }),
+      ]);
+
+      // ❌ Any rejection blocks verification
+      if (rejectedCount > 0) {
+        throw new Error(
+          "Verification rejected by at least one authorized verifier",
+        );
+      }
+
+      if (acceptedCount < record.requiredVerifiers) {
+        return {
+          consensusReached: false,
+          record: null,
+        };
+      }
+
+      // 6️⃣ Finalize consensus (truth enters system)
+      const finalized = await tx.verificationRecord.update({
+        where: { id: record.id },
+        data: {
+          consensusReached: true,
+          verifiedAt: new Date(),
+        },
+      });
+
+      // 7️⃣ Ledger commit (authoritative fact)
+      await this.ledger.commit({
+        tenantId: record.tenantId,
+        caseId: record.caseId,
+        eventType: "VERIFIED",
+        actorKind: ActorKind.HUMAN,
+        actorUserId: verifierUserId,
+        authorityProof: "VERIFICATION_CONSENSUS",
+        payload: {
+          verificationRecordId: record.id,
+          requiredVerifiers: record.requiredVerifiers,
+          acceptedCount,
+        },
+      });
+
+      // 8️⃣ Ledger-backed lifecycle transition
+      await transitionCaseLifecycleWithLedger({
+        caseId: record.caseId,
+        from: CaseLifecycle.ROUTED,
+        to: CaseLifecycle.VERIFIED,
+        actorUserId: verifierUserId,
+        intentContext: {
+          verificationRecordId: record.id,
+        },
+      });
+
+      return {
+        consensusReached: true,
+        record: finalized,
+      };
+    });
   }
 }

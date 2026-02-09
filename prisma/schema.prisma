@@ -492,6 +492,7 @@ model Verification {
 
   @@unique([verificationRecordId, verifierUserId]) // prevents double voting
   @@index([verifierUserId, createdAt])
+  @@unique([verificationRecordId, verifierUserId])
 }
 
 model Decision {

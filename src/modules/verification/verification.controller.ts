@@ -1,54 +1,94 @@
-// apps/backend/src/modules/verification/verification.controller.ts
 import type { Request, Response } from "express";
 import { LedgerService } from "../intake/ledger.service";
 import { VerificationService } from "./verification.service";
+import { VerificationStatus } from "@prisma/client";
 
 const ledger = new LedgerService();
 const verificationService = new VerificationService(ledger);
 
 /**
- * GET /api/verification/:postWinId
+ * GET /api/verification/:verificationRecordId
+ * Fetch a verification record (read-only)
  */
-export async function getPostWin(req: Request, res: Response) {
-  const postWinId = String(req.params.postWinId || "").trim();
-  if (!postWinId) {
-    return res.status(400).json({ ok: false, error: "Missing postWinId" });
-  }
+export async function getVerificationRecord(req: Request, res: Response) {
+  const verificationRecordId = String(
+    req.params.verificationRecordId || "",
+  ).trim();
 
-  const postWin = await verificationService.getPostWinById(postWinId);
-  if (!postWin) {
-    return res.status(404).json({ ok: false, error: "PostWin not found" });
-  }
-
-  return res.status(200).json({ ok: true, postWin });
-}
-
-/**
- * POST /api/verification/verify
- * body: { postWinId, verifierId, sdgGoal }
- */
-export async function verifyPostWin(req: Request, res: Response) {
-  const postWinId = String(req.body?.postWinId || "").trim();
-  const verifierId = String(req.body?.verifierId || "").trim();
-  const sdgGoal = String(req.body?.sdgGoal || "").trim();
-
-  if (!postWinId || !verifierId || !sdgGoal) {
+  if (!verificationRecordId) {
     return res.status(400).json({
       ok: false,
-      error: "Missing required fields: postWinId, verifierId, sdgGoal",
+      error: "Missing verificationRecordId",
     });
   }
 
-  const postWin = await verificationService.getPostWinById(postWinId);
-  if (!postWin) {
-    return res.status(404).json({ ok: false, error: "PostWin not found" });
+  const record =
+    await verificationService.getVerificationRecordById(verificationRecordId);
+
+  if (!record) {
+    return res.status(404).json({
+      ok: false,
+      error: "Verification record not found",
+    });
   }
 
-  const updated = await verificationService.recordVerification(
-    postWin,
-    verifierId,
-    sdgGoal,
-  );
+  return res.status(200).json({
+    ok: true,
+    record,
+  });
+}
 
-  return res.status(200).json({ ok: true, postWin: updated });
+/**
+ * POST /api/verification/vote
+ * body: { verificationRecordId, verifierUserId, status, note? }
+ *
+ * Submits a single verification vote.
+ * Does NOT assert truth directly.
+ */
+export async function submitVerificationVote(req: Request, res: Response) {
+  const verificationRecordId = String(
+    req.body?.verificationRecordId || "",
+  ).trim();
+
+  const verifierUserId = String(req.body?.verifierUserId || "").trim();
+
+  const status = req.body?.status as VerificationStatus;
+  const note = req.body?.note as string | undefined;
+
+  if (!verificationRecordId || !verifierUserId || !status) {
+    return res.status(400).json({
+      ok: false,
+      error:
+        "Missing required fields: verificationRecordId, verifierUserId, status",
+    });
+  }
+
+  if (
+    status !== VerificationStatus.ACCEPTED &&
+    status !== VerificationStatus.REJECTED
+  ) {
+    return res.status(400).json({
+      ok: false,
+      error: "Invalid verification status",
+    });
+  }
+
+  try {
+    const result = await verificationService.recordVerification(
+      verificationRecordId,
+      verifierUserId,
+      status,
+      note,
+    );
+
+    return res.status(200).json({
+      ok: true,
+      result,
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      ok: false,
+      error: err.message,
+    });
+  }
 }
