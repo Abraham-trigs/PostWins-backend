@@ -22,21 +22,16 @@ const DECISION_OUTCOME_LIFECYCLE: Partial<Record<DecisionType, CaseLifecycle>> =
 
     // Phase 4.3 — Budget is authorization, not execution
     BUDGET: CaseLifecycle.ROUTED,
-
-    // NOTE:
-    // TRANCHE intentionally excluded.
-    // Tranche effects are handled in Phase 4.4 (explicit reversal),
-    // not via lifecycle projection.
   };
 
 export class DecisionService {
   /**
    * Apply an authoritative decision.
    *
-   * Phase 4 invariants:
+   * Authority invariants (ENFORCED):
    * - History is never rewritten
-   * - Decisions may be superseded explicitly
-   * - Only the latest non-superseded decision of a type is authoritative
+   * - Decisions may be superseded explicitly or implicitly
+   * - At most ONE non-superseded decision per (caseId, decisionType)
    * - Lifecycle reflects authoritative intent, not execution state
    */
   async applyDecision(
@@ -55,16 +50,16 @@ export class DecisionService {
     } = params;
 
     // 1️⃣ Load authoritative current lifecycle
-    const existing = await tx.case.findFirst({
+    const existingCase = await tx.case.findFirst({
       where: { id: caseId, tenantId },
       select: { lifecycle: true },
     });
 
-    if (!existing) {
+    if (!existingCase) {
       throw new Error(`Case not found: ${caseId}`);
     }
 
-    const from = existing.lifecycle;
+    const from = existingCase.lifecycle;
     const to = DECISION_OUTCOME_LIFECYCLE[decisionType];
 
     if (!to) {
@@ -73,26 +68,28 @@ export class DecisionService {
       );
     }
 
-    // 2️⃣ Explicit supersession (same-type only)
-    if (supersedesDecisionId) {
-      const prior = await tx.decision.findFirst({
-        where: {
-          id: supersedesDecisionId,
-          tenantId,
-          caseId,
-          decisionType,
-          supersededAt: null,
-        },
-      });
+    // 2️⃣ Enforce single authoritative decision per type
+    // Supersede ALL existing non-superseded decisions of this type
+    // (explicit supersedesDecisionId is validated but not required)
+    const activeDecisions = await tx.decision.findMany({
+      where: {
+        tenantId,
+        caseId,
+        decisionType,
+        supersededAt: null,
+      },
+    });
 
-      if (!prior) {
+    for (const prior of activeDecisions) {
+      // If explicit supersession was provided, ensure it matches
+      if (supersedesDecisionId && prior.id !== supersedesDecisionId) {
         throw new Error(
-          `Decision ${supersedesDecisionId} cannot be superseded`,
+          `Explicit supersession mismatch: expected ${supersedesDecisionId}, found ${prior.id}`,
         );
       }
 
       await tx.decision.update({
-        where: { id: supersedesDecisionId },
+        where: { id: prior.id },
         data: { supersededAt: new Date() },
       });
     }
