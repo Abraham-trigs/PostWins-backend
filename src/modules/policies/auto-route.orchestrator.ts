@@ -1,21 +1,21 @@
 import { prisma } from "../../lib/prisma";
-import { ActorKind, DecisionType } from "@prisma/client";
+import { DecisionType } from "@prisma/client";
 import { autoRouteBasic } from "./auto-route.policy";
 import { AUTO_ROUTE_BASIC, AUTO_ROUTE_BASIC_VERSION } from "./ids";
 import { PolicyEvaluationService } from "./policy-evaluation.service";
-import { DecisionService } from "../decision/decision.service";
+import { ApprovalGateService } from "../approvals/approval-gate.service";
 import { CaseNotFoundError } from "../cases/case.errors";
 
 export class AutoRouteOrchestrator {
   private policyEval = new PolicyEvaluationService();
-  private decisions = new DecisionService();
+  private approvalGate = new ApprovalGateService();
 
   async evaluateAndApply(params: {
     tenantId: string;
     caseId: string;
-    apply: boolean;
+    apply: boolean; // retained for interface compatibility; no longer authoritative
   }) {
-    const { tenantId, caseId, apply } = params;
+    const { tenantId, caseId } = params;
 
     const [caseRow, routingCount, executionBodies] = await Promise.all([
       prisma.case.findFirst({
@@ -51,16 +51,20 @@ export class AutoRouteOrchestrator {
       result,
     });
 
-    if (apply && result.kind === "PROPOSE_DECISION") {
-      await this.decisions.applyDecision({
+    // 🔐 Phase 6.4 — Human approval gate
+    if (result.kind === "PROPOSE_DECISION") {
+      await this.approvalGate.propose({
         tenantId,
         caseId,
-        decisionType: result.decisionType,
-        actorKind: ActorKind.SYSTEM,
-        reason: result.reason,
-        intentContext: {
-          policyKey: AUTO_ROUTE_BASIC,
+        policyKey: AUTO_ROUTE_BASIC,
+        effect: {
+          kind: "ROUTE_CASE",
+          payload: {
+            // policy decides WHAT, human decides WHETHER
+            executionBodyId: result.executionBodyId,
+          },
         },
+        reason: result.reason,
       });
     }
 

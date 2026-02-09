@@ -495,6 +495,29 @@ model Verification {
   @@unique([verificationRecordId, verifierUserId])
 }
 
+model ApprovalRequest {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @db.Uuid
+
+  policyKey String
+  effect    Json
+  reason    String
+
+  status    String   // PENDING | APPROVED | REJECTED
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+
+  resolvedByUserId String? @db.Uuid
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case     Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  resolver User?  @relation(fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status, createdAt])
+  @@index([caseId, status])
+}
+
 model Decision {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String   @db.Uuid
