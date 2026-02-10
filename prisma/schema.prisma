@@ -112,6 +112,7 @@ enum LedgerEventType {
 
   VERIFICATION_SUBMITTED
   VERIFIED
+  VERIFICATION_TIMED_OUT
 
   APPEAL_OPENED
   APPEAL_RESOLVED
@@ -524,6 +525,8 @@ model VerificationRecord {
 
   routedAt   DateTime
   verifiedAt DateTime?
+  createdAt DateTime @default(now())
+
 
   receivedVerifications Verification[]
   requiredRoles         VerificationRequiredRole[]

@@ -1,56 +1,190 @@
-import { prisma } from "@/lib/prisma";
 import { CaseLifecycle } from "../cases/CaseLifecycle";
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
+import { LedgerEventType } from "@prisma/client";
+import { commitLedgerEvent } from "../routing/commitRoutingLedger";
+import { Prisma } from "@prisma/client";
+import { isVerificationTimedOut } from "./isVerificationTimedOut";
 
 /**
- * Verification Orchestrator
+ * FINALIZATION PATHS — STEP 10.7 + 10.8
  *
- * 🔒 Authority boundary:
- * - Consumes VERIFIED facts
- * - Decides lifecycle transition
- * - Enforces ledger-backed state change
+ * These functions are the ONLY places where verification
+ * outcomes are allowed to cause lifecycle or ledger effects.
  *
- * NOTE:
- * This orchestrator performs NO writes itself.
- * All mutation + atomicity is delegated to
- * transitionCaseLifecycleWithLedger.
+ * They are called exclusively by the verification orchestrator.
  */
-export async function finalizeVerification(params: {
-  tenantId: string;
-  caseId: string;
+
+const VERIFICATION_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/* =========================
+   ACCEPTED
+   ========================= */
+export async function finalizeVerificationAccepted(
+  tx: Prisma.TransactionClient,
+  record: {
+    id: string;
+    tenantId: string;
+    caseId: string;
+    createdAt: Date;
+  },
   actor: {
     kind: "HUMAN" | "SYSTEM";
     userId?: string;
-  };
-  verificationRecordId: string;
-}) {
-  const { tenantId, caseId, actor, verificationRecordId } = params;
+    authorityProof: string;
+  },
+) {
+  // ⏳ STEP 10.8 — timeout check (governance intrusion)
+  const timedOut = isVerificationTimedOut({
+    createdAt: record.createdAt,
+    timeoutMs: VERIFICATION_TIMEOUT_MS,
+  });
 
-  // 1️⃣ Guard: ensure verification consensus exists (read-only)
-  const record = await prisma.verificationRecord.findFirst({
-    where: {
-      id: verificationRecordId,
-      caseId,
-      consensusReached: true,
+  if (timedOut) {
+    await commitLedgerEvent(tx, {
+      tenantId: record.tenantId,
+      caseId: record.caseId,
+      eventType: LedgerEventType.VERIFICATION_TIMED_OUT,
+      actor,
+      payload: {
+        verificationRecordId: record.id,
+        createdAt: record.createdAt,
+      },
+    });
+
+    // ❗ No lifecycle change
+    // Escalation required
+    return;
+  }
+
+  // 1️⃣ Lifecycle transition
+  await transitionCaseLifecycleWithLedger({
+    tenantId: record.tenantId,
+    caseId: record.caseId,
+    target: CaseLifecycle.VERIFIED,
+    actor,
+    intentContext: {
+      verificationRecordId: record.id,
     },
   });
 
-  if (!record) {
-    throw new Error("Verification consensus not reached");
+  // 2️⃣ Ledger fact
+  await commitLedgerEvent(tx, {
+    tenantId: record.tenantId,
+    caseId: record.caseId,
+    eventType: LedgerEventType.VERIFIED,
+    actor,
+    payload: {
+      verificationRecordId: record.id,
+    },
+  });
+}
+
+/* =========================
+   REJECTED
+   ========================= */
+export async function finalizeVerificationRejected(
+  tx: Prisma.TransactionClient,
+  record: {
+    id: string;
+    tenantId: string;
+    caseId: string;
+    createdAt: Date;
+  },
+  actor: {
+    kind: "HUMAN" | "SYSTEM";
+    userId?: string;
+    authorityProof: string;
+  },
+) {
+  // ⏳ STEP 10.8 — timeout check
+  const timedOut = isVerificationTimedOut({
+    createdAt: record.createdAt,
+    timeoutMs: VERIFICATION_TIMEOUT_MS,
+  });
+
+  if (timedOut) {
+    await commitLedgerEvent(tx, {
+      tenantId: record.tenantId,
+      caseId: record.caseId,
+      eventType: LedgerEventType.VERIFICATION_TIMED_OUT,
+      actor,
+      payload: {
+        verificationRecordId: record.id,
+        createdAt: record.createdAt,
+      },
+    });
+
+    return;
   }
 
-  // 2️⃣ Enforced lifecycle transition (lawful, atomic, ledger-backed)
   await transitionCaseLifecycleWithLedger({
-    tenantId,
-    caseId,
-    target: CaseLifecycle.VERIFIED,
-    actor: {
-      kind: actor.kind,
-      userId: actor.userId,
-      authorityProof: "VERIFICATION_CONSENSUS",
-    },
+    tenantId: record.tenantId,
+    caseId: record.caseId,
+    target: CaseLifecycle.FLAGGED,
+    actor,
     intentContext: {
-      verificationRecordId,
+      verificationRecordId: record.id,
+    },
+  });
+
+  await commitLedgerEvent(tx, {
+    tenantId: record.tenantId,
+    caseId: record.caseId,
+    eventType: LedgerEventType.VERIFICATION_REJECTED,
+    actor,
+    payload: {
+      verificationRecordId: record.id,
+    },
+  });
+}
+
+/* =========================
+   DISPUTED → ESCALATION
+   ========================= */
+export async function escalateVerification(
+  tx: Prisma.TransactionClient,
+  record: {
+    id: string;
+    tenantId: string;
+    caseId: string;
+    createdAt: Date;
+  },
+  actor: {
+    kind: "HUMAN" | "SYSTEM";
+    userId?: string;
+    authorityProof: string;
+  },
+) {
+  // ⏳ STEP 10.8 — timeout check
+  const timedOut = isVerificationTimedOut({
+    createdAt: record.createdAt,
+    timeoutMs: VERIFICATION_TIMEOUT_MS,
+  });
+
+  if (timedOut) {
+    await commitLedgerEvent(tx, {
+      tenantId: record.tenantId,
+      caseId: record.caseId,
+      eventType: LedgerEventType.VERIFICATION_TIMED_OUT,
+      actor,
+      payload: {
+        verificationRecordId: record.id,
+        createdAt: record.createdAt,
+      },
+    });
+
+    return;
+  }
+
+  // ⚠️ No lifecycle change here
+  // Human governance must decide next
+  await commitLedgerEvent(tx, {
+    tenantId: record.tenantId,
+    caseId: record.caseId,
+    eventType: LedgerEventType.VERIFICATION_DISPUTED,
+    actor,
+    payload: {
+      verificationRecordId: record.id,
     },
   });
 }
