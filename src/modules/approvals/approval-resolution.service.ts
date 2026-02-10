@@ -1,6 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { DecisionService } from "../decision/decision.service";
-import { ActorKind } from "@prisma/client";
+import { ActorKind, ApprovalStatus } from "@prisma/client";
 
 export class ApprovalResolutionService {
   private decisionService = new DecisionService();
@@ -14,7 +14,7 @@ export class ApprovalResolutionService {
       where: {
         id: params.approvalId,
         tenantId: params.tenantId,
-        status: "PENDING",
+        status: ApprovalStatus.PENDING,
       },
     });
 
@@ -26,7 +26,7 @@ export class ApprovalResolutionService {
       await tx.approvalRequest.update({
         where: { id: approval.id },
         data: {
-          status: "APPROVED",
+          status: ApprovalStatus.APPROVED,
           resolvedAt: new Date(),
           resolvedByUserId: params.actorUserId,
         },
@@ -62,7 +62,7 @@ export class ApprovalResolutionService {
       where: {
         id: params.approvalId,
         tenantId: params.tenantId,
-        status: "PENDING",
+        status: ApprovalStatus.PENDING,
       },
     });
 
@@ -73,7 +73,7 @@ export class ApprovalResolutionService {
     await prisma.approvalRequest.update({
       where: { id: approval.id },
       data: {
-        status: "REJECTED",
+        status: ApprovalStatus.REJECTED,
         resolvedAt: new Date(),
         resolvedByUserId: params.actorUserId,
       },

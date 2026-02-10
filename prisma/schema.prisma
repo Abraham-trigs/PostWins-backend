@@ -77,6 +77,13 @@ enum RoutingOutcome {
   BLOCKED
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+
 enum VerificationStatus {
   PENDING
   ACCEPTED
@@ -499,6 +506,10 @@ model ApprovalRequest {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String   @db.Uuid
   caseId    String   @db.Uuid
+
+  status ApprovalStatus
+  resolvedAt DateTime?
+  resolvedByUserId String?
 
   policyKey String
   effect    Json

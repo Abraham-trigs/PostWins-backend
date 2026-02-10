@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { GatedEffect } from "./approval.types";
+import { ApprovalStatus } from "@prisma/client";
 
 export class ApprovalGateService {
   async propose(params: {
@@ -16,7 +17,7 @@ export class ApprovalGateService {
         policyKey: params.policyKey,
         effect: params.effect,
         reason: params.reason,
-        status: "PENDING",
+        status: ApprovalStatus.PENDING,
       },
     });
   }
