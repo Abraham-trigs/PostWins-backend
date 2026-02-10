@@ -9,7 +9,7 @@ import {
   VerificationRecord,
 } from "@posta/core";
 import { TaskService } from "./task.service";
-import { JourneyService } from "../journey.service";
+import { JourneyService } from "../journey/journey.service";
 import { LedgerService } from "../../intake/ledger.service";
 
 interface IntegrityFlag {

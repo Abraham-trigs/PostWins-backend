@@ -1,5 +1,3 @@
-// apps/backend/src/modules/intake/ledger.service.ts
-
 /**
  * IMPORTANT LEDGER BOUNDARY
  *
@@ -22,114 +20,49 @@ import path from "path";
 import { prisma } from "../../lib/prisma";
 import { assertUuid } from "../../utils/uuid";
 
-type LedgerHealthStatus = "HEALTHY" | "CORRUPTED";
+import {
+  LedgerHealth,
+  LedgerAuditRecord,
+  LedgerCommitInput,
+  ActorKind,
+  LEDGER_EVENT_TYPES,
+} from "./types/ledger.types";
 
-export type LedgerHealth = {
-  status: LedgerHealthStatus;
-  checkedAt: number;
-  recordCount: number;
-  publicKeyPresent: boolean;
-  note?: string;
-};
+/* -------------------------------------------------------------------------- */
+/* Local enum-safe guards / mappers                                            */
+/* -------------------------------------------------------------------------- */
 
-export type LedgerAuditRecord = {
-  action?: string;
-  newState?: string;
-  previousState?: string;
-  actorId?: string;
-  actorKind?: string;
-  ts?: number | bigint;
-  [k: string]: any;
-};
-
-export type LedgerCommitInput = {
-  // always provided by callers
-  ts: number | bigint;
-
-  // legacy fields (controllers/services still sending these)
-  postWinId?: string;
-  action?: string;
-  actorId?: string;
-  previousState?: string;
-  newState?: string;
-
-  // schema-driven fields
-  tenantId?: string;
-  caseId?: string | null;
-  eventType?: string;
-  actorKind?: string;
-  actorUserId?: string | null;
-  payload?: unknown;
-  supersedesCommitId?: string | null;
-
-  // allow any extras without type-fighting
-  [k: string]: any;
-};
-
-// Local enum-safe guards/mappers (avoid Prisma enum imports everywhere)
-type ActorKindEnum = "HUMAN" | "SYSTEM";
-type LedgerEventTypeEnum =
-  | "CASE_CREATED"
-  | "CASE_UPDATED"
-  | "CASE_FLAGGED"
-  | "CASE_REJECTED"
-  | "CASE_ARCHIVED"
-  | "ROUTED"
-  | "ROUTING_SUPERSEDED"
-  | "VERIFICATION_SUBMITTED"
-  | "VERIFIED"
-  | "APPEAL_OPENED"
-  | "APPEAL_RESOLVED"
-  | "GRANT_CREATED"
-  | "GRANT_POLICY_APPLIED"
-  | "BUDGET_ALLOCATED"
-  | "TRANCHE_RELEASED"
-  | "BUDGET_SUPERSEDED"
-  | "TRANCHE_REVERSED";
-
-const LEDGER_EVENT_TYPES: Set<string> = new Set([
-  "CASE_CREATED",
-  "CASE_UPDATED",
-  "CASE_FLAGGED",
-  "CASE_REJECTED",
-  "CASE_ARCHIVED",
-  "ROUTED",
-  "ROUTING_SUPERSEDED",
-  "VERIFICATION_SUBMITTED",
-  "VERIFIED",
-  "APPEAL_OPENED",
-  "APPEAL_RESOLVED",
-  "GRANT_CREATED",
-  "GRANT_POLICY_APPLIED",
-  "BUDGET_ALLOCATED",
-  "TRANCHE_RELEASED",
-  "BUDGET_SUPERSEDED",
-  "TRANCHE_REVERSED",
-]);
-
-function mapActorKind(input: unknown): ActorKindEnum {
+function mapActorKind(input: unknown): ActorKind {
   return input === "HUMAN" ? "HUMAN" : "SYSTEM";
 }
 
-function mapEventType(
-  input: unknown,
-  fallbackFromAction?: unknown,
-): LedgerEventTypeEnum {
+function mapEventType(input: unknown, fallbackFromAction?: unknown) {
   const raw = String(input ?? "").trim();
-  if (LEDGER_EVENT_TYPES.has(raw)) return raw as LedgerEventTypeEnum;
+
+  if (LEDGER_EVENT_TYPES.has(raw as any)) {
+    return raw as any;
+  }
 
   const action = String(fallbackFromAction ?? "").trim();
 
-  // legacy/controller values → schema LedgerEventType
-  // NOTE: These map transport-era labels to factual ledger events.
-  // They MUST NOT be interpreted as task, lifecycle, or workflow state.
-  if (raw === "POSTWIN_BOOTSTRAPPED" || action === "INTAKE")
+  /**
+   * Legacy controller → factual ledger event mapping.
+   * These are transport-era labels, NOT workflow semantics.
+   */
+  if (raw === "POSTWIN_BOOTSTRAPPED" || action === "INTAKE") {
     return "CASE_CREATED";
-  if (raw === "DELIVERY_RECORDED" || raw === "FOLLOWUP_RECORDED")
+  }
+
+  if (raw === "DELIVERY_RECORDED" || raw === "FOLLOWUP_RECORDED") {
     return "CASE_UPDATED";
+  }
 
   return "CASE_UPDATED";
 }
+
+/* -------------------------------------------------------------------------- */
+/* Ledger Service                                                             */
+/* -------------------------------------------------------------------------- */
 
 export class LedgerService {
   private dataDir = path.join(process.cwd(), "data");
@@ -164,6 +97,7 @@ export class LedgerService {
         type: "pkcs8",
         format: "pem",
       }) as string;
+
       this.publicKey = publicKey.export({
         type: "spki",
         format: "pem",
@@ -174,9 +108,10 @@ export class LedgerService {
     }
   }
 
-  /**
-   * Used by GET /health/ledger
-   */
+  /* ------------------------------------------------------------------------ */
+  /* Health                                                                   */
+  /* ------------------------------------------------------------------------ */
+
   public async getStatus(): Promise<LedgerHealth> {
     const checkedAt = Date.now();
     const recordCount = await prisma.ledgerCommit.count();
@@ -193,10 +128,10 @@ export class LedgerService {
     };
   }
 
-  /**
-   * Minimal audit trail by postWinId stored in payload (JSON path query).
-   * Ledger remains factual; projections are convenience-only.
-   */
+  /* ------------------------------------------------------------------------ */
+  /* Audit / Projections                                                      */
+  /* ------------------------------------------------------------------------ */
+
   public async getAuditTrail(postWinId: string): Promise<LedgerAuditRecord[]> {
     const rows = await prisma.ledgerCommit.findMany({
       where: {
@@ -230,7 +165,7 @@ export class LedgerService {
       commitmentHash: r.commitmentHash,
       signature: r.signature,
 
-      // legacy transport metadata (NOT domain state)
+      // legacy transport metadata (projection-only)
       action: (r.payload as any)?.action ?? undefined,
       actorId: (r.payload as any)?.actorId ?? undefined,
       previousState: (r.payload as any)?.previousState ?? undefined,
@@ -239,11 +174,9 @@ export class LedgerService {
     }));
   }
 
-  /**
-   * --------------------------------------------------------------------------
-   * Back-compat wrappers (older controller/service call sites)
-   * --------------------------------------------------------------------------
-   */
+  /* ------------------------------------------------------------------------ */
+  /* Back-compat wrappers                                                     */
+  /* ------------------------------------------------------------------------ */
 
   public async appendEntry(entry: any) {
     const tenantId = String(entry?.tenantId ?? entry?.payload?.tenantId ?? "");
@@ -270,71 +203,21 @@ export class LedgerService {
     const actorUserId = maybeActorUserId ? String(maybeActorUserId) : null;
     if (actorUserId) assertUuid(actorUserId, "actorUserId");
 
-    const actorKind = mapActorKind(entry?.actorKind);
-    const eventType = mapEventType(entry?.eventType ?? entry?.type);
-
     return this.commit({
       ts,
       tenantId,
       caseId,
-      eventType,
-      actorKind,
+      eventType: mapEventType(entry?.eventType ?? entry?.type),
+      actorKind: mapActorKind(entry?.actorKind),
       actorUserId,
       payload: entry?.payload ?? entry,
     });
   }
 
-  public async listByProject(projectId: string) {
-    return prisma.ledgerCommit.findMany({
-      where: { caseId: String(projectId) },
-      orderBy: { ts: "asc" },
-      select: {
-        ts: true,
-        tenantId: true,
-        caseId: true,
-        eventType: true,
-        actorKind: true,
-        actorUserId: true,
-        payload: true,
-        commitmentHash: true,
-        signature: true,
-      },
-    });
-  }
+  /* ------------------------------------------------------------------------ */
+  /* Commit                                                                   */
+  /* ------------------------------------------------------------------------ */
 
-  public async listByPostWinId(postWinId: string) {
-    return prisma.ledgerCommit.findMany({
-      where: {
-        payload: {
-          path: ["postWinId"],
-          equals: postWinId,
-        },
-      },
-      orderBy: { ts: "asc" },
-      select: {
-        ts: true,
-        tenantId: true,
-        caseId: true,
-        eventType: true,
-        actorKind: true,
-        actorUserId: true,
-        payload: true,
-        commitmentHash: true,
-        signature: true,
-      },
-    });
-  }
-
-  /**
-   * Create a new LedgerCommit with deterministic hash + RSA signature.
-   * Supports legacy transport commits and schema-shaped commits.
-   *
-   * Ledger invariants:
-   * - tenantId MUST be a UUID
-   * - caseId / actorUserId if present MUST be UUIDs
-   * - actorKind MUST be HUMAN | SYSTEM
-   * - eventType MUST be a LedgerEventType
-   */
   public async commit(input: LedgerCommitInput) {
     const tenantId = String(input.tenantId ?? "");
     assertUuid(tenantId, "tenantId");
@@ -359,7 +242,7 @@ export class LedgerService {
         newState: input.newState ?? null,
       } as const);
 
-    const normalized: LedgerCommitInput = {
+    const commitmentHash = this.generateCommitmentHash({
       ...input,
       tenantId,
       caseId,
@@ -367,9 +250,7 @@ export class LedgerService {
       actorKind,
       actorUserId,
       payload,
-    };
-
-    const commitmentHash = this.generateCommitmentHash(normalized);
+    });
 
     const sign = createSign("SHA256");
     sign.update(commitmentHash);
@@ -380,18 +261,20 @@ export class LedgerService {
         tenantId,
         caseId,
         eventType: eventType as any,
-        ts: BigInt(
-          typeof normalized.ts === "bigint" ? normalized.ts : normalized.ts,
-        ),
+        ts: BigInt(input.ts),
         actorKind: actorKind as any,
         actorUserId,
         payload: payload as any,
         commitmentHash,
         signature,
-        supersedesCommitId: normalized.supersedesCommitId ?? null,
+        supersedesCommitId: input.supersedesCommitId ?? null,
       },
     });
   }
+
+  /* ------------------------------------------------------------------------ */
+  /* Integrity                                                                */
+  /* ------------------------------------------------------------------------ */
 
   public async verifyLedgerIntegrity(): Promise<boolean> {
     const records = await prisma.ledgerCommit.findMany({
@@ -422,9 +305,7 @@ export class LedgerService {
         payload: r.payload,
       };
 
-      const expected = this.generateHash(reconstructed);
-      if (expected !== r.commitmentHash) return false;
-      if (!r.signature) return false;
+      if (this.generateHash(reconstructed) !== r.commitmentHash) return false;
 
       const verify = createVerify("SHA256");
       verify.update(r.commitmentHash);
@@ -434,32 +315,30 @@ export class LedgerService {
     return true;
   }
 
+  /* ------------------------------------------------------------------------ */
+  /* Hashing                                                                  */
+  /* ------------------------------------------------------------------------ */
+
   private generateCommitmentHash(input: LedgerCommitInput): string {
-    const payload = {
-      tenantId: input.tenantId ?? "unknown",
+    return this.generateHash({
+      tenantId: input.tenantId,
       caseId: input.caseId ?? null,
-      postWinId: input.postWinId ?? undefined,
       eventType: input.eventType ?? input.action ?? "LEGACY_EVENT",
-      ts:
-        typeof input.ts === "bigint" ? Number(input.ts) : (input.ts as number),
+      ts: Number(input.ts),
       actorKind: input.actorKind ?? "SYSTEM",
       actorUserId: input.actorUserId ?? null,
       supersedesCommitId: input.supersedesCommitId ?? null,
-      payload: input.payload ?? {
-        postWinId: input.postWinId ?? null,
-        action: input.action ?? null,
-        actorId: input.actorId ?? null,
-        previousState: input.previousState ?? null,
-        newState: input.newState ?? null,
-      },
-    };
-
-    return this.generateHash(payload);
+      payload: input.payload,
+    });
   }
 
   private generateHash(data: unknown): string {
     return createHash("sha256").update(JSON.stringify(data)).digest("hex");
   }
+
+  /* ------------------------------------------------------------------------ */
+  /* FS                                                                       */
+  /* ------------------------------------------------------------------------ */
 
   private ensureDir(dir: string) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

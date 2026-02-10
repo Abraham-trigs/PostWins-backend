@@ -8,7 +8,7 @@
 
 import { PostWin, ExecutionBody } from "@posta/core";
 import { TaskService } from "./task.service"; // Phase 2 (intentionally dormant)
-import { JourneyService } from "../journey.service";
+import { JourneyService } from "../journey/journey.service";
 import { PostWinRoutingService } from "./postwin-routing.service";
 import { TaskId } from "../../../domain/tasks/taskIds";
 import { assertValidTask } from "@/domain/tasks/assertValidTask";

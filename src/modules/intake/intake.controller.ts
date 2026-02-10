@@ -8,13 +8,13 @@ import { PostWin, AuditRecord, Journey } from "@posta/core";
 // Local Service Imports
 import { IntakeService } from "./intake.service";
 import { VerificationService } from "../verification/verification.service";
-import { IntegrityService } from "./integrity.service";
-import { JourneyService } from "../routing/journey.service";
+import { IntegrityService } from "./intergrity/integrity.service";
+import { JourneyService } from "../routing/journey/journey.service";
 import { LedgerService } from "./ledger.service";
 import { TaskProgressionService } from "../routing/task-progression.service";
-import { ToneAdapterService } from "./tone-adapter.service";
-import { LocalizationService } from "./localization.service";
-import { SDGMapperService } from "./sdg-mapper.service";
+import { ToneAdapterService } from "./tone/tone-adapter.service";
+import { LocalizationService } from "./localization/localization.service";
+import { SDGMapperService } from "./sdg/sdg-mapper.service";
 
 // Idempotency helper
 import { commitIdempotencyResponse } from "../../middleware/idempotency.middleware";

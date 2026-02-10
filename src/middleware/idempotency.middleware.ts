@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { IntegrityService } from "../modules/intake/integrity.service";
+import { IntegrityService } from "../modules/intake/intergrity/integrity.service";
 import { sha256Hex, stableStringify } from "../utils/sha256";
 
 type StoredIdempotencyRecord = {

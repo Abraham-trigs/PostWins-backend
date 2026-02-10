@@ -3,10 +3,10 @@ import { PostaMockEngine } from "./modules/routing/structuring/mock-engine";
 import { IntakeService } from "./modules/intake/intake.service";
 import { PostWinRoutingService } from "./modules/routing/structuring/postwin-routing.service";
 import { VerificationService } from "./modules/verification/verification.service";
-import { IntegrityService } from "./modules/intake/integrity.service";
+import { IntegrityService } from "./modules/intake/intergrity/integrity.service";
 import { LedgerService } from "./modules/intake/ledger.service";
 import { TaskService } from "./modules/routing/structuring/task.service";
-import { JourneyService } from "./modules/routing/journey.service";
+import { JourneyService } from "./modules/routing/journey/journey.service";
 
 const PORT = Number(process.env.PORT) || 3001;
 const MODE = process.env.MODE || "production";

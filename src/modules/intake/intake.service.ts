@@ -1,6 +1,6 @@
 import { PostWin, PostaContext, AuditRecord } from "@posta/core";
 import { TaskId } from "../../domain/tasks/taskIds";
-import { IntegrityService } from "./integrity.service";
+import { IntegrityService } from "./intergrity/integrity.service";
 import { TaskService } from "../routing/structuring/task.service";
 
 /**

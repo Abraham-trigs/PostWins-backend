@@ -41,3 +41,43 @@ main()
     await prisma.$disconnect();
     process.exit(1);
   });
+
+import { PrismaClient } from "@prisma/client";
+import { KHALISTAR_ORG_KEY } from "../src/domain/system/systemActors";
+
+const prisma = new PrismaClient();
+
+export async function ensureKhalistarExecutionBody(tenantId: string) {
+  const org = await prisma.organization.upsert({
+    where: {
+      tenantId_key: {
+        tenantId,
+        key: KHALISTAR_ORG_KEY,
+      },
+    },
+    update: {},
+    create: {
+      tenantId,
+      key: KHALISTAR_ORG_KEY,
+      name: "Khalistar",
+      kind: "NGO",
+      executionBody: {
+        create: {
+          isFallback: true,
+          capabilities: {},
+        },
+      },
+    },
+    include: {
+      executionBody: true,
+    },
+  });
+
+  if (!org.executionBody) {
+    throw new Error(
+      "Invariant violation: Khalistar must have an execution body",
+    );
+  }
+
+  return org.executionBody;
+}
