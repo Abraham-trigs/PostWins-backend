@@ -1,9 +1,24 @@
 // filepath: src/modules/routing/postwin-offline.service.ts
+
+/**
+ * ⚠️ PHASE 2 ONLY
+ * -------------------------------------------------------------------
+ * Offline transport and replay service.
+ *
+ * This service may invoke orchestration pipelines that:
+ * - advance routing
+ * - trigger verification
+ * - append ledger entries
+ *
+ * It MUST NOT be used as evidence of Phase 1.5 invariants.
+ */
+
 import { PostWin, ExecutionBody } from "@posta/core";
 import { PostWinPipelineService } from "./postwin-pipeline.service";
 // NOTE:
-// Offline queue is transport-only.
-// Must not infer, modify, or advance taskId or lifecycle.
+// Phase 2 transport + replay service.
+// Does not itself infer or mutate state,
+// but delegates to orchestration pipelines that may.
 
 // Simple offline queue
 interface OfflineQueueItem {
@@ -40,6 +55,7 @@ export class PostWinOfflineService {
 
       for (const item of itemsToSync) {
         try {
+          // Phase 2: delegated orchestration (may advance routing & verification)
           const processed = await this.pipeline.intakeAndRoute(
             item.postWin.description ?? "",
             item.postWin.beneficiaryId ?? "",

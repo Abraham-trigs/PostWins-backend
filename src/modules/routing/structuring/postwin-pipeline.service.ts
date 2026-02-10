@@ -1,7 +1,19 @@
 // filepath: apps/backend/src/modules/routing/postwin-pipeline.service.ts
 // Purpose: Intake → routing → verification pipeline
+
+/**
+ * ⚠️ PHASE 2–AWARE SERVICE
+ * -------------------------------------------------------------------
+ * This pipeline is Phase 1.5–safe *by default*,
+ * but exposes Phase 2 hooks for:
+ * - verification mutation
+ * - orchestration replay
+ *
+ * Only `intakeAndRoute` is Phase 1.5–compliant.
+ */
+
 //
-// Phase 1.5 INVARIANT:
+// Phase 1.5 INVARIANT(intakeRouite only):
 // - TaskService is injected but NOT USED
 // - No task inference, sequencing, or defaults beyond TaskId.START
 // - Tasks are identifiers only
@@ -58,6 +70,13 @@ export class PostWinPipelineService {
   /**
    * Adds a verifier approval to a PostWin
    */
+  /**
+   * Phase 2 ONLY
+   * -------------------------------------------------------------------
+   * Direct verification mutation.
+   * Bypasses ledger-backed verification invariants.
+   */
+
   addVerification(postWin: PostWin, verifierId: string, sdgGoal: string) {
     this.routingService.addVerifierApproval(postWin, verifierId, sdgGoal);
   }

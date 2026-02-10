@@ -1,16 +1,14 @@
 // filepath: apps/backend/src/modules/routing/structuring/mock-engine.ts
 
 /**
- * PostaMockEngine
+ * ⚠️ PHASE 2 ONLY
  * -------------------------------------------------------------------
- * Purpose:
- *  - Simulate a full PostWin lifecycle without HTTP or UI
- *  - Validate domain contracts between Intake → Routing → Verification
- *  - Act as a regression harness for PostWins core logic
+ * This simulation intentionally bypasses:
+ * - persistence
+ * - ledger enforcement
+ * - schema-backed verification
  *
- * IMPORTANT:
- *  - This is NOT a test double.
- *  - This is a domain simulation that should break when contracts drift.
+ * It MUST NOT be used as evidence of Phase 1.5 correctness.
  */
 
 import { IntakeService } from "../../intake/intake.service";
@@ -69,7 +67,10 @@ export class PostaMockEngine {
         auditTrail: partialPW.auditTrail || [],
         verificationRecords: { SDG_4: [] } as any,
 
+        // Phase 2: simulation-only routing placeholder
         routingStatus: "UNASSIGNED",
+
+        // Phase 2: simulation-only verification placeholder
         verificationStatus: "PENDING",
 
         description: "School support",
@@ -95,6 +96,8 @@ export class PostaMockEngine {
       // ------------------------------------------------------------------
       // STEP 5: MULTI-ACTOR VERIFICATION
       // ------------------------------------------------------------------
+
+      // Phase 2: direct verification mutation (bypasses ledger)
       const stateAfterCommunity = await this.verifier.recordVerification(
         routedPW,
         "community_leader_01",

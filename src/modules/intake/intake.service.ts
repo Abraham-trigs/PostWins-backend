@@ -37,7 +37,7 @@ function assertIntakeMetadata(
 export class IntakeService {
   constructor(
     private integrityService: IntegrityService,
-    private taskService: TaskService, // reserved for Phase 2
+    private taskService: TaskService, // Phase 2: dynamic task orchestration
   ) {}
 
   /**
@@ -141,7 +141,11 @@ export class IntakeService {
 
     return {
       description: this.sanitizeDescription(message),
+
+      // Phase 2: replace with schema-backed Verification / Ledger initialization
       verificationStatus: flags.length > 0 ? "FLAGGED" : "PENDING",
+
+      // Phase 2: routing derived from first ledger commit
       routingStatus: "UNASSIGNED",
     };
   }
@@ -207,3 +211,5 @@ export class IntakeService {
     };
   }
 }
+
+taskService;

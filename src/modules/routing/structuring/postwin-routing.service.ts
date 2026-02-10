@@ -1,6 +1,20 @@
 // apps/backend/src/modules/routing/postwin-routing.service.ts
 // Purpose: Validates PostWin task integrity, hydrates state, routes to bodies, and manages reliable event delivery with retries.
 
+/**
+ * 🚫 PHASE 2 ONLY — NOT PHASE 1.5 COMPLIANT
+ * -------------------------------------------------------------------
+ * This service performs full PostWin orchestration, including:
+ * - task sequencing and completion
+ * - routing decisions
+ * - verification consensus
+ * - ledger mutation
+ * - human escalation
+ *
+ * It intentionally bypasses Phase 1.5 invariants and MUST NOT be
+ * used as evidence of Phase 1.5 correctness.
+ */
+
 import { EventEmitter } from "events";
 import {
   PostWin,
@@ -80,6 +94,7 @@ export class PostWinRoutingService extends EventEmitter {
      * STEP 1: Ensure journey exists
      */
     const journey: Journey =
+      // Phase 2: task completion & journey mutation
       this.journeyService.getOrCreateJourney(beneficiaryId);
 
     /**

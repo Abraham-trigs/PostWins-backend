@@ -23,6 +23,9 @@ import { commitIdempotencyResponse } from "../../middleware/idempotency.middlewa
 import { prisma } from "../../lib/prisma";
 import { assertUuid, UUID_RE } from "../../utils/uuid";
 
+// Domain authority
+import { CaseLifecycle } from "../../domain/case/CaseLifecycle";
+
 // -----------------------------------------------------------------------------
 // Infrastructure
 // -----------------------------------------------------------------------------
@@ -164,7 +167,8 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
         scope: intakeResult.scope,
         type: intakeResult.intent,
 
-        lifecycle: "INTAKE",
+        // ✅ Authoritative lifecycle (domain-owned)
+        lifecycle: CaseLifecycle.INTAKE,
         currentTask: intakeResult.taskId,
 
         summary: String(narrative).trim().slice(0, 240),
@@ -285,7 +289,7 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
     await ledgerService.appendEntry({
       id: crypto.randomUUID(),
       tenantId,
-      type: "DELIVERY_RECORDED", // mapped to CASE_UPDATED
+      type: "DELIVERY_RECORDED", // Phase 2: formally map to CASE_UPDATED ledger intent
       projectId: String(projectId),
       occurredAt: new Date(occurredAt).toISOString(),
       recordedAt: nowIsoStr,
