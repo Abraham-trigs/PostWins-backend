@@ -1,48 +1,29 @@
-import { prisma } from "../../lib/prisma";
-import { CaseLifecycle } from "@prisma/client";
-import { deriveCaseStatus } from "./deriveCaseStatus";
-import { transitionCaseLifecycle as applyLifecycleRules } from "./transitionCaseLifecycle.domain";
+import { CaseLifecycle } from "./CaseLifecycle";
+import { CASE_LIFECYCLE_TRANSITIONS } from "./caseLifecycle.transitions";
+import { IllegalLifecycleTransitionError } from "./case.errors";
 
 /**
- * NOTE:
- * Case.lifecycle is AUTHORITATIVE state.
+ * Pure lifecycle transition function.
  *
- * - Use this helper for internal / non-decision transitions.
- * - If a transition represents a human or system decision,
- *   use transitionCaseLifecycleWithLedger instead.
- *
- * This function is an APPLICATION-LAYER orchestrator:
- * - validates lifecycle transitions via the domain
- * - persists the result
+ * This is LAW, not enforcement.
+ * - Deterministic
+ * - Side-effect free
+ * - Throws on illegal transitions
  */
-
-/**
- * Transition a case between lifecycle states.
- *
- * ⚠️ Lifecycle is AUTHORITATIVE.
- * Status is derived and advisory.
- */
-export async function transitionCaseLifecycle(params: {
+export function transitionCaseLifecycle(params: {
   caseId: string;
-  from: CaseLifecycle;
-  to: CaseLifecycle;
-  actorUserId?: string;
-}) {
-  const { caseId, from, to } = params;
+  current: CaseLifecycle;
+  target: CaseLifecycle;
+}): CaseLifecycle {
+  const allowed = CASE_LIFECYCLE_TRANSITIONS[params.current] ?? [];
 
-  // 1. Apply pure domain rules (may throw domain errors)
-  const nextLifecycle = applyLifecycleRules({
-    caseId,
-    current: from,
-    target: to,
-  });
+  if (!allowed.includes(params.target)) {
+    throw new IllegalLifecycleTransitionError(
+      params.current,
+      params.target,
+      params.caseId,
+    );
+  }
 
-  // 2. Persist authoritative lifecycle + derived status
-  return prisma.case.update({
-    where: { id: caseId },
-    data: {
-      lifecycle: nextLifecycle,
-      status: deriveCaseStatus(nextLifecycle),
-    },
-  });
+  return params.target;
 }

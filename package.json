@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "start:mock": "cross-env MODE=MOCK node dist/server.js"
+    "start:mock": "cross-env MODE=MOCK node dist/server.js",
+    "check:lifecycle-law": "grep -R \"data: {[^}]*lifecycle\" src && echo \"❌ Direct lifecycle write detected\" && exit 1 || exit 0"
   },
   "dependencies": {
     "@posta/core": "workspace:*",

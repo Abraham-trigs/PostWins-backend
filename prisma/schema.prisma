@@ -56,6 +56,7 @@ enum CaseStatus {
   // UI / operational convenience ONLY
   // MUST NOT be used to infer lifecycle, audit state, or compliance
   // Always derive from Case.lifecycle
+
   INTAKED
   IN_REVIEW
   VERIFIED
@@ -71,6 +72,7 @@ enum RoutingOutcome {
   // ⚠️ DECISION METADATA ONLY
   // Snapshot of a routing decision
   // Does NOT represent case lifecycle or state progression
+  
   UNASSIGNED
   MATCHED
   FALLBACK
@@ -323,6 +325,16 @@ model BeneficiaryPII {
   @@index([phone])
   @@index([nationalId])
 }
+
+
+/// ⚠️ LIFECYCLE LAW
+/// ----------------------------------------------------
+/// Case.lifecycle MUST NOT be written directly.
+/// All lifecycle mutations MUST go through:
+///   transitionCaseLifecycleWithLedger
+///
+/// Direct writes are a system integrity violation.
+/// Do not bypass. Do not wrap. Do not “temporarily” skip.
 
 model Case {
   id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid

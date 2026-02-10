@@ -3,10 +3,8 @@ import { LedgerService } from "../intake/ledger.service";
 import {
   VerificationStatus,
   ActorKind,
-  CaseLifecycle,
   VerificationRecord,
 } from "@prisma/client";
-import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
 
 type VerificationResult = {
   consensusReached: boolean;
@@ -32,6 +30,10 @@ export class VerificationService {
   /**
    * Authoritative moment:
    * A verifier submits a vote. Consensus may be reached.
+   *
+   * 🔒 GOVERNANCE RULE
+   * This service MAY record verification facts,
+   * but MUST NOT mutate Case.lifecycle.
    */
   async recordVerification(
     verificationRecordId: string,
@@ -140,7 +142,7 @@ export class VerificationService {
         },
       });
 
-      // 7️⃣ Ledger commit (authoritative fact)
+      // 7️⃣ Ledger commit — FACT ONLY (no lifecycle mutation)
       await this.ledger.commit({
         tenantId: record.tenantId,
         caseId: record.caseId,
@@ -155,16 +157,9 @@ export class VerificationService {
         },
       });
 
-      // 8️⃣ Ledger-backed lifecycle transition
-      await transitionCaseLifecycleWithLedger({
-        caseId: record.caseId,
-        from: CaseLifecycle.ROUTED,
-        to: CaseLifecycle.VERIFIED,
-        actorUserId: verifierUserId,
-        intentContext: {
-          verificationRecordId: record.id,
-        },
-      });
+      // 🚫 Lifecycle transition is NOT performed here.
+      // It must be handled by a command/orchestrator that
+      // asserts authority and calls transitionCaseLifecycleWithLedger.
 
       return {
         consensusReached: true,

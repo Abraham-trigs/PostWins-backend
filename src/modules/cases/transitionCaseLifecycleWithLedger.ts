@@ -1,19 +1,14 @@
-// modules/cases/transitionCaseLifecycleWithLedger.ts
-
 import { prisma } from "@/lib/prisma";
-import { CaseLifecycle, LedgerEventType } from "@prisma/client";
+import { CaseLifecycle } from "./CaseLifecycle";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
+import { LedgerEventType } from "@prisma/client";
 import { commitLedgerEvent } from "../routing/commitRoutingLedger";
 
 /**
- * NOTE:
- * This is the preferred path for meaningful lifecycle transitions.
+ * Enforced lifecycle transition with ledger authority.
  *
- * - Domain rules are applied first (may throw)
- * - Ledger event is committed as the CAUSE
- * - Case.lifecycle is updated as a projection (EFFECT)
- *
- * Do not bypass this helper for decision-driven changes.
+ * 🔒 Invariant:
+ * Lifecycle change without ledger = impossible
  */
 export async function transitionCaseLifecycleWithLedger(params: {
   tenantId: string;
@@ -26,43 +21,39 @@ export async function transitionCaseLifecycleWithLedger(params: {
   };
   intentContext?: unknown;
 }) {
-  const { tenantId, caseId, target, actor, intentContext } = params;
-
   return prisma.$transaction(async (tx) => {
     // 1. Load current authoritative state
-    const currentCase = await tx.case.findUniqueOrThrow({
-      where: { id: caseId },
+    const c = await tx.case.findUniqueOrThrow({
+      where: { id: params.caseId },
       select: { lifecycle: true },
     });
 
-    // 2. Apply pure domain rules (may throw domain errors)
-    const nextLifecycle = transitionCaseLifecycle({
-      caseId,
-      current: currentCase.lifecycle,
-      target,
+    // 2. Apply pure domain law (may throw)
+    const next = transitionCaseLifecycle({
+      caseId: params.caseId,
+      current: c.lifecycle,
+      target: params.target,
     });
 
     // 3. EFFECT — update projection
     await tx.case.update({
-      where: { id: caseId },
-      data: {
-        lifecycle: nextLifecycle,
-      },
+      where: { id: params.caseId },
+      data: { lifecycle: next },
     });
 
-    // 4. CAUSE — commit ledger event
+    // 4. CAUSE — commit ledger event (mandatory)
     await commitLedgerEvent(tx, {
-      tenantId,
-      caseId,
+      tenantId: params.tenantId,
+      caseId: params.caseId,
       eventType: LedgerEventType.CASE_UPDATED,
-      actor,
-      intentContext,
+      actor: params.actor,
+      intentContext: params.intentContext,
       payload: {
-        from: currentCase.lifecycle,
-        to: nextLifecycle,
+        from: c.lifecycle,
+        to: next,
       },
     });
 
-    return nextLifecycle;
+    return next;
   });
 }

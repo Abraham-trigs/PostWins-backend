@@ -5,8 +5,10 @@ import { CaseLifecycle } from "./CaseLifecycle";
  *
  * This is POLICY, not implementation.
  * Keep deterministic. No side effects.
+ *
+ * 🧠 Invariant (Closed Transition Law):
+ * If it’s not here, it does not exist.
  */
-
 export const CASE_LIFECYCLE_TRANSITIONS: Record<
   CaseLifecycle,
   readonly CaseLifecycle[]

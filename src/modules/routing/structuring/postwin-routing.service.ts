@@ -1,3 +1,18 @@
+/**
+ * 🚫 GOVERNANCE NOTICE
+ * --------------------------------------------------
+ * This service operates on PostWin (Phase 2) only.
+ *
+ * It MUST NOT:
+ * - read Case.lifecycle
+ * - write Case.lifecycle
+ * - infer Case.lifecycle
+ * - call transitionCaseLifecycle*
+ *
+ * Any lifecycle change must be performed by
+ * a Phase 1.5 / governance service upstream.
+ */
+
 // apps/backend/src/modules/routing/postwin-routing.service.ts
 // Purpose: Validates PostWin task integrity, hydrates state, routes to bodies, and manages reliable event delivery with retries.
 

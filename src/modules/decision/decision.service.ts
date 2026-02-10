@@ -10,7 +10,7 @@ import { ApplyDecisionParams } from "./decision.types";
  *
  * ⚠️ Maps DECISION → TARGET LIFECYCLE
  * - Does NOT encode transition validity
- * - Does NOT imply execution or reversal
+ * - Does NOT assume current lifecycle
  * - Lifecycle is a projection of authoritative intent only
  */
 const DECISION_OUTCOME_LIFECYCLE: Partial<Record<DecisionType, CaseLifecycle>> =
@@ -20,7 +20,7 @@ const DECISION_OUTCOME_LIFECYCLE: Partial<Record<DecisionType, CaseLifecycle>> =
     FLAGGING: CaseLifecycle.FLAGGED,
     APPEAL: CaseLifecycle.HUMAN_REVIEW,
 
-    // Phase 4.3 — Budget is authorization, not execution
+    // Budget is authorization, not execution
     BUDGET: CaseLifecycle.ROUTED,
   };
 
@@ -30,9 +30,9 @@ export class DecisionService {
    *
    * Authority invariants (ENFORCED):
    * - History is never rewritten
-   * - Decisions may be superseded explicitly or implicitly
-   * - At most ONE non-superseded decision per (caseId, decisionType)
-   * - Lifecycle reflects authoritative intent, not execution state
+   * - Decisions may be superseded explicitly
+   * - At most ONE active decision per (caseId, decisionType)
+   * - Lifecycle reflects intent, not execution
    */
   async applyDecision(
     params: ApplyDecisionParams,
@@ -49,28 +49,15 @@ export class DecisionService {
       supersedesDecisionId,
     } = params;
 
-    // 1️⃣ Load authoritative current lifecycle
-    const existingCase = await tx.case.findFirst({
-      where: { id: caseId, tenantId },
-      select: { lifecycle: true },
-    });
+    const target = DECISION_OUTCOME_LIFECYCLE[decisionType];
 
-    if (!existingCase) {
-      throw new Error(`Case not found: ${caseId}`);
-    }
-
-    const from = existingCase.lifecycle;
-    const to = DECISION_OUTCOME_LIFECYCLE[decisionType];
-
-    if (!to) {
+    if (!target) {
       throw new Error(
         `DecisionType ${decisionType} does not project lifecycle`,
       );
     }
 
-    // 2️⃣ Enforce single authoritative decision per type
-    // Supersede ALL existing non-superseded decisions of this type
-    // (explicit supersedesDecisionId is validated but not required)
+    // 1️⃣ Supersede existing active decisions of this type
     const activeDecisions = await tx.decision.findMany({
       where: {
         tenantId,
@@ -81,7 +68,6 @@ export class DecisionService {
     });
 
     for (const prior of activeDecisions) {
-      // If explicit supersession was provided, ensure it matches
       if (supersedesDecisionId && prior.id !== supersedesDecisionId) {
         throw new Error(
           `Explicit supersession mismatch: expected ${supersedesDecisionId}, found ${prior.id}`,
@@ -94,7 +80,7 @@ export class DecisionService {
       });
     }
 
-    // 3️⃣ Persist new authoritative decision
+    // 2️⃣ Persist new authoritative decision
     const decision = await tx.decision.create({
       data: {
         id: crypto.randomUUID(),
@@ -110,22 +96,23 @@ export class DecisionService {
       },
     });
 
-    // 4️⃣ Ledger-backed lifecycle projection
-    await transitionCaseLifecycleWithLedger(
-      {
-        caseId,
-        from,
-        to,
-        actorUserId,
-        intentContext: {
-          decisionId: decision.id,
-          decisionType,
-          supersedesDecisionId,
-          reason,
-          ...intentContext,
-        },
+    // 3️⃣ Ledger-backed lifecycle projection (LAW ENFORCED ELSEWHERE)
+    await transitionCaseLifecycleWithLedger({
+      tenantId,
+      caseId,
+      target,
+      actor: {
+        kind: actorKind,
+        userId: actorUserId,
+        authorityProof: "AUTHORITATIVE_DECISION",
       },
-      tx,
-    );
+      intentContext: {
+        decisionId: decision.id,
+        decisionType,
+        supersedesDecisionId,
+        reason,
+        ...intentContext,
+      },
+    });
   }
 }
