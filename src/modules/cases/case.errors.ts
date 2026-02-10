@@ -1,20 +1,19 @@
-export class CaseNotFoundError extends Error {
-  constructor(message = "Case not found") {
-    super(message);
-    this.name = "CaseNotFoundError";
+// modules/cases/case.errors.ts
+
+export class IllegalLifecycleTransitionError extends Error {
+  constructor(
+    public readonly from: string,
+    public readonly to: string,
+    public readonly caseId: string,
+  ) {
+    super(`Illegal lifecycle transition ${from} → ${to} for case ${caseId}`);
+    this.name = "IllegalLifecycleTransitionError";
   }
 }
 
-export class CaseForbiddenError extends Error {
-  constructor(message = "Forbidden") {
+export class LifecycleInvariantViolationError extends Error {
+  constructor(message: string) {
     super(message);
-    this.name = "CaseForbiddenError";
-  }
-}
-
-export class ResolverError extends Error {
-  constructor(message = "Invalid case reference") {
-    super(message);
-    this.name = "ResolverError";
+    this.name = "LifecycleInvariantViolationError";
   }
 }

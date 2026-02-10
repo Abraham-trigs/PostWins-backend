@@ -1,63 +1,68 @@
-import { prisma } from "../../lib/prisma"; // ← fixed path
-import { CaseLifecycle, ActorKind } from "@prisma/client";
+// modules/cases/transitionCaseLifecycleWithLedger.ts
+
+import { prisma } from "@/lib/prisma";
+import { CaseLifecycle, LedgerEventType } from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
-import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
+import { commitLedgerEvent } from "../routing/commitRoutingLedger";
 
 /**
  * NOTE:
  * This is the preferred path for meaningful lifecycle transitions.
  *
- * - A LedgerCommit is written first (CAUSE)
+ * - Domain rules are applied first (may throw)
+ * - Ledger event is committed as the CAUSE
  * - Case.lifecycle is updated as a projection (EFFECT)
  *
  * Do not bypass this helper for decision-driven changes.
  */
 export async function transitionCaseLifecycleWithLedger(params: {
+  tenantId: string;
   caseId: string;
-  from: CaseLifecycle;
-  to: CaseLifecycle;
-  actorUserId?: string;
-  intentContext?: Record<string, unknown>;
+  target: CaseLifecycle;
+  actor: {
+    kind: "HUMAN" | "SYSTEM";
+    userId?: string;
+    authorityProof: string;
+  };
+  intentContext?: unknown;
 }) {
-  const { caseId, from, to, actorUserId, intentContext } = params;
-
-  const eventType = CASE_LIFECYCLE_LEDGER_EVENTS[to];
-
-  // 🔒 Hard guard: every lifecycle must map to a ledger event
-  if (!eventType) {
-    throw new Error(`No LedgerEventType mapped for CaseLifecycle: ${to}`);
-  }
+  const { tenantId, caseId, target, actor, intentContext } = params;
 
   return prisma.$transaction(async (tx) => {
-    // 1. CAUSE — ledger commit (mandatory)
-    const ledgerCommit = await tx.ledgerCommit.create({
+    // 1. Load current authoritative state
+    const currentCase = await tx.case.findUniqueOrThrow({
+      where: { id: caseId },
+      select: { lifecycle: true },
+    });
+
+    // 2. Apply pure domain rules (may throw domain errors)
+    const nextLifecycle = transitionCaseLifecycle({
+      caseId,
+      current: currentCase.lifecycle,
+      target,
+    });
+
+    // 3. EFFECT — update projection
+    await tx.case.update({
+      where: { id: caseId },
       data: {
-        caseId,
-        eventType,
-        ts: BigInt(Date.now()),
-        actorKind: actorUserId ? ActorKind.HUMAN : ActorKind.SYSTEM,
-        actorUserId,
-        authorityProof: "CASE_LIFECYCLE_TRANSITION",
-        intentContext,
-        payload: {
-          from,
-          to,
-        },
-        commitmentHash: "placeholder", // existing infra handles this
+        lifecycle: nextLifecycle,
       },
     });
 
-    // 🔒 INVARIANT (Phase C, Step C1)
-    if (!ledgerCommit) {
-      throw new Error("Lifecycle changes must be ledger-committed");
-    }
-
-    // 2. EFFECT — projection
-    return transitionCaseLifecycle({
+    // 4. CAUSE — commit ledger event
+    await commitLedgerEvent(tx, {
+      tenantId,
       caseId,
-      from,
-      to,
-      actorUserId,
+      eventType: LedgerEventType.CASE_UPDATED,
+      actor,
+      intentContext,
+      payload: {
+        from: currentCase.lifecycle,
+        to: nextLifecycle,
+      },
     });
+
+    return nextLifecycle;
   });
 }

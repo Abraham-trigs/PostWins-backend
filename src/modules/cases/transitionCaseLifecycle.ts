@@ -1,7 +1,7 @@
 import { prisma } from "../../lib/prisma";
 import { CaseLifecycle } from "@prisma/client";
 import { deriveCaseStatus } from "./deriveCaseStatus";
-import { CASE_LIFECYCLE_TRANSITIONS } from "./caseLifecycle.transitions";
+import { transitionCaseLifecycle as applyLifecycleRules } from "./transitionCaseLifecycle.domain";
 
 /**
  * NOTE:
@@ -10,6 +10,10 @@ import { CASE_LIFECYCLE_TRANSITIONS } from "./caseLifecycle.transitions";
  * - Use this helper for internal / non-decision transitions.
  * - If a transition represents a human or system decision,
  *   use transitionCaseLifecycleWithLedger instead.
+ *
+ * This function is an APPLICATION-LAYER orchestrator:
+ * - validates lifecycle transitions via the domain
+ * - persists the result
  */
 
 /**
@@ -17,10 +21,7 @@ import { CASE_LIFECYCLE_TRANSITIONS } from "./caseLifecycle.transitions";
  *
  * ⚠️ Lifecycle is AUTHORITATIVE.
  * Status is derived and advisory.
- *
- * This function centralizes lifecycle mutation.
  */
-
 export async function transitionCaseLifecycle(params: {
   caseId: string;
   from: CaseLifecycle;
@@ -29,20 +30,19 @@ export async function transitionCaseLifecycle(params: {
 }) {
   const { caseId, from, to } = params;
 
-  const allowedNext = CASE_LIFECYCLE_TRANSITIONS[from] ?? [];
+  // 1. Apply pure domain rules (may throw domain errors)
+  const nextLifecycle = applyLifecycleRules({
+    caseId,
+    current: from,
+    target: to,
+  });
 
-  if (!allowedNext.includes(to)) {
-    console.warn(
-      "[domain-warning] Invalid CaseLifecycle transition attempted",
-      { caseId, from, to },
-    );
-  }
-
+  // 2. Persist authoritative lifecycle + derived status
   return prisma.case.update({
     where: { id: caseId },
     data: {
-      lifecycle: to,
-      status: deriveCaseStatus(to),
+      lifecycle: nextLifecycle,
+      status: deriveCaseStatus(nextLifecycle),
     },
   });
 }
