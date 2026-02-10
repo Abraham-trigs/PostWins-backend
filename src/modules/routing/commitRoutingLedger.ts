@@ -1,6 +1,6 @@
 import { SYSTEM_AUTHORITY_PROOF } from "../../domain/system/systemActors";
 import type { RoutingResult } from "./routing.types";
-import { LedgerEventType, ActorKind } from "../../types";
+import { LedgerEventType, ActorKind } from "@posta/core/src/types";
 
 export async function commitRoutingLedger({
   ledger,

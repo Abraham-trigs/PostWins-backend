@@ -1,0 +1,7 @@
+export enum CaseLifecycle {
+  INTAKE = "INTAKE",
+  ROUTED = "ROUTED",
+  VERIFIED = "VERIFIED",
+  FLAGGED = "FLAGGED",
+  HUMAN_REVIEW = "HUMAN_REVIEW",
+}

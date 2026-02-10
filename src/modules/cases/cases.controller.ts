@@ -30,7 +30,7 @@ export async function listCases(req: Request, res: Response) {
       lifecycle: true,
 
       // ⚠️ ADVISORY
-      status: true,
+      // status: true,
 
       // ✅ CANONICAL TASK IDENTIFIER (LABEL ONLY)
       currentTask: true,
@@ -64,7 +64,7 @@ export async function listCases(req: Request, res: Response) {
       lifecycle: row.lifecycle,
 
       // advisory
-      status: row.status,
+      // status: row.status,
 
       // ✅ task label (no semantics attached)
       currentTask: row.currentTask,

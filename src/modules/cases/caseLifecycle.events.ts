@@ -1,4 +1,5 @@
-import { CaseLifecycle, LedgerEventType } from "@prisma/client";
+import { LedgerEventType } from "@prisma/client";
+import { CaseLifecycle } from "./CaseLifecycle";
 
 /**
  * Maps lifecycle transitions to ledger events.

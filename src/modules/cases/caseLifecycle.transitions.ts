@@ -1,4 +1,4 @@
-import { CaseLifecycle } from "@prisma/client";
+import { CaseLifecycle } from "./CaseLifecycle";
 
 /**
  * Allowed CaseLifecycle transitions.
