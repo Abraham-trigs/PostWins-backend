@@ -1,7 +1,10 @@
 import { ExplainCaseResponse, DecisionView } from "./explain.case.contract";
+import { explainDisbursementState } from "@/modules/disbursement/explainDisbursementState";
+import { redactDisbursementExplanation } from "@/modules/explainability/redactDisbursementExplanation";
 
 export function mapExplainableCaseToResponse(
   payload: any,
+  viewerRole?: any, // ← already available in caller in practice
 ): ExplainCaseResponse {
   const decisionsToView = (d: any): DecisionView => ({
     decisionId: d.id,
@@ -18,6 +21,20 @@ export function mapExplainableCaseToResponse(
   const active = payload.authority.active.map(decisionsToView);
 
   const causedByDecision = active.length > 0 ? active[active.length - 1] : null;
+
+  // --------------------
+  // Disbursement explainability (NEW)
+  // --------------------
+  const disbursementExplanation =
+    payload.disbursement && viewerRole
+      ? redactDisbursementExplanation(
+          explainDisbursementState({
+            disbursement: payload.disbursement.snapshot,
+            blockingReasons: payload.disbursement.blockingReasons ?? [],
+          }),
+          viewerRole,
+        )
+      : undefined;
 
   return {
     case: {
@@ -70,5 +87,10 @@ export function mapExplainableCaseToResponse(
       alternatives: c.alternatives,
       constraintsApplied: c.constraintsApplied,
     })),
+
+    // --------------------
+    // NEW SECTION (non-breaking)
+    // --------------------
+    disbursement: disbursementExplanation,
   };
 }

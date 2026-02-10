@@ -125,7 +125,8 @@ export type LedgerEventType =
   | "BUDGET_ALLOCATED"
   | "TRANCHE_RELEASED"
   | "BUDGET_SUPERSEDED"
-  | "TRANCHE_REVERSED";
+  | "TRANCHE_REVERSED"
+  | "DISBURSEMENT_STALLED";
 
 /**
  * Runtime-safe set for guards / coercion.
@@ -149,4 +150,5 @@ export const LEDGER_EVENT_TYPES: ReadonlySet<LedgerEventType> = new Set([
   "TRANCHE_RELEASED",
   "BUDGET_SUPERSEDED",
   "TRANCHE_REVERSED",
+  "DISBURSEMENT_STALLED",
 ]);

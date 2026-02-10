@@ -12,6 +12,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum DisbursementType {
+  PROVIDER_PAYMENT
+  BENEFICIARY_PAYMENT
+  VENDOR_PAYMENT
+  REIMBURSEMENT
+}
+
+enum DisbursementStatus {
+  AUTHORIZED
+  EXECUTED
+  FAILED
+}
+
+
 enum CaseLifecycle {
   INTAKE
   ROUTED
@@ -830,6 +844,50 @@ model CounterfactualRecord {
   @@index([caseId, createdAt])
   @@index([tenantId, decisionType, createdAt])
 }
+
+model Disbursement {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String @db.Uuid
+  caseId    String @unique @db.Uuid
+
+  // Classification
+  type   DisbursementType
+  status DisbursementStatus
+
+  // Amount
+  amount   Decimal @db.Decimal(18, 2)
+  currency String
+
+  // Payee (who receives the value)
+  payeeKind String // ORGANIZATION | USER | EXTERNAL_ACCOUNT
+  payeeId   String // opaque identifier (orgId, userId, external ref)
+
+  // Authority (non-anonymous)
+  actorKind      ActorKind
+  actorUserId    String? @db.Uuid
+  authorityProof String
+
+  // Provenance (hard links)
+  verificationRecordId String @db.Uuid
+  executionId          String @db.Uuid
+
+  // Failure is first-class
+  failureReason String?
+
+  // Timestamps (irreversible trail)
+  authorizedAt DateTime @default(now())
+  executedAt   DateTime?
+  failedAt     DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status, authorizedAt])
+  @@index([verificationRecordId])
+  @@index([executionId])
+}
+
 
 model Grant {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
