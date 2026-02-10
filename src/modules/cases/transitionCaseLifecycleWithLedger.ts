@@ -3,12 +3,14 @@ import { CaseLifecycle } from "./CaseLifecycle";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
 import { LedgerEventType } from "@prisma/client";
 import { commitLedgerEvent } from "../routing/commitRoutingLedger";
+import { LifecycleInvariantViolationError } from "./case.errors";
 
 /**
  * Enforced lifecycle transition with ledger authority.
  *
- * 🔒 Invariant:
- * Lifecycle change without ledger = impossible
+ * 🔒 Invariants:
+ * - Lifecycle change without ledger = impossible
+ * - EXECUTING requires explicit Execution existence
  */
 export async function transitionCaseLifecycleWithLedger(params: {
   tenantId: string;
@@ -34,6 +36,20 @@ export async function transitionCaseLifecycleWithLedger(params: {
       current: c.lifecycle,
       target: params.target,
     });
+
+    // 🔒 STEP 9.C — execution existence law
+    if (next === CaseLifecycle.EXECUTING) {
+      const execution = await tx.execution.findUnique({
+        where: { caseId: params.caseId },
+        select: { id: true },
+      });
+
+      if (!execution) {
+        throw new LifecycleInvariantViolationError(
+          "EXECUTING_REQUIRES_EXECUTION_EXISTENCE",
+        );
+      }
+    }
 
     // 3. EFFECT — update projection
     await tx.case.update({

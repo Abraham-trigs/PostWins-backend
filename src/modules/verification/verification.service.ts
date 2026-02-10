@@ -4,7 +4,9 @@ import {
   VerificationStatus,
   ActorKind,
   VerificationRecord,
+  ExecutionStatus,
 } from "@prisma/client";
+import { LifecycleInvariantViolationError } from "../cases/case.errors";
 
 type VerificationResult = {
   consensusReached: boolean;
@@ -58,6 +60,18 @@ export class VerificationService {
 
       if (record.consensusReached) {
         throw new Error("Verification already finalized");
+      }
+
+      // 🔒 STEP 9.D — verification requires completed execution
+      const execution = await tx.execution.findUnique({
+        where: { caseId: record.caseId },
+        select: { status: true },
+      });
+
+      if (!execution || execution.status !== ExecutionStatus.COMPLETED) {
+        throw new LifecycleInvariantViolationError(
+          "VERIFICATION_REQUIRES_COMPLETED_EXECUTION",
+        );
       }
 
       // 2️⃣ Resolve verifier roles

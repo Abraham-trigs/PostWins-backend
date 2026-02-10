@@ -27,6 +27,14 @@ enum TaskId {
   MODULE_2
 }
 
+enum ExecutionStatus {
+  CREATED      // execution intent recorded, no work yet
+  IN_PROGRESS  // work has begun
+  BLOCKED      // cannot proceed (external dependency, policy, funding, etc.)
+  COMPLETED    // work finished (still not verified)
+  ABORTED      // execution terminated before completion
+}
+
 
 enum OperationalMode {
   MOCK
@@ -114,6 +122,12 @@ enum LedgerEventType {
   TRANCHE_RELEASED
   BUDGET_SUPERSEDED
   TRANCHE_REVERSED
+
+
+  EXECUTION_STARTED
+  EXECUTION_PROGRESS_RECORDED
+  EXECUTION_COMPLETED
+  EXECUTION_ABORTED
 }
 
 enum EvidenceKind {
@@ -326,6 +340,44 @@ model BeneficiaryPII {
   @@index([nationalId])
 }
 
+model Execution {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @unique @db.Uuid
+
+  status    ExecutionStatus @default(CREATED)
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  abortedAt   DateTime?
+
+  // optional attribution
+  startedByUserId String? @db.Uuid
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  starter User? @relation(fields: [startedByUserId], references: [id], onDelete: SetNull)
+
+  progress ExecutionProgress[]
+
+  @@index([tenantId, status])
+  @@index([caseId])
+}
+
+model ExecutionProgress {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  executionId String   @db.Uuid
+
+  label       String           // human-readable checkpoint
+  detail      Json?
+  recordedAt  DateTime @default(now())
+
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId, recordedAt])
+}
+
+
 
 /// ⚠️ LIFECYCLE LAW
 /// ----------------------------------------------------
@@ -354,6 +406,8 @@ model Case {
   /// Derived / advisory only (UI, ops)
   /// MUST NOT be used for lifecycle, history, or governance decisions
   status CaseStatus @default(INTAKED)
+
+  execution Execution?
 
   sdgGoal     String?
   summary     String?
