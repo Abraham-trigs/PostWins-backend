@@ -1,7 +1,3 @@
-// intentionally empty for now
-export {};
-// src/modules/disbursement/disburseCase.service.ts
-
 import { authorizeDisbursement } from "./_internal/authorizeDisbursement.service";
 import { executeDisbursement } from "./_internal/executeDisbursement.service";
 

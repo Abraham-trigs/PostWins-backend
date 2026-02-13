@@ -8,6 +8,26 @@ import { IllegalLifecycleInvariantViolation } from "@/modules/cases/case.errors"
 import { commitLedgerEvent } from "@/modules/routing/commitRoutingLedger";
 import { LedgerEventType } from "@prisma/client";
 
+/* ---------------------------------------------
+   Capability types (CRITICAL)
+--------------------------------------------- */
+
+export type AuthorizedDisbursement = {
+  kind: "AUTHORIZED";
+  disbursementId: string;
+};
+
+export type AuthorizationDenied = {
+  kind: "DENIED";
+  reason: string;
+};
+
+export type AuthorizationResult = AuthorizedDisbursement | AuthorizationDenied;
+
+/* ---------------------------------------------
+   Params
+--------------------------------------------- */
+
 type AuthorizeDisbursementParams = {
   tenantId: string;
   caseId: string;
@@ -29,19 +49,34 @@ type AuthorizeDisbursementParams = {
   };
 };
 
+/* ---------------------------------------------
+   Authorization (NO EXECUTION)
+--------------------------------------------- */
+
 export async function authorizeDisbursement(
   params: AuthorizeDisbursementParams,
-) {
+): Promise<AuthorizationResult> {
   return prisma.$transaction(async (tx) => {
     /* -------------------------------------------------
        1️⃣ Idempotency guard — one per case
        ------------------------------------------------- */
     const existing = await tx.disbursement.findUnique({
       where: { caseId: params.caseId },
+      select: { id: true, status: true },
     });
 
     if (existing) {
-      return existing;
+      if (existing.status !== DisbursementStatus.AUTHORIZED) {
+        return {
+          kind: "DENIED",
+          reason: "Disbursement already exists and is not AUTHORIZED",
+        };
+      }
+
+      return {
+        kind: "AUTHORIZED",
+        disbursementId: existing.id,
+      };
     }
 
     /* -------------------------------------------------
@@ -85,11 +120,8 @@ export async function authorizeDisbursement(
       );
     }
 
-    // NOTE: unresolved flags / disputes would be checked here
-    // NOTE: tenant budget check is intentionally read-only here
-
     /* -------------------------------------------------
-       4️⃣ Create AUTHORIZED disbursement (no execution)
+       4️⃣ Create AUTHORIZED disbursement (NO execution)
        ------------------------------------------------- */
     const disbursement = await tx.disbursement.create({
       data: {
@@ -132,6 +164,9 @@ export async function authorizeDisbursement(
       },
     });
 
-    return disbursement;
+    return {
+      kind: "AUTHORIZED",
+      disbursementId: disbursement.id,
+    };
   });
 }

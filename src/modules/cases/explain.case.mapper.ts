@@ -1,5 +1,5 @@
 import { ExplainCaseResponse, DecisionView } from "./explain.case.contract";
-import { explainDisbursementState } from "@/modules/disbursement/explainDisbursementState";
+import { explainDisbursementState } from "../disbursement";
 import { redactDisbursementExplanation } from "@/modules/explainability/redactDisbursementExplanation";
 
 export function mapExplainableCaseToResponse(

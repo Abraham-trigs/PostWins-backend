@@ -15,7 +15,10 @@
     "outDir": "dist",
 
     "declaration": true,
-    "declarationMap": true
+    "declarationMap": true,
+    "paths": {
+      "@/modules/*": ["./apps/backend/src/modules/*"]
+    }
   },
   "include": ["src/**/*.ts", "../../packages/core/src/types.ts"],
   "exclude": ["node_modules", "dist"]

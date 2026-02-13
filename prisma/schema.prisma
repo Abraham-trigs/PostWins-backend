@@ -1,7 +1,15 @@
+// ============================================================
 // schema.prisma
-// Postgres notes:
-// - enable pgcrypto for gen_random_uuid():  CREATE EXTENSION IF NOT EXISTS pgcrypto;
-// - store sensitive PII separately (BeneficiaryPII) to support redaction + least privilege. :contentReference[oaicite:6]{index=6}
+// ============================================================
+// PostgreSQL Notes:
+// - Enable pgcrypto for UUID generation:
+//     CREATE EXTENSION IF NOT EXISTS pgcrypto;
+//
+// - Sensitive PII is isolated in BeneficiaryPII to support:
+//     • Redaction
+//     • Least privilege access
+//     • Envelope encryption strategies
+// ============================================================
 
 generator client {
   provider = "prisma-client-js"
@@ -11,6 +19,10 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+////////////////////////////////////////////////////////////////
+// ENUMS
+////////////////////////////////////////////////////////////////
 
 enum DisbursementType {
   PROVIDER_PAYMENT
@@ -22,9 +34,9 @@ enum DisbursementType {
 enum DisbursementStatus {
   AUTHORIZED
   EXECUTED
+  COMPLETED
   FAILED
 }
-
 
 enum CaseLifecycle {
   INTAKE
@@ -33,6 +45,7 @@ enum CaseLifecycle {
   FLAGGED
   HUMAN_REVIEW
 }
+
 enum TaskId {
   START
   ENROLL
@@ -42,13 +55,12 @@ enum TaskId {
 }
 
 enum ExecutionStatus {
-  CREATED      // execution intent recorded, no work yet
-  IN_PROGRESS  // work has begun
-  BLOCKED      // cannot proceed (external dependency, policy, funding, etc.)
-  COMPLETED    // work finished (still not verified)
-  ABORTED      // execution terminated before completion
+  CREATED
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+  ABORTED
 }
-
 
 enum OperationalMode {
   MOCK
@@ -73,12 +85,9 @@ enum CaseType {
   EXECUTION
 }
 
+/// ⚠️ NON-AUTHORITATIVE STATUS
+/// UI convenience only. Never infer lifecycle from this.
 enum CaseStatus {
-  // ⚠️ NON-AUTHORITATIVE
-  // UI / operational convenience ONLY
-  // MUST NOT be used to infer lifecycle, audit state, or compliance
-  // Always derive from Case.lifecycle
-
   INTAKED
   IN_REVIEW
   VERIFIED
@@ -90,11 +99,8 @@ enum CaseStatus {
   ARCHIVED
 }
 
+/// ⚠️ Decision snapshot metadata only.
 enum RoutingOutcome {
-  // ⚠️ DECISION METADATA ONLY
-  // Snapshot of a routing decision
-  // Does NOT represent case lifecycle or state progression
-  
   UNASSIGNED
   MATCHED
   FALLBACK
@@ -106,7 +112,6 @@ enum ApprovalStatus {
   APPROVED
   REJECTED
 }
-
 
 enum VerificationStatus {
   PENDING
@@ -120,25 +125,19 @@ enum LedgerEventType {
   CASE_FLAGGED
   CASE_REJECTED
   CASE_ARCHIVED
-
   ROUTED
   ROUTING_SUPERSEDED
-
   VERIFICATION_SUBMITTED
   VERIFIED
   VERIFICATION_TIMED_OUT
-
   APPEAL_OPENED
   APPEAL_RESOLVED
-
   GRANT_CREATED
   GRANT_POLICY_APPLIED
   BUDGET_ALLOCATED
   TRANCHE_RELEASED
   BUDGET_SUPERSEDED
   TRANCHE_REVERSED
-
-
   EXECUTION_STARTED
   EXECUTION_PROGRESS_RECORDED
   EXECUTION_COMPLETED
@@ -182,6 +181,10 @@ enum TrancheStatus {
   REVERSED
 }
 
+////////////////////////////////////////////////////////////////
+// CORE MULTI-TENANT ROOT
+////////////////////////////////////////////////////////////////
+
 model Tenant {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   slug      String   @unique
@@ -189,6 +192,7 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Primary relations
   users         User[]
   orgs          Organization[]
   cases         Case[]
@@ -196,7 +200,7 @@ model Tenant {
   ledgerCommits LedgerCommit[]
   auditEntries  AuditEntry[]
 
-  // ✅ back relations
+  // Back relations
   roles               Role[]
   beneficiaries       Beneficiary[]
   messages            Message[]
@@ -211,6 +215,10 @@ model Tenant {
 
   @@index([createdAt])
 }
+
+////////////////////////////////////////////////////////////////
+// IDENTITY & ACCESS CONTROL
+////////////////////////////////////////////////////////////////
 
 model User {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -234,7 +242,6 @@ model User {
   auditEntries  AuditEntry[]
   ledgerCommits LedgerCommit[]
 
-  // ✅ back-relations required by Prisma
   caseAssignmentsAssigned CaseAssignment[]  @relation("CaseAssignmentAssignedBy")
   routingDecisionsDecided RoutingDecision[] @relation("RoutingDecisionDecidedBy")
 
@@ -305,32 +312,18 @@ model RolePermission {
   @@index([permissionId])
 }
 
-model Organization {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  name      String
-  kind      String // e.g. NGO, SCHOOL, DONOR, TRUSTEE, REGULATOR
-  createdAt DateTime @default(now())
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  executionBody       ExecutionBody?
-  grantsAsDonor       Grant[]        @relation("GrantDonor")
-  grantsAsImplementer Grant[]        @relation("GrantImplementer")
-
-  @@index([tenantId, kind])
-  @@index([tenantId, name])
-}
+////////////////////////////////////////////////////////////////
+// BENEFICIARY & PII SEGREGATION
+////////////////////////////////////////////////////////////////
 
 model Beneficiary {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId    String   @db.Uuid
-  // public-ish profile (non-sensitive)
   displayName String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   pii    BeneficiaryPII?
 
   cases Case[] @relation("CaseBeneficiary")
@@ -338,15 +331,15 @@ model Beneficiary {
   @@index([tenantId, createdAt])
 }
 
+/// Sensitive data isolated for least privilege access.
 model BeneficiaryPII {
   id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   beneficiaryId String @unique @db.Uuid
 
-  phone         String?
-  nationalId    String?
-  address       String?
-  dateOfBirth   DateTime?
-  // store encrypted blobs if you’re doing app-level envelope encryption
+  phone       String?
+  nationalId  String?
+  address     String?
+  dateOfBirth DateTime?
   encryptedBlob Bytes?
 
   beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
@@ -355,54 +348,14 @@ model BeneficiaryPII {
   @@index([nationalId])
 }
 
-model Execution {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @unique @db.Uuid
-
-  status    ExecutionStatus @default(CREATED)
-
-  startedAt   DateTime?
-  completedAt DateTime?
-  abortedAt   DateTime?
-
-  // optional attribution
-  startedByUserId String? @db.Uuid
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  starter User? @relation(fields: [startedByUserId], references: [id], onDelete: SetNull)
-
-  progress ExecutionProgress[]
-
-  @@index([tenantId, status])
-  @@index([caseId])
-}
-
-model ExecutionProgress {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  executionId String   @db.Uuid
-
-  label       String           // human-readable checkpoint
-  detail      Json?
-  recordedAt  DateTime @default(now())
-
-  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
-
-  @@index([executionId, recordedAt])
-}
-
-
+////////////////////////////////////////////////////////////////
+// CASE DOMAIN
+////////////////////////////////////////////////////////////////
 
 /// ⚠️ LIFECYCLE LAW
-/// ----------------------------------------------------
-/// Case.lifecycle MUST NOT be written directly.
-/// All lifecycle mutations MUST go through:
+/// Case.lifecycle MUST NOT be directly written.
+/// All transitions must pass through:
 ///   transitionCaseLifecycleWithLedger
-///
-/// Direct writes are a system integrity violation.
-/// Do not bypass. Do not wrap. Do not “temporarily” skip.
-
 model Case {
   id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId      String  @db.Uuid
@@ -413,13 +366,10 @@ model Case {
   scope AccessScope
   type  CaseType
 
-  /// ✅ AUTHORITATIVE SOURCE OF TRUTH
-  /// Governs lifecycle, audit meaning, and compliance state
+  /// Authoritative state
   lifecycle CaseLifecycle @default(INTAKE)
 
-  /// ⚠️ NON-AUTHORITATIVE
-  /// Derived / advisory only (UI, ops)
-  /// MUST NOT be used for lifecycle, history, or governance decisions
+  /// Derived / advisory only
   status CaseStatus @default(INTAKED)
 
   execution Execution?
@@ -429,7 +379,7 @@ model Case {
   reasonCodes CaseReasonCode[]
 
   currentTask TaskId @default(START)
-  
+
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
@@ -457,51 +407,63 @@ model Case {
   @@index([beneficiaryId, createdAt])
 }
 
-model PolicyEvaluation {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId     String   @db.Uuid
-  caseId       String   @db.Uuid
+////////////////////////////////////////////////////////////////
+// EXECUTION DOMAIN
+////////////////////////////////////////////////////////////////
 
-  policyKey    String
-  outcome      String?
-  evaluatedAt  DateTime @default(now())
+/// Represents the operational execution instance of a Case.
+/// One-to-one with Case (enforced via unique caseId).
+model Execution {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @unique @db.Uuid
 
-  context      Json?
-  constraints  Json?
+  status ExecutionStatus @default(CREATED)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  startedAt   DateTime?
+  completedAt DateTime?
+  abortedAt   DateTime?
 
-  @@index([tenantId, policyKey, evaluatedAt])
-  @@index([caseId, evaluatedAt])
+  // Optional attribution
+  startedByUserId String? @db.Uuid
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case    Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  starter User?  @relation(fields: [startedByUserId], references: [id], onDelete: SetNull)
+
+  progress ExecutionProgress[]
+
+  @@index([tenantId, status])
+  @@index([caseId])
 }
 
-model Message {
-  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId String @db.Uuid
-  caseId   String @db.Uuid
+/// Execution checkpoints / progress entries.
+/// Append-only operational trail.
+model ExecutionProgress {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  executionId String   @db.Uuid
 
-  actorKind ActorKind
-  userId    String?   @db.Uuid // null when system message
-  body      String
-  createdAt DateTime  @default(now())
+  label      String
+  detail     Json?
+  recordedAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
 
-  @@index([caseId, createdAt])
-  @@index([tenantId, createdAt])
+  @@index([executionId, recordedAt])
 }
 
+////////////////////////////////////////////////////////////////
+// ROUTING & ASSIGNMENT
+////////////////////////////////////////////////////////////////
+
+/// Execution body (organization capable of delivering cases).
 model ExecutionBody {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   orgId    String @unique @db.Uuid
 
-  // e.g. trust thresholds, coverage radius, sdg capabilities
   capabilities Json
-  isFallback   Boolean  @default(false) // "Khalistar as real execution body" :contentReference[oaicite:11]{index=11}
+  isFallback   Boolean  @default(false)
   createdAt    DateTime @default(now())
 
   tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -513,6 +475,7 @@ model ExecutionBody {
   @@index([tenantId, isFallback])
 }
 
+/// Single authoritative assignment per Case.
 model CaseAssignment {
   id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   caseId           String   @unique @db.Uuid
@@ -522,130 +485,13 @@ model CaseAssignment {
 
   case          Case          @relation(fields: [caseId], references: [id], onDelete: Cascade)
   executionBody ExecutionBody @relation(fields: [executionBodyId], references: [id], onDelete: Restrict)
-
-  // ✅ single-line relation syntax
-  assignedBy User? @relation("CaseAssignmentAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+  assignedBy    User?         @relation("CaseAssignmentAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
 
   @@index([executionBodyId, assignedAt])
 }
 
-model VerificationRecord {
-  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId String @db.Uuid
-  caseId   String @db.Uuid
-
-  requiredVerifiers Int     @default(2)
-  consensusReached  Boolean @default(false)
-
-  routedAt   DateTime
-  verifiedAt DateTime?
-  createdAt DateTime @default(now())
-
-
-  receivedVerifications Verification[]
-  requiredRoles         VerificationRequiredRole[]
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-
-  @@index([caseId])
-  @@index([tenantId, consensusReached])
-}
-
-model VerificationRequiredRole {
-  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  verificationRecordId String @db.Uuid
-  roleKey              String // e.g. "NGO_PARTNER", "STAFF", etc (store deterministic policy) :contentReference[oaicite:13]{index=13}
-
-  verificationRecord VerificationRecord @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
-
-  @@unique([verificationRecordId, roleKey])
-}
-
-model Verification {
-  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId             String @db.Uuid
-  verificationRecordId String @db.Uuid
-
-  verifierUserId String             @db.Uuid
-  status         VerificationStatus
-  note           String?
-  createdAt      DateTime           @default(now())
-
-  // optional: conflict-of-interest disclosure hook :contentReference[oaicite:14]{index=14}
-  conflictDisclosed Boolean @default(false)
-  conflictNote      String?
-
-  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  verificationRecord VerificationRecord @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
-  verifier           User               @relation(fields: [verifierUserId], references: [id], onDelete: Restrict)
-
-  @@unique([verificationRecordId, verifierUserId]) // prevents double voting
-  @@index([verifierUserId, createdAt])
-  @@unique([verificationRecordId, verifierUserId])
-}
-
-model ApprovalRequest {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
-
-  status ApprovalStatus
-  resolvedAt DateTime?
-  resolvedByUserId String?
-
-  policyKey String
-  effect    Json
-  reason    String
-
-  status    String   // PENDING | APPROVED | REJECTED
-  createdAt DateTime @default(now())
-  resolvedAt DateTime?
-
-  resolvedByUserId String? @db.Uuid
-
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case     Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  resolver User?  @relation(fields: [resolvedByUserId], references: [id], onDelete: SetNull)
-
-  @@index([tenantId, status, createdAt])
-  @@index([caseId, status])
-}
-
-model Decision {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
-
-  decisionType DecisionType
-  actorKind   ActorKind
-  actorUserId String? @db.Uuid
-
-  reason        String?
-  intentContext Json?
-
-  decidedAt DateTime @default(now())
-
-  // 🔁 Phase 4 — supersession
-  supersedesDecisionId String?       @db.Uuid
-  supersededAt         DateTime?
-
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
-
-  supersedes Decision? @relation(
-    "DecisionSupersession",
-    fields: [supersedesDecisionId],
-    references: [id],
-    onDelete: Restrict
-  )
-  supersededBy Decision? @relation("DecisionSupersession")
-
-  @@index([caseId, decidedAt])
-  @@index([tenantId, decisionType, decidedAt])
-}
-
+/// Snapshot of routing decision.
+/// Does NOT represent lifecycle progression.
 model RoutingDecision {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
@@ -664,70 +510,140 @@ model RoutingDecision {
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
   chosenExecutionBody ExecutionBody? @relation(fields: [chosenExecutionBodyId], references: [id], onDelete: SetNull)
-
-  decidedBy User? @relation("RoutingDecisionDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  decidedBy           User?          @relation("RoutingDecisionDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
 
   @@index([caseId, decidedAt])
   @@index([tenantId, routingOutcome, decidedAt])
 }
 
-model TimelineEntry {
+////////////////////////////////////////////////////////////////
+// VERIFICATION DOMAIN
+////////////////////////////////////////////////////////////////
+
+/// Governs multi-verifier consensus workflow for a Case.
+model VerificationRecord {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   caseId   String @db.Uuid
 
-  // matches the “unified stream” concept (messages + system events + timeline + governance) :contentReference[oaicite:15]{index=15}
-  type      String // e.g. "DELIVERY", "FOLLOWUP", "VISIT", "NOTE"
-  body      String?
-  createdAt DateTime @default(now())
+  requiredVerifiers Int     @default(2)
+  consensusReached  Boolean @default(false)
 
-  // evidence attachments
-  evidence Evidence[]
+  routedAt   DateTime
+  verifiedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  receivedVerifications Verification[]
+  requiredRoles         VerificationRequiredRole[]
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
 
-  @@index([caseId, createdAt])
+  @@index([caseId])
+  @@index([tenantId, consensusReached])
 }
 
-model Evidence {
-  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String @db.Uuid
-  timelineEntryId String @db.Uuid
+/// Required role-level policy for verification.
+model VerificationRequiredRole {
+  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  verificationRecordId String @db.Uuid
+  roleKey              String
 
-  kind       EvidenceKind
-  // store object storage pointers; keep hashes even if media deleted post-verification :contentReference[oaicite:16]{index=16}
-  storageKey String
-  sha256     String
-  mimeType   String?
-  byteSize   Int?
-  createdAt  DateTime     @default(now())
+  verificationRecord VerificationRecord @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
 
-  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  timelineEntry TimelineEntry @relation(fields: [timelineEntryId], references: [id], onDelete: Cascade)
-
-  @@index([timelineEntryId])
-  @@index([sha256])
+  @@unique([verificationRecordId, roleKey])
 }
 
-model AuditEntry {
-  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId String  @db.Uuid
-  caseId   String? @db.Uuid
+/// Individual verifier vote.
+/// Prevents double voting via unique constraint.
+model Verification {
+  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String @db.Uuid
+  verificationRecordId String @db.Uuid
 
-  actorLabel  String
-  actorUserId String?  @db.Uuid
-  note        String?
-  createdAt   DateTime @default(now())
+  verifierUserId String             @db.Uuid
+  status         VerificationStatus
+  note           String?
+  createdAt      DateTime           @default(now())
 
+  conflictDisclosed Boolean @default(false)
+  conflictNote      String?
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  verificationRecord VerificationRecord @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
+  verifier           User               @relation(fields: [verifierUserId], references: [id], onDelete: Restrict)
+
+  @@unique([verificationRecordId, verifierUserId])
+  @@index([verifierUserId, createdAt])
+  @@unique([verificationRecordId, verifierUserId])
+}
+
+////////////////////////////////////////////////////////////////
+// GOVERNANCE & DECISIONS
+////////////////////////////////////////////////////////////////
+
+/// Policy approval workflow (structure preserved as-is).
+model ApprovalRequest {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @db.Uuid
+
+  status ApprovalStatus
+  resolvedAt DateTime?
+  resolvedByUserId String?
+
+  policyKey String
+  effect    Json
+  reason    String
+
+  status    String
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+
+  resolvedByUserId String? @db.Uuid
+
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case     Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  resolver User?  @relation(fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status, createdAt])
+  @@index([caseId, status])
+}
+
+/// Generalized decision model with supersession support.
+model Decision {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @db.Uuid
+
+  decisionType DecisionType
+  actorKind    ActorKind
+  actorUserId  String? @db.Uuid
+
+  reason        String?
+  intentContext Json?
+  decidedAt     DateTime @default(now())
+
+  supersedesDecisionId String? @db.Uuid
+  supersededAt         DateTime?
+
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  @@index([tenantId, createdAt])
-  @@index([caseId, createdAt])
+  supersedes   Decision? @relation("DecisionSupersession", fields: [supersedesDecisionId], references: [id], onDelete: Restrict)
+  supersededBy Decision? @relation("DecisionSupersession")
+
+  @@index([caseId, decidedAt])
+  @@index([tenantId, decisionType, decidedAt])
 }
 
+////////////////////////////////////////////////////////////////
+// LEDGER (EVENT SOURCED AUDIT)
+////////////////////////////////////////////////////////////////
+
+/// Append-only cryptographic commit log.
+/// Multi-tenant exactly-once guarantee enforced.
 model LedgerCommit {
   id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String  @db.Uuid
@@ -736,12 +652,10 @@ model LedgerCommit {
   eventType LedgerEventType
   ts        BigInt
 
-  // ACTOR + AUTHORITY
   actorKind      ActorKind
-  actorUserId    String?   @db.Uuid
+  actorUserId    String? @db.Uuid
   authorityProof String
 
-  // INTENT (WHY)
   intentContext Json?
 
   commitmentHash String
@@ -761,6 +675,78 @@ model LedgerCommit {
   @@index([caseId, ts])
   @@index([eventType, ts])
 }
+
+////////////////////////////////////////////////////////////////
+// TIMELINE & EVIDENCE
+////////////////////////////////////////////////////////////////
+
+/// Unified activity stream entry for a Case.
+/// Supports system events, delivery notes, visits, and follow-ups.
+model TimelineEntry {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
+
+  // Examples: DELIVERY, FOLLOWUP, VISIT, NOTE
+  type      String
+  body      String?
+  createdAt DateTime @default(now())
+
+  evidence Evidence[]
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+}
+
+/// Immutable evidence attachment.
+/// Hash preserved even if storage object is later removed.
+model Evidence {
+  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String @db.Uuid
+  timelineEntryId String @db.Uuid
+
+  kind      EvidenceKind
+  storageKey String
+  sha256     String
+  mimeType   String?
+  byteSize   Int?
+  createdAt  DateTime @default(now())
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  timelineEntry TimelineEntry @relation(fields: [timelineEntryId], references: [id], onDelete: Cascade)
+
+  @@index([timelineEntryId])
+  @@index([sha256])
+}
+
+////////////////////////////////////////////////////////////////
+// AUDIT TRAIL
+////////////////////////////////////////////////////////////////
+
+/// Human-readable audit trail (separate from cryptographic ledger).
+model AuditEntry {
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String  @db.Uuid
+  caseId   String? @db.Uuid
+
+  actorLabel  String
+  actorUserId String? @db.Uuid
+  note        String?
+  createdAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([caseId, createdAt])
+}
+
+////////////////////////////////////////////////////////////////
+// REASON CODES
+////////////////////////////////////////////////////////////////
 
 model CaseReasonCode {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -787,6 +773,11 @@ model RoutingReasonCode {
   @@index([code])
 }
 
+////////////////////////////////////////////////////////////////
+// APPEALS
+////////////////////////////////////////////////////////////////
+
+/// Appeal against case-related decision.
 model Appeal {
   id             String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId       String  @db.Uuid
@@ -813,7 +804,7 @@ model AppealDecision {
   appealId       String @db.Uuid
   reviewerUserId String @db.Uuid
 
-  outcome   String // e.g. "UPHOLD", "OVERTURN", "REQUEST_MORE_INFO"
+  outcome   String
   rationale String?
   createdAt DateTime @default(now())
 
@@ -824,6 +815,12 @@ model AppealDecision {
   @@index([reviewerUserId, createdAt])
 }
 
+////////////////////////////////////////////////////////////////
+// COUNTERFACTUAL RECORDS
+////////////////////////////////////////////////////////////////
+
+/// Deterministic explanation of decision alternatives.
+/// Not AI-generated — policy-driven.
 model CounterfactualRecord {
   id                String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId          String  @db.Uuid
@@ -833,9 +830,8 @@ model CounterfactualRecord {
   decisionType       DecisionType
   chosen             String
   constraintsApplied String[]
-  // alternatives (deterministic, not AI) :contentReference[oaicite:19]{index=19}
   alternatives       Json
-  createdAt          DateTime     @default(now())
+  createdAt          DateTime @default(now())
 
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case            Case             @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -845,36 +841,34 @@ model CounterfactualRecord {
   @@index([tenantId, decisionType, createdAt])
 }
 
+////////////////////////////////////////////////////////////////
+// DISBURSEMENTS
+////////////////////////////////////////////////////////////////
+
+/// Financial execution tied to verification + execution provenance.
 model Disbursement {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String @db.Uuid
   caseId    String @unique @db.Uuid
 
-  // Classification
   type   DisbursementType
   status DisbursementStatus
 
-  // Amount
   amount   Decimal @db.Decimal(18, 2)
   currency String
 
-  // Payee (who receives the value)
-  payeeKind String // ORGANIZATION | USER | EXTERNAL_ACCOUNT
-  payeeId   String // opaque identifier (orgId, userId, external ref)
+  payeeKind String
+  payeeId   String
 
-  // Authority (non-anonymous)
   actorKind      ActorKind
   actorUserId    String? @db.Uuid
   authorityProof String
 
-  // Provenance (hard links)
   verificationRecordId String @db.Uuid
   executionId          String @db.Uuid
 
-  // Failure is first-class
   failureReason String?
 
-  // Timestamps (irreversible trail)
   authorizedAt DateTime @default(now())
   executedAt   DateTime?
   failedAt     DateTime?
@@ -888,6 +882,9 @@ model Disbursement {
   @@index([executionId])
 }
 
+////////////////////////////////////////////////////////////////
+// GRANTS & BUDGETING
+////////////////////////////////////////////////////////////////
 
 model Grant {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -906,9 +903,7 @@ model Grant {
   activatedAt   DateTime?
   closedAt      DateTime?
 
-  // binding to cases/projects: keep flexible (many-to-many)
-  caseLinks GrantCase[]
-
+  caseLinks  GrantCase[]
   constraints GrantConstraint[]
   allocations BudgetAllocation[]
   tranches    Tranche[]
@@ -938,7 +933,6 @@ model GrantConstraint {
   id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   grantId String @db.Uuid
 
-  // store donor structured rules (earmarks/caps/floors/allow-deny/tranche rules)
   kind      String
   rule      Json
   createdAt DateTime @default(now())
@@ -976,7 +970,6 @@ model Tranche {
   releasedAt DateTime?
   reversedAt DateTime?
 
-  // event-based conditions stored deterministically
   releaseRule Json?
   events      TrancheEvent[]
 

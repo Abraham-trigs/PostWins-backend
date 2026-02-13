@@ -1,84 +1,69 @@
 import { prisma } from "@/lib/prisma";
-import { ActorKind, DisbursementStatus } from "@prisma/client";
-import { IllegalLifecycleInvariantViolation } from "@/modules/cases/case.errors";
+import { ActorKind, DisbursementStatus, LedgerEventType } from "@prisma/client";
+import { LifecycleInvariantViolationError } from "@/modules/cases/case.errors";
 import { commitLedgerEvent } from "@/modules/routing/commitRoutingLedger";
-import { LedgerEventType } from "@prisma/client";
 
 type ExecuteDisbursementParams = {
   tenantId: string;
   disbursementId: string;
-
   actor: {
     kind: ActorKind;
     userId?: string;
     authorityProof: string;
   };
-
-  // Result of the real-world attempt
   outcome: { success: true } | { success: false; reason: string };
 };
 
 export async function executeDisbursement(params: ExecuteDisbursementParams) {
   return prisma.$transaction(async (tx) => {
-    /* -------------------------------------------------
-       1️⃣ Load disbursement (authoritative)
-       ------------------------------------------------- */
     const d = await tx.disbursement.findUnique({
       where: { id: params.disbursementId },
     });
 
     if (!d) {
-      throw new IllegalLifecycleInvariantViolation(
-        "Disbursement does not exist",
-      );
+      throw new LifecycleInvariantViolationError("Disbursement does not exist");
     }
 
     if (d.status !== DisbursementStatus.AUTHORIZED) {
-      throw new IllegalLifecycleInvariantViolation(
-        "Disbursement is not in AUTHORIZED state",
+      throw new LifecycleInvariantViolationError(
+        "Disbursement must be in AUTHORIZED state",
       );
     }
 
-    /* -------------------------------------------------
-       2️⃣ Apply real-world outcome (irreversible)
-       ------------------------------------------------- */
+    // Mark EXECUTING (in-flight truth)
+    await tx.disbursement.update({
+      where: { id: d.id },
+      data: { status: DisbursementStatus.EXECUTING },
+    });
 
     if (params.outcome.success) {
-      const executed = await tx.disbursement.update({
+      const completed = await tx.disbursement.update({
         where: { id: d.id },
         data: {
-          status: DisbursementStatus.EXECUTED,
+          status: DisbursementStatus.COMPLETED,
           executedAt: new Date(),
         },
       });
 
-      /* -------------------------------------------------
-         3️⃣ Ledger truth — execution
-         ------------------------------------------------- */
       await commitLedgerEvent(tx, {
         tenantId: params.tenantId,
         caseId: d.caseId,
-        eventType: LedgerEventType.DISBURSEMENT_EXECUTED,
+        eventType: LedgerEventType.DISBURSEMENT_COMPLETED,
         actor: params.actor,
         payload: {
           disbursementId: d.id,
           amount: d.amount,
           currency: d.currency,
-          destination: {
-            kind: d.payeeKind,
-            id: d.payeeId,
-          },
+          payeeKind: d.payeeKind,
+          payeeId: d.payeeId,
           verificationRecordId: d.verificationRecordId,
           executionId: d.executionId,
         },
       });
 
-      return executed;
+      return completed;
     }
 
-    /* -------------------------------------------------
-       4️⃣ Failure path — first-class truth
-       ------------------------------------------------- */
     const failed = await tx.disbursement.update({
       where: { id: d.id },
       data: {
