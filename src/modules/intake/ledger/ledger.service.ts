@@ -11,7 +11,7 @@ import fs from "fs";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
-import { LedgerEventType, ActorKind } from "@prisma/client";
+import { LedgerEventType, ActorKind, Prisma } from "@prisma/client";
 
 ////////////////////////////////////////////////////////////////
 // Errors
@@ -119,11 +119,11 @@ export class LedgerService {
     }
   }
 
-  ////////////////////////////////////////////////////////////////
-  // Commit (Authoritative)
-  ////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////
+  // Commit (Authoritative + Transaction-Aware)
+  ////////////////////////////////////////////////
 
-  public async commit(input: unknown) {
+  public async commit(input: unknown, tx?: Prisma.TransactionClient) {
     const parsed = LedgerCommitSchema.safeParse(input);
 
     if (!parsed.success) {
@@ -132,7 +132,9 @@ export class LedgerService {
 
     const data = parsed.data;
 
-    const [{ nextval }] = await prisma.$queryRaw<
+    const db = tx ?? prisma;
+
+    const [{ nextval }] = await db.$queryRaw<
       { nextval: bigint }[]
     >`SELECT nextval('ledger_global_seq')`;
 
@@ -158,7 +160,7 @@ export class LedgerService {
     const signature = sign.sign(this.privateKey, "hex");
 
     try {
-      return await prisma.ledgerCommit.create({
+      return await db.ledgerCommit.create({
         data: {
           tenantId: data.tenantId,
           caseId: data.caseId ?? null,
@@ -176,7 +178,7 @@ export class LedgerService {
       });
     } catch (err: any) {
       if (err.code === "P2002") {
-        return prisma.ledgerCommit.findUniqueOrThrow({
+        return db.ledgerCommit.findUniqueOrThrow({
           where: { commitmentHash },
         });
       }

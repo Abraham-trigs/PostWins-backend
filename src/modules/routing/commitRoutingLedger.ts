@@ -1,10 +1,16 @@
 // apps/backend/src/modules/routing/commitRoutingLedger.ts
-// Authoritative routing ledger commit. Explicit multi-tenant boundary.
-// No event mutation. No enum shadowing. No implicit context.
+// Authoritative routing ledger commit.
+// Explicit multi-tenant boundary.
+// Transaction-aware. No enum shadowing. No mutation.
 
 import { SYSTEM_AUTHORITY_PROOF } from "@/domain/system/systemActors";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
-import { LedgerEventType, ActorKind, RoutingOutcome } from "@prisma/client";
+import {
+  LedgerEventType,
+  ActorKind,
+  RoutingOutcome,
+  Prisma,
+} from "@prisma/client";
 import { z } from "zod";
 
 ////////////////////////////////////////////////////////////////
@@ -32,29 +38,32 @@ export type CommitRoutingParams = z.infer<typeof CommitRoutingSchema>;
 export async function commitRoutingLedger(
   ledger: LedgerService,
   input: unknown,
+  tx?: Prisma.TransactionClient,
 ): Promise<void> {
   const { tenantId, caseId, routingResult, intentCode } =
     CommitRoutingSchema.parse(input);
 
-  await ledger.commit({
-    tenantId,
-    caseId,
+  await ledger.commit(
+    {
+      tenantId,
+      caseId,
+      eventType: LedgerEventType.ROUTED,
 
-    eventType: LedgerEventType.ROUTED,
+      actorKind: ActorKind.SYSTEM,
+      actorUserId: null,
+      authorityProof: SYSTEM_AUTHORITY_PROOF,
 
-    actorKind: ActorKind.SYSTEM,
-    actorUserId: null,
-    authorityProof: SYSTEM_AUTHORITY_PROOF,
+      intentContext: {
+        source: "SYSTEM_RULE",
+        routingOutcome: routingResult.outcome,
+        rule: routingResult.reason,
+      },
 
-    intentContext: {
-      source: "SYSTEM_RULE" as const,
-      routingOutcome: routingResult.outcome,
-      rule: routingResult.reason,
+      payload: {
+        executionBodyId: routingResult.executionBodyId,
+        intentCode,
+      },
     },
-
-    payload: {
-      executionBodyId: routingResult.executionBodyId,
-      intentCode,
-    },
-  });
+    tx, // 🔒 atomic with caller transaction
+  );
 }

@@ -1,7 +1,8 @@
 // apps/backend/src/modules/cases/lifecycleReconciliation.scheduler.ts
-// Controlled lifecycle reconciliation scheduler with timed execution sequencing.
+// Sovereign lifecycle reconciliation scheduler.
+// Drift detection only. No lifecycle mutation here.
 
-import { prisma } from "../../lib/prisma";
+import { prisma } from "@/lib/prisma";
 import { TenantLifecycleReconciliationJob } from "./tenantLifecycleReconciliation.job";
 
 export interface SchedulerOptions {
@@ -9,6 +10,7 @@ export interface SchedulerOptions {
   initialDelayMs?: number;
   runImmediately?: boolean;
   perTenantDelayMs?: number;
+  enabled?: boolean; // environment gating
 }
 
 export class LifecycleReconciliationScheduler {
@@ -16,20 +18,28 @@ export class LifecycleReconciliationScheduler {
   private initialDelayMs: number;
   private runImmediately: boolean;
   private perTenantDelayMs: number;
+  private enabled: boolean;
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private inFlight = false; // prevents overlap
 
   private job = new TenantLifecycleReconciliationJob();
 
   constructor(options?: SchedulerOptions) {
-    this.intervalMs = options?.intervalMs ?? 24 * 60 * 60 * 1000; // default 24h
+    this.intervalMs = options?.intervalMs ?? 24 * 60 * 60 * 1000;
     this.initialDelayMs = options?.initialDelayMs ?? 0;
     this.runImmediately = options?.runImmediately ?? false;
-    this.perTenantDelayMs = options?.perTenantDelayMs ?? 100; // throttle between tenants
+    this.perTenantDelayMs = options?.perTenantDelayMs ?? 100;
+    this.enabled = options?.enabled ?? true;
   }
 
   start() {
+    if (!this.enabled) {
+      console.log("[LifecycleReconciliationScheduler] Disabled");
+      return;
+    }
+
     if (this.running) return;
 
     this.running = true;
@@ -69,12 +79,16 @@ export class LifecycleReconciliationScheduler {
   }
 
   private async safeRun() {
-    if (!this.running) return;
+    if (!this.running || this.inFlight) return;
+
+    this.inFlight = true;
 
     try {
       await this.run();
     } catch (err) {
       console.error("[LifecycleReconciliationScheduler] Run failure:", err);
+    } finally {
+      this.inFlight = false;
     }
   }
 
@@ -113,47 +127,29 @@ export class LifecycleReconciliationScheduler {
 /*
 Design reasoning
 ----------------
-This scheduler is not naive polling.
-It supports:
-- Initial delay
-- Immediate execution option
-- Controlled interval
+Drift detection protects constitutional integrity.
+Scheduler enforces:
+- Non-overlapping runs
+- Optional environment gating
 - Per-tenant throttling
 - Safe shutdown
-- Runtime guard
 
 Structure
 ---------
 - start()
 - stop()
-- safeRun()
+- safeRun() (single-flight guard)
 - run()
-- Optional execution sequencing
 
 Implementation guidance
 -----------------------
-For production:
-- Use environment gating
-- Use leader election in multi-instance systems
-- Increase perTenantDelayMs for large datasets
+In production multi-instance deployments:
+- Gate with process.env.ENABLE_LIFECYCLE_RECONCILIATION
+- Or integrate DB-backed leader election
 
 Scalability insight
 -------------------
-Controlled sequencing prevents:
-- CPU spikes
-- DB contention
-- Ledger sequence starvation
-- Tenant starvation
-
-Would I ship this?
-Yes.
-
-Does it protect authority?
-Yes.
-
-Is it production-safe?
-Yes — single-instance safe.
-
-Multi-instance safe?
-Only with external coordination.
+Single-flight prevents DB pressure spikes.
+Per-tenant throttling prevents starvation.
+Design supports horizontal scaling with external coordination.
 */

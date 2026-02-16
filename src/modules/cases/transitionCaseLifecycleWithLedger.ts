@@ -1,13 +1,30 @@
 // apps/backend/src/modules/cases/transitionCaseLifecycleWithLedger.ts
-// Enforced lifecycle transition with atomic ledger authority and invariant protection.
 
 import { prisma } from "@/lib/prisma";
-import { CaseLifecycle, LedgerEventType, ActorKind } from "@prisma/client";
+import {
+  CaseLifecycle,
+  LedgerEventType,
+  ActorKind,
+  Prisma,
+} from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
-import { commitLedgerEvent } from "../routing/commitRoutingLedger";
 import { LifecycleInvariantViolationError } from "./case.errors";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 import { z } from "zod";
+
+////////////////////////////////////////////////////////////////
+// Errors
+////////////////////////////////////////////////////////////////
+
+export class LifecycleTransitionValidationError extends Error {
+  public readonly details: Record<string, string[] | undefined>;
+  constructor(details: Record<string, string[] | undefined>) {
+    super("Invalid lifecycle transition request");
+    this.name = "LifecycleTransitionValidationError";
+    this.details = details;
+  }
+}
 
 ////////////////////////////////////////////////////////////////
 // Validation Schema
@@ -33,6 +50,7 @@ const TransitionWithLedgerSchema = z
         message: "userId required for HUMAN actor",
       });
     }
+
     if (data.actor.kind === ActorKind.SYSTEM && data.actor.userId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -42,45 +60,59 @@ const TransitionWithLedgerSchema = z
     }
   });
 
-export type TransitionWithLedgerParams = z.infer<
-  typeof TransitionWithLedgerSchema
->;
-
 ////////////////////////////////////////////////////////////////
 // Transition + Ledger Authority
 ////////////////////////////////////////////////////////////////
 
 export async function transitionCaseLifecycleWithLedger(
+  ledger: LedgerService,
   input: unknown,
 ): Promise<CaseLifecycle> {
   const parsed = TransitionWithLedgerSchema.safeParse(input);
 
   if (!parsed.success) {
-    throw { error: parsed.error.flatten().fieldErrors };
+    throw new LifecycleTransitionValidationError(
+      parsed.error.flatten().fieldErrors,
+    );
   }
 
   const params = parsed.data;
 
   return prisma.$transaction(async (tx) => {
-    // 1️⃣ Load authoritative lifecycle
-    const c = await tx.case.findUniqueOrThrow({
-      where: { id: params.caseId },
+    ////////////////////////////////////////////////////////////////
+    // 1️⃣ Load authoritative lifecycle (tenant scoped)
+    ////////////////////////////////////////////////////////////////
+
+    const c = await tx.case.findFirstOrThrow({
+      where: {
+        id: params.caseId,
+        tenantId: params.tenantId,
+      },
       select: { lifecycle: true },
     });
 
     const previousLifecycle = c.lifecycle;
 
-    // 2️⃣ Pure deterministic transition
+    ////////////////////////////////////////////////////////////////
+    // 2️⃣ Deterministic transition
+    ////////////////////////////////////////////////////////////////
+
     const next = transitionCaseLifecycle({
       caseId: params.caseId,
       current: previousLifecycle,
       target: params.target,
     });
 
+    ////////////////////////////////////////////////////////////////
     // 3️⃣ EXECUTING invariant
+    ////////////////////////////////////////////////////////////////
+
     if (next === CaseLifecycle.EXECUTING) {
-      const execution = await tx.execution.findUnique({
-        where: { caseId: params.caseId },
+      const execution = await tx.execution.findFirst({
+        where: {
+          caseId: params.caseId,
+          tenantId: params.tenantId,
+        },
         select: { id: true },
       });
 
@@ -91,9 +123,11 @@ export async function transitionCaseLifecycleWithLedger(
       }
     }
 
-    // 4️⃣ Resolve strict ledger event mapping
-    const ledgerEvent: LedgerEventType | undefined =
-      CASE_LIFECYCLE_LEDGER_EVENTS[next];
+    ////////////////////////////////////////////////////////////////
+    // 4️⃣ Strict lifecycle → ledger mapping
+    ////////////////////////////////////////////////////////////////
+
+    const ledgerEvent = CASE_LIFECYCLE_LEDGER_EVENTS[next];
 
     if (!ledgerEvent) {
       throw new LifecycleInvariantViolationError(
@@ -101,17 +135,14 @@ export async function transitionCaseLifecycleWithLedger(
       );
     }
 
-    // 5️⃣ Global monotonic timestamp via sequence
-    const [{ nextval }] = await tx.$queryRaw<
-      { nextval: bigint }[]
-    >`SELECT nextval('ledger_global_seq')`;
+    ////////////////////////////////////////////////////////////////
+    // 5️⃣ Optimistic concurrency update
+    ////////////////////////////////////////////////////////////////
 
-    const nowTs = nextval;
-
-    // 6️⃣ Optimistic concurrency projection update
     const updated = await tx.case.updateMany({
       where: {
         id: params.caseId,
+        tenantId: params.tenantId,
         lifecycle: previousLifecycle,
       },
       data: {
@@ -125,69 +156,27 @@ export async function transitionCaseLifecycleWithLedger(
       );
     }
 
-    // 7️⃣ Authoritative ledger commit
-    await commitLedgerEvent(tx, {
-      tenantId: params.tenantId,
-      caseId: params.caseId,
-      eventType: ledgerEvent,
-      actor: params.actor,
-      intentContext: params.intentContext,
-      payload: {
-        from: previousLifecycle,
-        to: next,
-        projectionVersion: nowTs.toString(),
+    ////////////////////////////////////////////////////////////////
+    // 6️⃣ Atomic ledger commit (MUST use tx)
+    ////////////////////////////////////////////////////////////////
+
+    await ledger.commit(
+      {
+        tenantId: params.tenantId,
+        caseId: params.caseId,
+        eventType: ledgerEvent,
+        actorKind: params.actor.kind,
+        actorUserId: params.actor.userId ?? null,
+        authorityProof: params.actor.authorityProof,
+        intentContext: params.intentContext,
+        payload: {
+          from: previousLifecycle,
+          to: next,
+        },
       },
-      overrideTimestamp: nowTs,
-    });
+      tx, // 🔒 TRUE ATOMICITY
+    );
 
     return next;
   });
 }
-
-// ////////////////////////////////////////////////////////////////
-// // Example Usage
-// ////////////////////////////////////////////////////////////////
-
-// /*
-// await transitionCaseLifecycleWithLedger({
-//   tenantId: "uuid",
-//   caseId: "uuid",
-//   target: CaseLifecycle.ROUTED,
-//   actor: {
-//     kind: ActorKind.SYSTEM,
-//     authorityProof: "routing-engine-v1",
-//   },
-// });
-// */
-
-// ////////////////////////////////////////////////////////////////
-// // Design reasoning
-// ////////////////////////////////////////////////////////////////
-// Lifecycle transitions are authoritative only if ledger commits are atomic
-// and causally bound. This implementation enforces schema-derived lifecycle,
-// strict event mapping, optimistic concurrency, and sequence-backed ordering.
-
-// ////////////////////////////////////////////////////////////////
-// // Structure
-// ////////////////////////////////////////////////////////////////
-// 1. Validate input boundary
-// 2. Load authoritative lifecycle
-// 3. Apply pure transition law
-// 4. Enforce execution invariant
-// 5. Allocate monotonic sequence timestamp
-// 6. Optimistic projection update
-// 7. Ledger commit within same transaction
-
-// ////////////////////////////////////////////////////////////////
-// // Implementation guidance
-// ////////////////////////////////////////////////////////////////
-// Never write Case.lifecycle directly anywhere else.
-// Never fallback to generic ledger events.
-// Ensure ledger_global_seq exists in database.
-
-// ////////////////////////////////////////////////////////////////
-// // Scalability insight
-// ////////////////////////////////////////////////////////////////
-// Sequence-backed ordering guarantees deterministic replay across
-// distributed instances. Optimistic concurrency protects against race
-// conditions without locking entire tables.

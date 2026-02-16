@@ -1,24 +1,43 @@
-import { prisma } from "../../lib/prisma";
-import { LedgerService } from "../intake/ledger.service";
+// src/modules/verification/verification.service.ts
+// Sovereign Phase 1.5 verification service.
+// Consensus-target model. No lifecycle mutation. Ledger-authoritative.
+
+import { prisma } from "@/lib/prisma";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 import {
   VerificationStatus,
   ActorKind,
   VerificationRecord,
   ExecutionStatus,
+  LedgerEventType,
+  Prisma,
 } from "@prisma/client";
-import { LifecycleInvariantViolationError } from "../cases/case.errors";
+import { LifecycleInvariantViolationError } from "@/modules/cases/case.errors";
+import { z } from "zod";
+
+////////////////////////////////////////////////////////////////
+// Validation
+////////////////////////////////////////////////////////////////
+
+const RecordVerificationSchema = z.object({
+  verificationRecordId: z.string().uuid(),
+  verifierUserId: z.string().uuid(),
+  status: z.nativeEnum(VerificationStatus),
+  note: z.string().optional(),
+});
 
 type VerificationResult = {
   consensusReached: boolean;
   record: VerificationRecord | null;
 };
 
+////////////////////////////////////////////////////////////////
+// Service
+////////////////////////////////////////////////////////////////
+
 export class VerificationService {
   constructor(private ledger: LedgerService) {}
 
-  /**
-   * Read-only retrieval of a verification record
-   */
   async getVerificationRecordById(verificationRecordId: string) {
     return prisma.verificationRecord.findUnique({
       where: { id: verificationRecordId },
@@ -30,21 +49,17 @@ export class VerificationService {
   }
 
   /**
-   * Authoritative moment:
-   * A verifier submits a vote. Consensus may be reached.
-   *
-   * 🔒 GOVERNANCE RULE
-   * This service MAY record verification facts,
-   * but MUST NOT mutate Case.lifecycle.
+   * LAW:
+   * - Records verification facts only
+   * - Never mutates lifecycle
+   * - Ledger commit must be atomic with DB mutation
    */
-  async recordVerification(
-    verificationRecordId: string,
-    verifierUserId: string,
-    status: VerificationStatus,
-    note?: string,
-  ): Promise<VerificationResult> {
+  async recordVerification(input: unknown): Promise<VerificationResult> {
+    const { verificationRecordId, verifierUserId, status, note } =
+      RecordVerificationSchema.parse(input);
+
     return prisma.$transaction(async (tx) => {
-      // 1️⃣ Load verification record
+      // 1️⃣ Load record
       const record = await tx.verificationRecord.findUnique({
         where: { id: verificationRecordId },
         include: {
@@ -62,9 +77,12 @@ export class VerificationService {
         throw new Error("Verification already finalized");
       }
 
-      // 🔒 STEP 9.D — verification requires completed execution
-      const execution = await tx.execution.findUnique({
-        where: { caseId: record.caseId },
+      // 🔒 Execution must be completed
+      const execution = await tx.execution.findFirst({
+        where: {
+          caseId: record.caseId,
+          tenantId: record.tenantId,
+        },
         select: { status: true },
       });
 
@@ -74,7 +92,7 @@ export class VerificationService {
         );
       }
 
-      // 2️⃣ Resolve verifier roles
+      // 2️⃣ Role authorization
       const verifierRoles = await tx.userRole.findMany({
         where: { userId: verifierUserId },
         include: { role: true },
@@ -90,7 +108,7 @@ export class VerificationService {
         throw new Error("User not authorized to verify this claim");
       }
 
-      // 3️⃣ Prevent duplicate votes (fast-path check)
+      // 3️⃣ Duplicate prevention
       const alreadyVoted = record.receivedVerifications.some(
         (v) => v.verifierUserId === verifierUserId,
       );
@@ -99,7 +117,7 @@ export class VerificationService {
         throw new Error("Verifier has already voted");
       }
 
-      // 4️⃣ Record vote (DB-level uniqueness is authoritative)
+      // 4️⃣ Persist vote
       try {
         await tx.verification.create({
           data: {
@@ -117,7 +135,24 @@ export class VerificationService {
         throw err;
       }
 
-      // 5️⃣ Recompute consensus (explicit semantics)
+      // 5️⃣ Ledger commit — VERIFICATION_SUBMITTED
+      await this.ledger.commit(
+        {
+          tenantId: record.tenantId,
+          caseId: record.caseId,
+          eventType: LedgerEventType.VERIFICATION_SUBMITTED,
+          actorKind: ActorKind.HUMAN,
+          actorUserId: verifierUserId,
+          authorityProof: "VERIFICATION_VOTE",
+          payload: {
+            verificationRecordId: record.id,
+            status,
+          },
+        },
+        tx as unknown as Prisma.TransactionClient,
+      );
+
+      // 6️⃣ Recompute consensus
       const [acceptedCount, rejectedCount] = await Promise.all([
         tx.verification.count({
           where: {
@@ -133,7 +168,6 @@ export class VerificationService {
         }),
       ]);
 
-      // ❌ Any rejection blocks verification
       if (rejectedCount > 0) {
         throw new Error(
           "Verification rejected by at least one authorized verifier",
@@ -147,7 +181,7 @@ export class VerificationService {
         };
       }
 
-      // 6️⃣ Finalize consensus (truth enters system)
+      // 7️⃣ Finalize consensus
       const finalized = await tx.verificationRecord.update({
         where: { id: record.id },
         data: {
@@ -156,24 +190,23 @@ export class VerificationService {
         },
       });
 
-      // 7️⃣ Ledger commit — FACT ONLY (no lifecycle mutation)
-      await this.ledger.commit({
-        tenantId: record.tenantId,
-        caseId: record.caseId,
-        eventType: "VERIFIED",
-        actorKind: ActorKind.HUMAN,
-        actorUserId: verifierUserId,
-        authorityProof: "VERIFICATION_CONSENSUS",
-        payload: {
-          verificationRecordId: record.id,
-          requiredVerifiers: record.requiredVerifiers,
-          acceptedCount,
+      // 8️⃣ Ledger commit — VERIFIED (atomic)
+      await this.ledger.commit(
+        {
+          tenantId: record.tenantId,
+          caseId: record.caseId,
+          eventType: LedgerEventType.VERIFIED,
+          actorKind: ActorKind.HUMAN,
+          actorUserId: verifierUserId,
+          authorityProof: "VERIFICATION_CONSENSUS",
+          payload: {
+            verificationRecordId: record.id,
+            requiredVerifiers: record.requiredVerifiers,
+            acceptedCount,
+          },
         },
-      });
-
-      // 🚫 Lifecycle transition is NOT performed here.
-      // It must be handled by a command/orchestrator that
-      // asserts authority and calls transitionCaseLifecycleWithLedger.
+        tx as unknown as Prisma.TransactionClient,
+      );
 
       return {
         consensusReached: true,
@@ -182,3 +215,40 @@ export class VerificationService {
     });
   }
 }
+
+/*
+Design reasoning
+----------------
+Verification is a fact-recording system.
+Two ledger events exist:
+- VERIFICATION_SUBMITTED (vote recorded)
+- VERIFIED (consensus reached)
+
+Both must be atomic with DB writes.
+
+Structure
+---------
+1. Zod validation
+2. Load record
+3. Enforce execution invariant
+4. Authorize role
+5. Prevent duplicate vote
+6. Persist vote
+7. Commit VERIFICATION_SUBMITTED
+8. Recompute consensus
+9. Finalize consensus
+10. Commit VERIFIED
+
+Implementation guidance
+-----------------------
+LedgerService.commit() must support optional transaction client.
+Never mutate Case.lifecycle here.
+Lifecycle transition is governance-layer responsibility.
+
+Scalability insight
+-------------------
+- Fully replayable verification history
+- Deterministic consensus reconstruction
+- Atomic authority boundary
+- Multi-tenant safe
+*/

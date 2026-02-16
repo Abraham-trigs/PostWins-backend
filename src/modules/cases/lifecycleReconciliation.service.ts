@@ -1,7 +1,7 @@
 // apps/backend/src/modules/cases/lifecycleReconciliation.service.ts
-// Cryptographically-authoritative lifecycle reconciliation.
+// Sovereign lifecycle reconciliation (ledger-authoritative, atomic).
 
-import { prisma } from "../../lib/prisma";
+import { prisma } from "@/lib/prisma";
 import {
   CaseLifecycle,
   LedgerEventType,
@@ -9,11 +9,20 @@ import {
   ActorKind,
 } from "@prisma/client";
 import { deriveLifecycleFromLedger } from "./deriveLifecycleFromLedger";
-import { LedgerService } from "../intake/ledger/ledger.service";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { z } from "zod";
 
-/**
- * Reconciliation result DTO.
- */
+////////////////////////////////////////////////////////////////
+// Validation
+////////////////////////////////////////////////////////////////
+
+const TenantIdSchema = z.string().uuid();
+const CaseIdSchema = z.string().uuid();
+
+////////////////////////////////////////////////////////////////
+// DTO
+////////////////////////////////////////////////////////////////
+
 export interface LifecycleReconciliationResult {
   caseId: string;
   storedLifecycle: CaseLifecycle;
@@ -22,34 +31,26 @@ export interface LifecycleReconciliationResult {
   repaired: boolean;
 }
 
-/**
- * LifecycleReconciliationService
- *
- * 🔒 Governance Rule:
- * - Ledger is source of truth.
- * - Projection (Case.lifecycle) is repairable.
- * - All repair events must be cryptographically signed.
- */
-export class LifecycleReconciliationService {
-  private ledger: LedgerService;
+////////////////////////////////////////////////////////////////
+// Service
+////////////////////////////////////////////////////////////////
 
-  constructor(ledgerService?: LedgerService) {
-    this.ledger = ledgerService ?? new LedgerService();
-  }
+export class LifecycleReconciliationService {
+  constructor(private ledger: LedgerService) {}
 
   /**
    * Reconcile lifecycle projection for a case.
-   *
-   * Safe to call multiple times.
-   * Idempotent by design.
+   * Idempotent and atomic.
    */
   async reconcileCaseLifecycle(
-    tenantId: string,
-    caseId: string,
-    tx: Prisma.TransactionClient = prisma,
+    inputTenantId: unknown,
+    inputCaseId: unknown,
   ): Promise<LifecycleReconciliationResult> {
-    return tx.$transaction(async (trx) => {
-      // 1️⃣ Load current projection
+    const tenantId = TenantIdSchema.parse(inputTenantId);
+    const caseId = CaseIdSchema.parse(inputCaseId);
+
+    return prisma.$transaction(async (trx) => {
+      // 1️⃣ Load projection
       const caseRow = await trx.case.findFirst({
         where: { id: caseId, tenantId },
         select: { lifecycle: true },
@@ -59,14 +60,13 @@ export class LifecycleReconciliationService {
         throw new Error("Case not found");
       }
 
-      // 2️⃣ Load immutable ledger history (ordered)
+      // 2️⃣ Load immutable ledger
       const ledgerEvents = await trx.ledgerCommit.findMany({
         where: { tenantId, caseId },
         orderBy: { ts: "asc" },
         select: { eventType: true },
       });
 
-      // 3️⃣ Deterministic replay
       const derived = deriveLifecycleFromLedger(
         ledgerEvents.map((e) => ({
           eventType: e.eventType,
@@ -86,18 +86,17 @@ export class LifecycleReconciliationService {
         };
       }
 
-      // 4️⃣ Repair projection
+      // 3️⃣ Update projection
       await trx.case.update({
         where: { id: caseId },
         data: { lifecycle: derived },
       });
 
-      // 5️⃣ Cryptographically record repair event
+      // 4️⃣ Ledger commit (atomic with projection)
       await this.ledger.commit({
         tenantId,
         caseId,
-        ts: BigInt(Date.now()),
-        eventType: LedgerEventType.CASE_UPDATED,
+        eventType: LedgerEventType.LIFECYCLE_REPAIRED,
         actorKind: ActorKind.SYSTEM,
         actorUserId: null,
         authorityProof: "SYSTEM_RECONCILIATION",
@@ -121,46 +120,35 @@ export class LifecycleReconciliationService {
   }
 }
 
-/*
-Design reasoning
-----------------
-Ledger defines authoritative lifecycle.
-Projection may drift.
-Repair must:
-- Be deterministic
-- Be transaction-safe
-- Be cryptographically signed
-- Never rewrite ledger history
+// ////////////////////////////////////////////////////////////////
+// // Design reasoning
+// ////////////////////////////////////////////////////////////////
+// Ledger is source of truth.
+// Projection is repairable.
+// Repair must be atomic, cryptographically recorded,
+// and distinguishable from normal updates.
 
-Structure
----------
-- Replay ledger (ordered)
-- Compare with projection
-- Update projection if needed
-- Record signed reconciliation event
+// ////////////////////////////////////////////////////////////////
+// // Structure
+// ////////////////////////////////////////////////////////////////
+// 1. Validate inputs
+// 2. Load projection
+// 3. Replay ledger deterministically
+// 4. Compare
+// 5. Update projection
+// 6. Record explicit repair event
 
-Implementation guidance
------------------------
-Always order ledger events by ts ASC.
-Never mutate ledger entries.
-Never bypass LedgerService.commit().
-Safe to call repeatedly.
-Use via:
-- Admin endpoint
-- Scheduled integrity job
-- Tenant-level governance scan
+// ////////////////////////////////////////////////////////////////
+// // Implementation guidance
+// ////////////////////////////////////////////////////////////////
+// Add LedgerEventType.LIFECYCLE_REPAIRED to Prisma enum.
+// Never inject manual ts.
+// Never commit outside transaction.
 
-Scalability insight
--------------------
-Supports:
-- Horizontal scaling
-- Snapshot rebuild
-- Drift repair at scale
-- Institutional audit defensibility
-- Zero-trust governance architecture
-
-Would I ship this without review? Yes.
-Does it protect authority boundaries? Yes.
-If it fails, can we roll back safely? Yes — projection only.
-Who owns this tomorrow? Governance layer.
-*/
+// ////////////////////////////////////////////////////////////////
+// // Scalability insight
+// ////////////////////////////////////////////////////////////////
+// Repair events become auditable.
+// Drift cannot be hidden.
+// Replay remains deterministic.
+// Projection rebuild is institutional-grade safe.

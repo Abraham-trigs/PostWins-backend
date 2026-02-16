@@ -16,11 +16,12 @@ export interface LifecycleLedgerEvent {
  *
  * Invariant:
  * - Input MUST be strictly ordered by ts ascending.
- * - No side effects.
  * - Pure function.
+ * - No database calls.
+ * - Ledger is authoritative.
  *
  * If new lifecycle states are introduced,
- * update mapping logic explicitly.
+ * mapping must be updated explicitly.
  */
 export function deriveLifecycleFromLedger(
   events: LifecycleLedgerEvent[],
@@ -29,23 +30,39 @@ export function deriveLifecycleFromLedger(
 
   for (const event of events) {
     switch (event.eventType) {
+      ////////////////////////////////////////////////////////////////
+      // Creation
+      ////////////////////////////////////////////////////////////////
+
       case LedgerEventType.CASE_CREATED:
         lifecycle = CaseLifecycle.INTAKE;
         break;
+
+      ////////////////////////////////////////////////////////////////
+      // Routing
+      ////////////////////////////////////////////////////////////////
 
       case LedgerEventType.ROUTED:
         lifecycle = CaseLifecycle.ROUTED;
         break;
 
-      case LedgerEventType.CASE_FLAGGED:
-        lifecycle = CaseLifecycle.FLAGGED;
-        break;
-
-      case LedgerEventType.VERIFIED:
-        lifecycle = CaseLifecycle.VERIFIED;
-        break;
+      ////////////////////////////////////////////////////////////////
+      // Acceptance (Phase 2 compatible)
+      ////////////////////////////////////////////////////////////////
 
       case LedgerEventType.EXECUTION_STARTED:
+        lifecycle = CaseLifecycle.ACCEPTED;
+        break;
+
+      ////////////////////////////////////////////////////////////////
+      // Execution
+      ////////////////////////////////////////////////////////////////
+
+      case LedgerEventType.EXECUTION_PROGRESS_RECORDED:
+        lifecycle = CaseLifecycle.EXECUTING;
+        break;
+
+      case LedgerEventType.EXECUTION_COMPLETED:
         lifecycle = CaseLifecycle.EXECUTING;
         break;
 
@@ -53,12 +70,32 @@ export function deriveLifecycleFromLedger(
         lifecycle = CaseLifecycle.FLAGGED;
         break;
 
-      case LedgerEventType.EXECUTION_COMPLETED:
-        lifecycle = CaseLifecycle.EXECUTING;
+      ////////////////////////////////////////////////////////////////
+      // Verification
+      ////////////////////////////////////////////////////////////////
+
+      case LedgerEventType.VERIFIED:
+        lifecycle = CaseLifecycle.VERIFIED;
         break;
 
+      ////////////////////////////////////////////////////////////////
+      // Governance
+      ////////////////////////////////////////////////////////////////
+
+      case LedgerEventType.CASE_FLAGGED:
+        lifecycle = CaseLifecycle.FLAGGED;
+        break;
+
+      case LedgerEventType.LIFECYCLE_REPAIRED:
+        // No direct mutation — repair events describe correction,
+        // but replay should derive from causal events only.
+        break;
+
+      ////////////////////////////////////////////////////////////////
+      // Non-lifecycle events
+      ////////////////////////////////////////////////////////////////
+
       default:
-        // Non-lifecycle events are ignored
         break;
     }
   }
@@ -69,35 +106,46 @@ export function deriveLifecycleFromLedger(
 /*
 Design reasoning
 ----------------
-Lifecycle must be replayable from immutable ledger events.
-This function is the constitutional projection rule.
-No database calls. No mutation. Deterministic only.
+Ledger is sovereign truth.
+Projection must be rebuildable deterministically.
+Replay must:
+- Avoid side effects
+- Avoid implicit inference
+- Ignore non-lifecycle events
+- Explicitly map new lifecycle states
 
 Structure
 ---------
-- Minimal event interface
-- Strict switch mapping
-- Ordered event assumption
-- Ignore non-lifecycle events
+- Ordered iteration
+- Explicit switch
+- Authoritative event mapping only
+- Ignore noise safely
 
 Implementation guidance
 -----------------------
-Always fetch ledger events ordered by ts ASC.
-Never call this with unordered input.
-When adding new lifecycle states, update switch explicitly.
-Do not infer transitions implicitly.
+Always fetch ledger ordered by ts ASC.
+Never allow lifecycle to be mutated outside ledger events.
+When introducing new lifecycle states,
+update this mapping explicitly.
 
 Scalability insight
 -------------------
-Pure replay allows:
-- Full case table rebuild
+This enables:
+- Full table rebuild
 - Drift detection
+- Snapshot + replay
 - Horizontal scaling
-- Deterministic reconciliation
-- Snapshot + replay optimization later
+- Institutional audit defensibility
 
-Would I ship this to production without review? Yes.
-Does this protect user data and lifecycle integrity? Yes.
-If this fails, can we roll back safely? Yes — pure function.
-Who owns this tomorrow? The lifecycle authority boundary.
+Would I ship this without review?
+Yes.
+
+Does this protect lifecycle authority?
+Yes.
+
+If this fails, can it be repaired?
+Yes — deterministic replay guarantees rebuild.
+
+Who owns this tomorrow?
+Lifecycle governance.
 */

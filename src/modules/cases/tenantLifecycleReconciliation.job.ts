@@ -1,13 +1,21 @@
 // apps/backend/src/modules/cases/tenantLifecycleReconciliation.job.ts
-// Tenant-wide lifecycle integrity scan + repair job.
+// Tenant-wide lifecycle integrity scan + repair job (sovereign-safe).
 
-import { prisma } from "../../lib/prisma";
+import { prisma } from "@/lib/prisma";
 import { LifecycleReconciliationService } from "./lifecycleReconciliation.service";
 import { CaseLifecycle } from "@prisma/client";
+import { z } from "zod";
 
-/**
- * Per-case reconciliation outcome.
- */
+////////////////////////////////////////////////////////////////
+// Validation
+////////////////////////////////////////////////////////////////
+
+const TenantIdSchema = z.string().uuid();
+
+////////////////////////////////////////////////////////////////
+// Per-case reconciliation outcome
+////////////////////////////////////////////////////////////////
+
 export interface TenantCaseReconciliationReport {
   caseId: string;
   storedLifecycle: CaseLifecycle;
@@ -16,9 +24,10 @@ export interface TenantCaseReconciliationReport {
   repaired: boolean;
 }
 
-/**
- * Tenant-wide reconciliation summary.
- */
+////////////////////////////////////////////////////////////////
+// Tenant-wide reconciliation summary
+////////////////////////////////////////////////////////////////
+
 export interface TenantReconciliationSummary {
   tenantId: string;
   totalCases: number;
@@ -28,29 +37,24 @@ export interface TenantReconciliationSummary {
   reports: TenantCaseReconciliationReport[];
 }
 
-/**
- * TenantLifecycleReconciliationJob
- *
- * 🔒 Governance Guarantees:
- * - Ledger remains immutable
- * - Projection is repairable
- * - All repairs are cryptographically signed
- * - Safe to run repeatedly
- *
- * This job is idempotent.
- */
+////////////////////////////////////////////////////////////////
+// Job
+////////////////////////////////////////////////////////////////
+
 export class TenantLifecycleReconciliationJob {
   private reconciliationService = new LifecycleReconciliationService();
 
   /**
    * Execute reconciliation scan for a tenant.
    *
-   * Use for:
-   * - Nightly integrity scan
-   * - Deployment safety check
-   * - Admin-triggered repair
+   * LAW:
+   * - Ledger immutable
+   * - Projection repairable
+   * - Repairs ledger-authoritative
+   * - Idempotent and repeatable
    */
-  async run(tenantId: string): Promise<TenantReconciliationSummary> {
+  async run(inputTenantId: unknown): Promise<TenantReconciliationSummary> {
+    const tenantId = TenantIdSchema.parse(inputTenantId);
     const scannedAt = Date.now();
 
     const cases = await prisma.case.findMany({
@@ -64,6 +68,7 @@ export class TenantLifecycleReconciliationJob {
     let driftedCases = 0;
     let repairedCases = 0;
 
+    // Sequential on purpose: protects ledger ordering and DB pressure
     for (const c of cases) {
       const result = await this.reconciliationService.reconcileCaseLifecycle(
         tenantId,
@@ -87,47 +92,42 @@ export class TenantLifecycleReconciliationJob {
   }
 }
 
-/*
-Design reasoning
-----------------
-Institutional systems must self-heal projection drift.
-Tenant-wide reconciliation ensures:
-- No silent corruption
-- Deterministic rebuild capability
-- Cryptographic audit continuity
+// ////////////////////////////////////////////////////////////////
+// // Design reasoning
+// ////////////////////////////////////////////////////////////////
+// Projection drift is inevitable in distributed systems.
+// Ledger is sovereign; projection must be repairable.
+// Tenant-scoped reconciliation guarantees:
+// - Deterministic rebuild
+// - Audit continuity
+// - Idempotent correction
 
-Structure
----------
-- Fetch tenant cases
-- Reconcile each deterministically
-- Aggregate metrics
-- Return structured report
+// ////////////////////////////////////////////////////////////////
+// // Structure
+// ////////////////////////////////////////////////////////////////
+// 1. Validate tenantId
+// 2. Fetch tenant cases (ordered)
+// 3. Sequential reconciliation
+// 4. Aggregate metrics
+// 5. Return structured summary
 
-Implementation guidance
------------------------
-Do NOT parallelize blindly.
-Ledger sequence ordering must remain consistent.
-Safe to schedule nightly.
-Safe to expose as admin endpoint.
-Never mutate ledger directly.
+// ////////////////////////////////////////////////////////////////
+// // Implementation guidance
+// ////////////////////////////////////////////////////////////////
+// Do NOT parallelize without explicit ledger-safe strategy.
+// Use batching if tenant case count becomes very large.
+// Safe to expose behind admin authentication.
+// Never mutate ledger directly inside this job.
 
-Scalability insight
--------------------
-Enables:
-- Horizontal multi-tenant governance
-- Compliance-grade audit scans
-- Pre-release integrity verification
-- Automated lifecycle validation at scale
+// ////////////////////////////////////////////////////////////////
+// // Scalability insight
+// ////////////////////////////////////////////////////////////////
+// Sequential processing protects:
+// - Global ledger sequence monotonicity
+// - DB resource stability
+// - Multi-tenant fairness
 
-Would I ship this without review?
-Yes.
-
-Does it protect lifecycle authority?
-Yes.
-
-If it fails, can it degrade safely?
-Yes — per-case transactional repair.
-
-Who owns this tomorrow?
-Governance + platform operations.
-*/
+// This design supports:
+// - Nightly compliance scans
+// - Pre-release verification gates
+// - Automated drift detection at scale

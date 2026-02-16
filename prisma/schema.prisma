@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  CaseLifecycle  
+//  LedgerEventType   
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -124,22 +124,30 @@ enum VerificationStatus {
 enum LedgerEventType {
   CASE_CREATED
   CASE_UPDATED
+  LIFECYCLE_REPAIRED
+  CASE_ACCEPTED
   CASE_FLAGGED
+  CASE_ESCALATED
   CASE_REJECTED
   CASE_ARCHIVED
+
   ROUTED
   ROUTING_SUPERSEDED
+
   VERIFICATION_SUBMITTED
   VERIFIED
   VERIFICATION_TIMED_OUT
+
   APPEAL_OPENED
   APPEAL_RESOLVED
+
   GRANT_CREATED
   GRANT_POLICY_APPLIED
   BUDGET_ALLOCATED
   TRANCHE_RELEASED
   BUDGET_SUPERSEDED
   TRANCHE_REVERSED
+
   EXECUTION_STARTED
   EXECUTION_PROGRESS_RECORDED
   EXECUTION_COMPLETED

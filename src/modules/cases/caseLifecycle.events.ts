@@ -1,6 +1,6 @@
 // apps/backend/src/modules/cases/caseLifecycle.events.ts
-// Purpose: Canonical mapping between CaseLifecycle states and LedgerEventType.
-// Closed mapping — if a lifecycle exists, it MUST map to exactly one ledger event.
+// Canonical mapping between CaseLifecycle states and LedgerEventType.
+// Closed mapping — every lifecycle must map to exactly one ledger event.
 
 import { LedgerEventType, CaseLifecycle } from "@prisma/client";
 
@@ -10,9 +10,10 @@ import { LedgerEventType, CaseLifecycle } from "@prisma/client";
 
 /**
  * LAW:
- * - Every CaseLifecycle state MUST map to exactly one LedgerEventType.
+ * - Every CaseLifecycle MUST map to exactly one LedgerEventType.
  * - No fallbacks.
- * - No generic CASE_UPDATED misuse except where explicitly intentional.
+ * - No generic CASE_UPDATED misuse.
+ * - Compiler must fail if lifecycle enum changes.
  */
 export const CASE_LIFECYCLE_LEDGER_EVENTS: Record<
   CaseLifecycle,
@@ -22,8 +23,7 @@ export const CASE_LIFECYCLE_LEDGER_EVENTS: Record<
 
   [CaseLifecycle.ROUTED]: LedgerEventType.ROUTED,
 
-  [CaseLifecycle.ACCEPTED]: LedgerEventType.CASE_UPDATED,
-  // Replace with CASE_ACCEPTED if you introduce a dedicated event later.
+  [CaseLifecycle.ACCEPTED]: LedgerEventType.CASE_ACCEPTED,
 
   [CaseLifecycle.EXECUTING]: LedgerEventType.EXECUTION_STARTED,
 
@@ -31,45 +31,5 @@ export const CASE_LIFECYCLE_LEDGER_EVENTS: Record<
 
   [CaseLifecycle.FLAGGED]: LedgerEventType.CASE_FLAGGED,
 
-  [CaseLifecycle.HUMAN_REVIEW]: LedgerEventType.CASE_UPDATED,
-  // Replace with CASE_ESCALATED if you introduce a dedicated event.
+  [CaseLifecycle.HUMAN_REVIEW]: LedgerEventType.CASE_FLAGGED,
 };
-
-// ////////////////////////////////////////////////////////////////
-// // Example Usage
-// ////////////////////////////////////////////////////////////////
-
-// /*
-// const event = CASE_LIFECYCLE_LEDGER_EVENTS[CaseLifecycle.ROUTED];
-// // -> LedgerEventType.ROUTED
-// */
-
-// ////////////////////////////////////////////////////////////////
-// // Design reasoning
-// ////////////////////////////////////////////////////////////////
-// Lifecycle states represent authoritative governance transitions.
-// Each state must correspond to one explicit ledger event.
-// No lifecycle may exist without a mapped ledger event.
-// This guarantees deterministic replay.
-
-// ////////////////////////////////////////////////////////////////
-// // Structure
-// ////////////////////////////////////////////////////////////////
-// - Record keyed by Prisma CaseLifecycle
-// - Values strictly Prisma LedgerEventType
-// - No string literals
-// - No optional fallback
-
-// ////////////////////////////////////////////////////////////////
-// // Implementation guidance
-// ////////////////////////////////////////////////////////////////
-// If you add a new CaseLifecycle state in Prisma,
-// TypeScript will fail compilation until you add it here.
-// That is intentional.
-
-// ////////////////////////////////////////////////////////////////
-// // Scalability insight
-// ////////////////////////////////////////////////////////////////
-// When Phase 2 introduces richer event types (e.g. CASE_ACCEPTED),
-// replace generic CASE_UPDATED with specific event types.
-// The mapping remains stable and compiler-enforced.
