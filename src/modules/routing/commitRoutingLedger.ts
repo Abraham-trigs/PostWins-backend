@@ -2,9 +2,11 @@
 // Authoritative routing ledger commit.
 // Explicit multi-tenant boundary.
 // Transaction-aware. No enum shadowing. No mutation.
+// Enforced Authority Envelope V1.
 
 import { SYSTEM_AUTHORITY_PROOF } from "@/domain/system/systemActors";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 import {
   LedgerEventType,
   ActorKind,
@@ -59,11 +61,17 @@ export async function commitRoutingLedger(
         rule: routingResult.reason,
       },
 
-      payload: {
-        executionBodyId: routingResult.executionBodyId,
-        intentCode,
-      },
+      payload: buildAuthorityEnvelopeV1({
+        domain: "ROUTING",
+        event: "ROUTED",
+        data: {
+          executionBodyId: routingResult.executionBodyId,
+          intentCode,
+          routingOutcome: routingResult.outcome,
+          rule: routingResult.reason,
+        },
+      }),
     },
-    tx, // 🔒 atomic with caller transaction
+    tx,
   );
 }

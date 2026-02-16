@@ -1,9 +1,11 @@
 // src/modules/verification/verification.service.ts
 // Sovereign Phase 1.5 verification service.
 // Consensus-target model. No lifecycle mutation. Ledger-authoritative.
+// Authority Envelope V1 enforced for all ledger commits.
 
 import { prisma } from "@/lib/prisma";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 import {
   VerificationStatus,
   ActorKind,
@@ -54,6 +56,7 @@ export class VerificationService {
    * - Never mutates lifecycle
    * - Ledger commit must be atomic with DB mutation
    * - Tenant isolation must be preserved
+   * - All ledger payloads must use Authority Envelope V1
    */
   async recordVerification(input: unknown): Promise<VerificationResult> {
     const { verificationRecordId, verifierUserId, status, note } =
@@ -155,7 +158,7 @@ export class VerificationService {
       }
 
       ////////////////////////////////////////////////////////////////
-      // 6️⃣ Ledger commit — VERIFICATION_SUBMITTED
+      // 6️⃣ Ledger commit — VERIFICATION_SUBMITTED (Envelope V1)
       ////////////////////////////////////////////////////////////////
 
       await this.ledger.commit(
@@ -166,10 +169,14 @@ export class VerificationService {
           actorKind: ActorKind.HUMAN,
           actorUserId: verifierUserId,
           authorityProof: "VERIFICATION_VOTE",
-          payload: {
-            verificationRecordId: record.id,
-            status,
-          },
+          payload: buildAuthorityEnvelopeV1({
+            domain: "VERIFICATION",
+            event: "VERIFICATION_SUBMITTED",
+            data: {
+              verificationRecordId: record.id,
+              status,
+            },
+          }),
         },
         tx,
       );
@@ -221,7 +228,7 @@ export class VerificationService {
       });
 
       ////////////////////////////////////////////////////////////////
-      // 9️⃣ Ledger commit — VERIFIED (atomic)
+      // 9️⃣ Ledger commit — VERIFIED (Envelope V1)
       ////////////////////////////////////////////////////////////////
 
       await this.ledger.commit(
@@ -232,11 +239,15 @@ export class VerificationService {
           actorKind: ActorKind.HUMAN,
           actorUserId: verifierUserId,
           authorityProof: "VERIFICATION_CONSENSUS",
-          payload: {
-            verificationRecordId: record.id,
-            requiredVerifiers: record.requiredVerifiers,
-            acceptedCount,
-          },
+          payload: buildAuthorityEnvelopeV1({
+            domain: "VERIFICATION",
+            event: "VERIFIED",
+            data: {
+              verificationRecordId: record.id,
+              requiredVerifiers: record.requiredVerifiers,
+              acceptedCount,
+            },
+          }),
         },
         tx,
       );
@@ -260,6 +271,7 @@ Two ledger events exist:
 Both are atomic with DB writes.
 Replay must reconstruct full voting history.
 Tenant isolation is enforced at role resolution boundary.
+Authority Envelope V1 ensures replay-safe payload evolution.
 
 Structure
 ---------
@@ -269,10 +281,10 @@ Structure
 4. Tenant-safe role authorization
 5. Prevent duplicate vote
 6. Persist vote
-7. Commit VERIFICATION_SUBMITTED
+7. Commit VERIFICATION_SUBMITTED (enveloped)
 8. Deterministic consensus calculation
 9. Finalize consensus
-10. Commit VERIFIED
+10. Commit VERIFIED (enveloped)
 
 Implementation guidance
 -----------------------
@@ -280,6 +292,7 @@ LedgerService.commit() must accept Prisma.TransactionClient.
 Never mutate Case.lifecycle here.
 Lifecycle transition remains governance-layer responsibility.
 Never remove tenantId filters from role resolution.
+All future ledger commits must use Authority Envelope V1.
 
 Scalability insight
 -------------------
@@ -287,5 +300,5 @@ Scalability insight
 - Deterministic consensus reconstruction
 - No cross-tenant privilege bleed
 - Atomic authority boundary
-- Safe under horizontal scaling
+- Versioned envelope protects long-term institutional durability
 */

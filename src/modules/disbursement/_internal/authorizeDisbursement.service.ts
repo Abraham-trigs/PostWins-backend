@@ -7,6 +7,7 @@ import {
 import { IllegalLifecycleInvariantViolation } from "@/modules/cases/case.errors";
 import { commitLedgerEvent } from "@/modules/routing/commitRoutingLedger";
 import { LedgerEventType } from "@prisma/client";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
 /* ---------------------------------------------
    Capability types (CRITICAL)
@@ -154,14 +155,18 @@ export async function authorizeDisbursement(
       caseId: params.caseId,
       eventType: LedgerEventType.DISBURSEMENT_AUTHORIZED,
       actor: params.actor,
-      payload: {
-        disbursementId: disbursement.id,
-        amount: params.amount,
-        currency: params.currency,
-        destination: params.payee,
-        verificationRecordId: c.verificationRecords[0].id,
-        executionId: c.execution.id,
-      },
+      payload: buildAuthorityEnvelopeV1({
+        domain: "DISBURSEMENT",
+        event: "AUTHORIZED",
+        data: {
+          disbursementId: disbursement.id,
+          amount: params.amount,
+          currency: params.currency,
+          destination: params.payee,
+          verificationRecordId: c.verificationRecords[0].id,
+          executionId: c.execution.id,
+        },
+      }),
     });
 
     return {

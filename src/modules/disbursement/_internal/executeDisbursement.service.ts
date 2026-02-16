@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { ActorKind, DisbursementStatus, LedgerEventType } from "@prisma/client";
 import { LifecycleInvariantViolationError } from "@/modules/cases/case.errors";
 import { commitLedgerEvent } from "@/modules/routing/commitRoutingLedger";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
 type ExecuteDisbursementParams = {
   tenantId: string;
@@ -50,15 +51,19 @@ export async function executeDisbursement(params: ExecuteDisbursementParams) {
         caseId: d.caseId,
         eventType: LedgerEventType.DISBURSEMENT_COMPLETED,
         actor: params.actor,
-        payload: {
-          disbursementId: d.id,
-          amount: d.amount,
-          currency: d.currency,
-          payeeKind: d.payeeKind,
-          payeeId: d.payeeId,
-          verificationRecordId: d.verificationRecordId,
-          executionId: d.executionId,
-        },
+        payload: buildAuthorityEnvelopeV1({
+          domain: "DISBURSEMENT",
+          event: "COMPLETED",
+          data: {
+            disbursementId: d.id,
+            amount: d.amount,
+            currency: d.currency,
+            payeeKind: d.payeeKind,
+            payeeId: d.payeeId,
+            verificationRecordId: d.verificationRecordId,
+            executionId: d.executionId,
+          },
+        }),
       });
 
       return completed;
@@ -78,10 +83,14 @@ export async function executeDisbursement(params: ExecuteDisbursementParams) {
       caseId: d.caseId,
       eventType: LedgerEventType.DISBURSEMENT_FAILED,
       actor: params.actor,
-      payload: {
-        disbursementId: d.id,
-        reason: params.outcome.reason,
-      },
+      payload: buildAuthorityEnvelopeV1({
+        domain: "DISBURSEMENT",
+        event: "FAILED",
+        data: {
+          disbursementId: d.id,
+          reason: params.outcome.reason,
+        },
+      }),
     });
 
     return failed;

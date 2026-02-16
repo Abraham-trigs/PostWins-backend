@@ -1,5 +1,6 @@
 import { ActorKind, LedgerEventType } from "@posta/core/types";
 import { SYSTEM_AUTHORITY_PROOF } from "../../domain/system/systemActors";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
 export async function commitAcceptanceLedger({
   ledger,
@@ -25,8 +26,12 @@ export async function commitAcceptanceLedger({
     authorityProof:
       actor.kind === "SYSTEM" ? SYSTEM_AUTHORITY_PROOF : `org:${actor.orgKey}`,
 
-    payload: {
-      executionBodyId,
-    },
+    payload: buildAuthorityEnvelopeV1({
+      domain: "ROUTING",
+      event: "ACCEPTED",
+      data: {
+        executionBodyId,
+      },
+    }),
   });
 }

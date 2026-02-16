@@ -1,9 +1,9 @@
 import { CaseLifecycle } from "../cases/CaseLifecycle";
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
-import { LedgerEventType } from "@prisma/client";
+import { LedgerEventType, Prisma } from "@prisma/client";
 import { commitLedgerEvent } from "../routing/commitRoutingLedger";
-import { Prisma } from "@prisma/client";
 import { isVerificationTimedOut } from "./isVerificationTimedOut";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
 /**
  * FINALIZATION PATHS — STEP 10.7 + 10.8
@@ -12,6 +12,8 @@ import { isVerificationTimedOut } from "./isVerificationTimedOut";
  * outcomes are allowed to cause lifecycle or ledger effects.
  *
  * They are called exclusively by the verification orchestrator.
+ *
+ * Authority Envelope V1 is mandatory for all ledger payloads.
  */
 
 const VERIFICATION_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -45,10 +47,14 @@ export async function finalizeVerificationAccepted(
       caseId: record.caseId,
       eventType: LedgerEventType.VERIFICATION_TIMED_OUT,
       actor,
-      payload: {
-        verificationRecordId: record.id,
-        createdAt: record.createdAt,
-      },
+      payload: buildAuthorityEnvelopeV1({
+        domain: "VERIFICATION",
+        event: "VERIFICATION_TIMED_OUT",
+        data: {
+          verificationRecordId: record.id,
+          createdAt: record.createdAt,
+        },
+      }),
     });
 
     // ❗ No lifecycle change
@@ -73,9 +79,13 @@ export async function finalizeVerificationAccepted(
     caseId: record.caseId,
     eventType: LedgerEventType.VERIFIED,
     actor,
-    payload: {
-      verificationRecordId: record.id,
-    },
+    payload: buildAuthorityEnvelopeV1({
+      domain: "VERIFICATION",
+      event: "VERIFIED",
+      data: {
+        verificationRecordId: record.id,
+      },
+    }),
   });
 }
 
@@ -108,10 +118,14 @@ export async function finalizeVerificationRejected(
       caseId: record.caseId,
       eventType: LedgerEventType.VERIFICATION_TIMED_OUT,
       actor,
-      payload: {
-        verificationRecordId: record.id,
-        createdAt: record.createdAt,
-      },
+      payload: buildAuthorityEnvelopeV1({
+        domain: "VERIFICATION",
+        event: "VERIFICATION_TIMED_OUT",
+        data: {
+          verificationRecordId: record.id,
+          createdAt: record.createdAt,
+        },
+      }),
     });
 
     return;
@@ -132,9 +146,13 @@ export async function finalizeVerificationRejected(
     caseId: record.caseId,
     eventType: LedgerEventType.VERIFICATION_REJECTED,
     actor,
-    payload: {
-      verificationRecordId: record.id,
-    },
+    payload: buildAuthorityEnvelopeV1({
+      domain: "VERIFICATION",
+      event: "VERIFICATION_REJECTED",
+      data: {
+        verificationRecordId: record.id,
+      },
+    }),
   });
 }
 
@@ -167,10 +185,14 @@ export async function escalateVerification(
       caseId: record.caseId,
       eventType: LedgerEventType.VERIFICATION_TIMED_OUT,
       actor,
-      payload: {
-        verificationRecordId: record.id,
-        createdAt: record.createdAt,
-      },
+      payload: buildAuthorityEnvelopeV1({
+        domain: "VERIFICATION",
+        event: "VERIFICATION_TIMED_OUT",
+        data: {
+          verificationRecordId: record.id,
+          createdAt: record.createdAt,
+        },
+      }),
     });
 
     return;
@@ -183,8 +205,12 @@ export async function escalateVerification(
     caseId: record.caseId,
     eventType: LedgerEventType.VERIFICATION_DISPUTED,
     actor,
-    payload: {
-      verificationRecordId: record.id,
-    },
+    payload: buildAuthorityEnvelopeV1({
+      domain: "VERIFICATION",
+      event: "VERIFICATION_DISPUTED",
+      data: {
+        verificationRecordId: record.id,
+      },
+    }),
   });
 }

@@ -1,5 +1,6 @@
 // apps/backend/src/modules/cases/transitionCaseLifecycleWithLedger.ts
 // Deterministic lifecycle transition with atomic ledger authority + structured governance logging.
+// Assumes: LedgerService hashes payload deterministically and authorityEnvelope V1 is supported.
 
 import { prisma } from "@/lib/prisma";
 import { CaseLifecycle, ActorKind } from "@prisma/client";
@@ -7,6 +8,7 @@ import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
 import { LifecycleInvariantViolationError } from "./case.errors";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 import { log } from "@/lib/observability/logger";
 import { z } from "zod";
 
@@ -157,7 +159,7 @@ export async function transitionCaseLifecycleWithLedger(
     }
 
     ////////////////////////////////////////////////////////////////
-    // 6️⃣ Atomic ledger commit
+    // 6️⃣ Atomic ledger commit (with Authority Envelope V1)
     ////////////////////////////////////////////////////////////////
 
     await ledger.commit(
@@ -169,10 +171,14 @@ export async function transitionCaseLifecycleWithLedger(
         actorUserId: params.actor.userId ?? null,
         authorityProof: params.actor.authorityProof,
         intentContext: params.intentContext,
-        payload: {
-          from: previousLifecycle,
-          to: next,
-        },
+        payload: buildAuthorityEnvelopeV1({
+          domain: "CASE_LIFECYCLE",
+          event: "TRANSITION",
+          data: {
+            from: previousLifecycle,
+            to: next,
+          },
+        }),
       },
       tx,
     );
@@ -199,9 +205,10 @@ export async function transitionCaseLifecycleWithLedger(
 ////////////////////////////////////////////////////////////////
 // Design reasoning
 ////////////////////////////////////////////////////////////////
-// Logging is intentionally placed outside the transaction to ensure only
-// committed state transitions are emitted. Lifecycle state is guarded
-// against undefined execution to avoid unsafe non-null assertions.
+// Lifecycle transitions now use a versioned authority envelope.
+// Payload evolution becomes replay-safe while eventType remains
+// authoritative classification. Envelope versioning protects
+// long-term institutional durability.
 
 ////////////////////////////////////////////////////////////////
 // Structure
@@ -212,20 +219,20 @@ export async function transitionCaseLifecycleWithLedger(
 // - Invariant enforcement
 // - Strict lifecycle→ledger mapping
 // - Optimistic concurrency guard
-// - Atomic ledger commit
+// - Atomic ledger commit (enveloped payload)
 // - Post-commit governance logging
 
 ////////////////////////////////////////////////////////////////
 // Implementation guidance
 ////////////////////////////////////////////////////////////////
-// Always pass the transaction client into ledger.commit for atomicity.
-// Map LifecycleTransitionValidationError to HTTP 400.
-// Map LifecycleInvariantViolationError to HTTP 409.
-// Never log before commit; logs must reflect committed authority.
+// All future lifecycle commits must use buildAuthorityEnvelopeV1.
+// Never write raw payload objects again.
+// Replay logic should branch by envelopeVersion when required.
 
 ////////////////////////////////////////////////////////////////
 // Scalability insight
 ////////////////////////////////////////////////////////////////
-// This enables full traceability across HTTP → lifecycle → ledger → scheduler
-// without contaminating domain logic. Structured logs become reconstructable
-// governance events under concurrency and distributed workloads.
+// Versioned envelopes enable safe domain evolution without
+// breaking cryptographic determinism. This protects replay,
+// auditability, and institutional memory across multi-year growth.
+////////////////////////////////////////////////////////////////
