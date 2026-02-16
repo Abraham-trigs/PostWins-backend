@@ -1,20 +1,38 @@
+// apps/backend/src/modules/decision/decision.query.service.ts
+// Decision explainability + ledger-backed lifecycle integrity validation.
+
 import { prisma } from "../../lib/prisma";
-import { Decision, DecisionType } from "@prisma/client";
+import {
+  Decision,
+  DecisionType,
+  CaseLifecycle,
+  LedgerEventType,
+} from "@prisma/client";
 import { DecisionExplanation } from "./decision.types";
+import { deriveLifecycleFromLedger } from "../cases/deriveLifecycleFromLedger";
 
 /**
- * Phase 5 — Decision Explainability & Audit Queries
+ * Phase 6 — Read Model Governance Layer
  *
- * Read-only. Deterministic. No inference.
- * These queries explain authority, history, and facts.
+ * Purpose:
+ * - Explain authoritative decisions
+ * - Replay ledger to deterministically derive lifecycle
+ * - Detect projection drift without mutating state
+ *
+ * Constraints:
+ * - Read-only
+ * - Deterministic
+ * - No inference
+ * - No transactional side effects
+ *
+ * This service is an integrity boundary.
  */
+
 export class DecisionQueryService {
-  /**
-   * Internal mapper — explicit and boring by design.
-   *
-   * Accepts a Prisma Decision model and projects
-   * it into a read-only explanation DTO.
-   */
+  /* -------------------------------------------------------------------------- */
+  /* Internal Mapper — Explicit projection to stable DTO                       */
+  /* -------------------------------------------------------------------------- */
+
   private toDecisionExplanation(decision: Decision): DecisionExplanation {
     return {
       decisionId: decision.id,
@@ -29,11 +47,10 @@ export class DecisionQueryService {
     };
   }
 
-  /**
-   * Q1️⃣ Authoritative decision per type
-   *
-   * "What decision currently governs this case for X?"
-   */
+  /* -------------------------------------------------------------------------- */
+  /* Q1 — Authoritative Decision                                                */
+  /* -------------------------------------------------------------------------- */
+
   async getAuthoritativeDecision(params: {
     tenantId: string;
     caseId: string;
@@ -52,11 +69,10 @@ export class DecisionQueryService {
     return decision ? this.toDecisionExplanation(decision) : null;
   }
 
-  /**
-   * Q2️⃣ Decision chain (supersession history)
-   *
-   * "How did we get here?"
-   */
+  /* -------------------------------------------------------------------------- */
+  /* Q2 — Decision Chain (Supersession History)                                 */
+  /* -------------------------------------------------------------------------- */
+
   async getDecisionChain(params: {
     tenantId: string;
     caseId: string;
@@ -74,11 +90,10 @@ export class DecisionQueryService {
     return decisions.map((d) => this.toDecisionExplanation(d));
   }
 
-  /**
-   * Q3️⃣ Lifecycle explanation (projection reasoning)
-   *
-   * "Why is the case in this lifecycle?"
-   */
+  /* -------------------------------------------------------------------------- */
+  /* Q3 — Lifecycle Explanation + Projection Drift Detection                    */
+  /* -------------------------------------------------------------------------- */
+
   async explainLifecycle(params: { tenantId: string; caseId: string }) {
     const caseRow = await prisma.case.findFirst({
       where: {
@@ -92,6 +107,24 @@ export class DecisionQueryService {
       throw new Error("Case not found");
     }
 
+    // Replay immutable ledger facts (ordered ASC for deterministic projection)
+    const ledgerEvents = await prisma.ledgerCommit.findMany({
+      where: {
+        tenantId: params.tenantId,
+        caseId: params.caseId,
+      },
+      orderBy: { ts: "asc" },
+      select: { eventType: true },
+    });
+
+    const derivedLifecycle: CaseLifecycle = deriveLifecycleFromLedger(
+      ledgerEvents.map((e) => ({
+        eventType: e.eventType as LedgerEventType,
+      })),
+    );
+
+    const drift = derivedLifecycle !== caseRow.lifecycle;
+
     const decision = await prisma.decision.findFirst({
       where: {
         tenantId: params.tenantId,
@@ -103,15 +136,16 @@ export class DecisionQueryService {
 
     return {
       lifecycle: caseRow.lifecycle,
+      ledgerDerivedLifecycle: derivedLifecycle,
+      drift, // true = projection inconsistency
       causedByDecision: decision ? this.toDecisionExplanation(decision) : null,
     };
   }
 
-  /**
-   * Q4️⃣ Ledger-backed fact trail
-   *
-   * "What immutable facts were recorded about this case?"
-   */
+  /* -------------------------------------------------------------------------- */
+  /* Q4 — Immutable Ledger Trail                                                */
+  /* -------------------------------------------------------------------------- */
+
   async getLedgerTrail(params: { tenantId: string; caseId: string }) {
     return prisma.ledgerCommit.findMany({
       where: {
@@ -122,11 +156,10 @@ export class DecisionQueryService {
     });
   }
 
-  /**
-   * Counterfactuals (read-only, safe)
-   *
-   * "What would have happened under different constraints?"
-   */
+  /* -------------------------------------------------------------------------- */
+  /* Counterfactual — Read-Only Simulation Record                               */
+  /* -------------------------------------------------------------------------- */
+
   async getRoutingCounterfactual(params: { tenantId: string; caseId: string }) {
     return prisma.counterfactualRecord.findFirst({
       where: {
@@ -137,3 +170,38 @@ export class DecisionQueryService {
     });
   }
 }
+
+/*
+Architectural Position
+----------------------
+This layer governs read-side truth validation.
+
+The lifecycle stored on Case is a projection.
+The ledger is the source of truth.
+This service proves the projection still matches the source.
+
+Non-Goals
+---------
+- No projection repair
+- No write-path coupling
+- No hidden side effects
+
+Operational Model
+-----------------
+Drift detection enables:
+- Observability alerts
+- Background reconciliation jobs
+- Safe governance audits
+- Horizontal read scaling
+
+Failure Behavior
+----------------
+If drift is true:
+- The system is still operational.
+- The ledger remains canonical.
+- Repair must occur in a separate reconciliation workflow.
+
+Ownership
+---------
+Governance / Read-model integrity boundary.
+*/

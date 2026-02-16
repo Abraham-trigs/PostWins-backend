@@ -8,6 +8,7 @@ EOF
 .vercel
 .env*.local
 data/keys/private.pem
+
 .env
 .env.local
 

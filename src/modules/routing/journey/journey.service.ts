@@ -16,6 +16,7 @@ export class JourneyService {
       requiredForSdg: "SDG_4",
       dependencies: [],
     },
+
     {
       id: "ATTEND",
       order: 2,
@@ -23,6 +24,7 @@ export class JourneyService {
       requiredForSdg: "SDG_4",
       dependencies: ["ENROLL"],
     },
+
     {
       id: "MODULE_1",
       order: 3,

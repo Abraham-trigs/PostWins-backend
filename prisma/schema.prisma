@@ -650,7 +650,10 @@ model LedgerCommit {
   caseId   String? @db.Uuid
 
   eventType LedgerEventType
-  ts        BigInt
+
+  /// Database-sovereign logical clock.
+  /// Allocated via nextval('ledger_global_seq') in application layer.
+  ts BigInt
 
   actorKind      ActorKind
   actorUserId    String? @db.Uuid
@@ -658,11 +661,15 @@ model LedgerCommit {
 
   intentContext Json?
 
-  commitmentHash String
-  signature      String?
+  /// Canonical SHA-256 hash of normalized commit payload.
+  commitmentHash String @unique
+
+  /// Cryptographic signature over commitmentHash.
+  signature String?
 
   payload Json
 
+  /// Supersession safety: only one commit may supersede a prior commit.
   supersedesCommitId String?       @unique @db.Uuid
   supersedes         LedgerCommit? @relation("LedgerSupersession", fields: [supersedesCommitId], references: [id], onDelete: Restrict)
   supersededBy       LedgerCommit? @relation("LedgerSupersession")
@@ -671,10 +678,15 @@ model LedgerCommit {
   case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
+  /// Global logical ordering
+  @@unique([ts])
+
+  /// Query acceleration
   @@index([tenantId, ts])
   @@index([caseId, ts])
   @@index([eventType, ts])
 }
+
 
 ////////////////////////////////////////////////////////////////
 // TIMELINE & EVIDENCE

@@ -108,6 +108,7 @@ export class PostWinRoutingService extends EventEmitter {
     /**
      * STEP 1: Ensure journey exists
      */
+
     const journey: Journey =
       // Phase 2: task completion & journey mutation
       this.journeyService.getOrCreateJourney(beneficiaryId);

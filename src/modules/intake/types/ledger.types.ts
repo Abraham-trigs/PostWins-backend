@@ -6,29 +6,75 @@
  * - Prisma-agnostic
  * - Workflow-agnostic
  *
- * These types describe *facts*, not process.
+ * These types describe facts, not process.
  */
 
 /* -------------------------------------------------------------------------- */
-/* Health                                                                      */
+/* Health                                                                     */
 /* -------------------------------------------------------------------------- */
 
 export type LedgerHealthStatus = "HEALTHY" | "CORRUPTED";
 
 export type LedgerHealth = {
+  /**
+   * Cryptographic + ordering integrity state.
+   */
   status: LedgerHealthStatus;
+
+  /**
+   * Epoch timestamp when health was evaluated.
+   */
   checkedAt: number;
+
+  /**
+   * Total committed ledger records.
+   */
   recordCount: number;
+
+  /**
+   * Indicates whether a public key is present in memory.
+   */
   publicKeyPresent: boolean;
+
+  /**
+   * Database-sovereign logical clock of most recent commit.
+   * String to preserve 64-bit precision.
+   */
+  lastTs: string | null;
+
+  /**
+   * Indicates whether the global sequence exists and is queryable.
+   */
+  sequenceExists: boolean;
+
+  /**
+   * Difference between sequence last_value and last committed ts.
+   * String to preserve precision.
+   * Null if sequence unavailable or no commits.
+   */
+  sequenceDrift: string | null;
+
+  /**
+   * Result of full hash + signature verification.
+   */
+  hashIntegrityVerified: boolean;
+
+  /**
+   * Optional corruption note.
+   */
   note?: string;
 };
 
 /* -------------------------------------------------------------------------- */
-/* Audit / Projections (read-only convenience)                                 */
+/* Audit / Projections (read-only convenience)                                */
 /* -------------------------------------------------------------------------- */
 
 export type LedgerAuditRecord = {
-  ts?: number | bigint;
+  /**
+   * Database-sovereign logical clock.
+   * Allocated via nextval('ledger_global_seq').
+   */
+  ts?: bigint;
 
   tenantId?: string;
   caseId?: string | null;
@@ -56,16 +102,10 @@ export type LedgerAuditRecord = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Commit Input                                                                */
+/* Commit Input                                                               */
 /* -------------------------------------------------------------------------- */
 
 export type LedgerCommitInput = {
-  /**
-   * Always required.
-   * BigInt preferred for canonical storage.
-   */
-  ts: number | bigint;
-
   /* ---------------- Legacy transport fields ---------------- */
 
   postWinId?: string;
@@ -87,13 +127,16 @@ export type LedgerCommitInput = {
   supersedesCommitId?: string | null;
 
   /**
-   * Allow forward-compatible enrichment without type fights.
+   * Forward-compatible enrichment without type fights.
    */
+  authorityProof?: string;
+  intentContext?: unknown;
+
   [k: string]: any;
 };
 
 /* -------------------------------------------------------------------------- */
-/* Enums (string unions by design)                                             */
+/* Enums (string unions by design)                                            */
 /* -------------------------------------------------------------------------- */
 
 /**
@@ -152,3 +195,37 @@ export const LEDGER_EVENT_TYPES: ReadonlySet<LedgerEventType> = new Set([
   "TRANCHE_REVERSED",
   "DISBURSEMENT_STALLED",
 ]);
+
+// Design reasoning
+
+// Health now represents cryptographic liveness, sequence integrity, and observability—not mere uptime.
+// All bigint-derived values are strings to prevent precision loss across runtimes.
+
+// Structure
+
+// LedgerHealth expanded for sequence and integrity observability
+
+// Audit record remains bigint-safe
+
+// Commit input remains timestamp-free
+
+// Enums unchanged, colocated runtime guard preserved
+
+// Implementation guidance
+
+// No runtime changes required beyond existing getStatus() upgrade.
+// Restart backend after type update to ensure no stale build artifacts.
+
+// Scalability insight
+
+// This health contract now enables:
+
+// Regulatory audit confidence
+
+// Drift detection across horizontally scaled instances
+
+// Leak detection for abandoned sequence allocations
+
+// Deterministic replay guarantees
+
+// You’ve moved from “ledger works” to “ledger proves itself.”
