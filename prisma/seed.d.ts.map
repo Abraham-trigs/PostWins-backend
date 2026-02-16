@@ -1,10 +1,1 @@
-{
-  "version": 3,
-  "file": "seed.d.ts",
-  "sourceRoot": "",
-  "sources": [
-    "seed.ts"
-  ],
-  "names": [],
-  "mappings": "AAiDA,wBAAsB,4BAA4B,CAAC,QAAQ,EAAE,MAAM,gBAiClE"
-}
+{"version":3,"file":"seed.d.ts","sourceRoot":"","sources":["seed.ts"],"names":[],"mappings":"AAiDA,wBAAsB,4BAA4B,CAAC,QAAQ,EAAE,MAAM,gBAiClE"}

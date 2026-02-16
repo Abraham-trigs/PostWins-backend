@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  VerificationStatus   
+//  Decision    
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -114,11 +114,16 @@ enum ApprovalStatus {
   REJECTED
 }
 
-enum VerificationDecision {
+enum VerificationStatus {
+  PENDING
   APPROVED
   REJECTED
 }
 
+enum VerificationDecision {
+  APPROVED
+  REJECTED
+}
 
 enum LedgerEventType {
   CASE_CREATED
@@ -209,6 +214,12 @@ model Tenant {
   ledgerCommits LedgerCommit[]
   auditEntries  AuditEntry[]
 
+  // New relations
+  executions       Execution[]
+  approvalRequests ApprovalRequest[]
+  decisions        Decision[]
+  disbursements    Disbursement[]
+
   // Back relations
   roles               Role[]
   beneficiaries       Beneficiary[]
@@ -254,6 +265,12 @@ model User {
   caseAssignmentsAssigned CaseAssignment[]  @relation("CaseAssignmentAssignedBy")
   routingDecisionsDecided RoutingDecision[] @relation("RoutingDecisionDecidedBy")
 
+  // New back-relations
+  startedExecutions Execution[]       @relation("ExecutionStarter")
+  resolvedApprovals ApprovalRequest[]
+  decisions         Decision[]
+  disbursements     Disbursement[]
+
   @@unique([tenantId, email])
   @@index([tenantId, email])
   @@index([tenantId, createdAt])
@@ -270,6 +287,39 @@ model Session {
 
   @@index([userId, createdAt])
   @@index([expiresAt])
+}
+
+model Organization {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  executionBody   ExecutionBody?
+  donorGrants     Grant[]        @relation("GrantDonor")
+  implementGrants Grant[]        @relation("GrantImplementer")
+
+  @@index([tenantId, createdAt])
+}
+
+model Message {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
+  authorId String @db.Uuid
+
+  body      String
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+  @@index([tenantId, createdAt])
 }
 
 model Role {
@@ -332,7 +382,7 @@ model Beneficiary {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   pii    BeneficiaryPII?
 
   cases Case[] @relation("CaseBeneficiary")
@@ -345,10 +395,10 @@ model BeneficiaryPII {
   id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   beneficiaryId String @unique @db.Uuid
 
-  phone       String?
-  nationalId  String?
-  address     String?
-  dateOfBirth DateTime?
+  phone         String?
+  nationalId    String?
+  address       String?
+  dateOfBirth   DateTime?
   encryptedBlob Bytes?
 
   beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
@@ -375,11 +425,8 @@ model Case {
   scope AccessScope
   type  CaseType
 
-  /// Authoritative state
   lifecycle CaseLifecycle @default(INTAKE)
-
-  /// Derived / advisory only
-  status CaseStatus @default(INTAKED)
+  status    CaseStatus    @default(INTAKED)
 
   execution Execution?
 
@@ -396,6 +443,11 @@ model Case {
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   author      User         @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
   beneficiary Beneficiary? @relation("CaseBeneficiary", fields: [beneficiaryId], references: [id], onDelete: SetNull)
+
+  // 🔧 Added missing opposite relations
+  approvalRequests ApprovalRequest[]
+  decisions        Decision[]
+  disbursement     Disbursement?
 
   messages            Message[]
   verificationRecords VerificationRecord[]
@@ -423,9 +475,9 @@ model Case {
 /// Represents the operational execution instance of a Case.
 /// One-to-one with Case (enforced via unique caseId).
 model Execution {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @unique @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @unique @db.Uuid
 
   status ExecutionStatus @default(CREATED)
 
@@ -433,12 +485,12 @@ model Execution {
   completedAt DateTime?
   abortedAt   DateTime?
 
-  // Optional attribution
   startedByUserId String? @db.Uuid
 
-  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case    Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  starter User?  @relation(fields: [startedByUserId], references: [id], onDelete: SetNull)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  starter User? @relation("ExecutionStarter", fields: [startedByUserId], references: [id], onDelete: SetNull)
 
   progress ExecutionProgress[]
 
@@ -449,8 +501,8 @@ model Execution {
 /// Execution checkpoints / progress entries.
 /// Append-only operational trail.
 model ExecutionProgress {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  executionId String   @db.Uuid
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  executionId String @db.Uuid
 
   label      String
   detail     Json?
@@ -540,7 +592,7 @@ model VerificationRecord {
 
   routedAt   DateTime
   verifiedAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   receivedVerifications Verification[]
   requiredRoles         VerificationRequiredRole[]
@@ -592,9 +644,9 @@ model Verification {
 
 /// Policy approval workflow (structure preserved as-is).
 model ApprovalRequest {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
 
   status ApprovalStatus
 
@@ -603,7 +655,7 @@ model ApprovalRequest {
   reason    String
 
   resolvedAt       DateTime?
-  resolvedByUserId String? @db.Uuid
+  resolvedByUserId String?   @db.Uuid
 
   createdAt DateTime @default(now())
 
@@ -617,19 +669,19 @@ model ApprovalRequest {
 
 /// Generalized decision model with supersession support.
 model Decision {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
 
   decisionType DecisionType
   actorKind    ActorKind
-  actorUserId  String? @db.Uuid
+  actorUserId  String?      @db.Uuid
 
   reason        String?
   intentContext Json?
   decidedAt     DateTime @default(now())
 
-  supersedesDecisionId String? @db.Uuid
+  supersedesDecisionId String?   @unique @db.Uuid
   supersededAt         DateTime?
 
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -660,7 +712,7 @@ model LedgerCommit {
   ts BigInt
 
   actorKind      ActorKind
-  actorUserId    String? @db.Uuid
+  actorUserId    String?   @db.Uuid
   authorityProof String
 
   intentContext Json?
@@ -685,13 +737,11 @@ model LedgerCommit {
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@unique([ts])
-
   @@index([tenantId, ts])
   @@index([caseId, ts])
   @@index([eventType, ts])
   @@index([requestId])
 }
-
 
 ////////////////////////////////////////////////////////////////
 // TIMELINE & EVIDENCE
@@ -724,12 +774,12 @@ model Evidence {
   tenantId        String @db.Uuid
   timelineEntryId String @db.Uuid
 
-  kind      EvidenceKind
+  kind       EvidenceKind
   storageKey String
   sha256     String
   mimeType   String?
   byteSize   Int?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime     @default(now())
 
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   timelineEntry TimelineEntry @relation(fields: [timelineEntryId], references: [id], onDelete: Cascade)
@@ -749,7 +799,7 @@ model AuditEntry {
   caseId   String? @db.Uuid
 
   actorLabel  String
-  actorUserId String? @db.Uuid
+  actorUserId String?  @db.Uuid
   note        String?
   createdAt   DateTime @default(now())
 
@@ -848,7 +898,7 @@ model CounterfactualRecord {
   chosen             String
   constraintsApplied String[]
   alternatives       Json
-  createdAt          DateTime @default(now())
+  createdAt          DateTime     @default(now())
 
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case            Case             @relation(fields: [caseId], references: [id], onDelete: Cascade)
@@ -864,9 +914,9 @@ model CounterfactualRecord {
 
 /// Financial execution tied to verification + execution provenance.
 model Disbursement {
-  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String @db.Uuid
-  caseId    String @unique @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @unique @db.Uuid
 
   type   DisbursementType
   status DisbursementStatus
@@ -878,7 +928,7 @@ model Disbursement {
   payeeId   String
 
   actorKind      ActorKind
-  actorUserId    String? @db.Uuid
+  actorUserId    String?   @db.Uuid
   authorityProof String
 
   verificationRecordId String @db.Uuid
@@ -886,7 +936,7 @@ model Disbursement {
 
   failureReason String?
 
-  authorizedAt DateTime @default(now())
+  authorizedAt DateTime  @default(now())
   executedAt   DateTime?
   failedAt     DateTime?
 
@@ -920,7 +970,7 @@ model Grant {
   activatedAt   DateTime?
   closedAt      DateTime?
 
-  caseLinks  GrantCase[]
+  caseLinks   GrantCase[]
   constraints GrantConstraint[]
   allocations BudgetAllocation[]
   tranches    Tranche[]
