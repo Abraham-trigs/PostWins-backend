@@ -16,10 +16,12 @@
 
     "declaration": true,
     "declarationMap": true,
+
+    "baseUrl": ".",
     "paths": {
-      "@/modules/*": ["./apps/backend/src/modules/*"]
+      "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*.ts", "../../packages/core/src/types.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

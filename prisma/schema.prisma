@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  ledgerCommit   
+//  VerificationStatus   
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -110,16 +110,15 @@ enum RoutingOutcome {
 }
 
 enum ApprovalStatus {
-  PENDING
   APPROVED
   REJECTED
 }
 
-enum VerificationStatus {
-  PENDING
-  ACCEPTED
+enum VerificationDecision {
+  APPROVED
   REJECTED
 }
+
 
 enum LedgerEventType {
   CASE_CREATED
