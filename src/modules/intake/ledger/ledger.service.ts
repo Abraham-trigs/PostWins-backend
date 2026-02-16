@@ -1,6 +1,12 @@
 // apps/backend/src/modules/intake/ledger/ledger.service.ts
-// Sovereign ledger authority with cryptographic integrity + supersession enforcement + authority hierarchy control.
-// Assumes: Prisma schema defines ledgerCommit table and ledger_global_seq sequence (Postgres).
+// Sovereign ledger authority with:
+// - Cryptographic immutability
+// - Structural supersession enforcement
+// - Authority hierarchy enforcement
+// - Deterministic replay guarantees
+//
+// This file is the constitutional boundary of governance.
+// If this layer fails, institutional integrity fails.
 
 import {
   createHash,
@@ -14,11 +20,16 @@ import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { LedgerEventType, ActorKind, Prisma } from "@prisma/client";
 import { getRequestId } from "@/lib/observability/request-context";
+import { validateAuthoritySupersession } from "./authorityHierarchy.policy";
 
 ////////////////////////////////////////////////////////////////
 // Errors
 ////////////////////////////////////////////////////////////////
 
+/**
+ * Thrown when input validation fails.
+ * Represents boundary rejection — not governance conflict.
+ */
 export class LedgerValidationError extends Error {
   public readonly details: Record<string, string[] | undefined>;
   constructor(details: Record<string, string[] | undefined>) {
@@ -28,6 +39,10 @@ export class LedgerValidationError extends Error {
   }
 }
 
+/**
+ * Thrown when structural or authority-level supersession rules fail.
+ * Represents constitutional conflict.
+ */
 export class LedgerSupersessionError extends Error {
   constructor(message: string) {
     super(message);
@@ -36,40 +51,15 @@ export class LedgerSupersessionError extends Error {
 }
 
 ////////////////////////////////////////////////////////////////
-// Authority Hierarchy
+// Validation Schema (Transport Boundary)
 ////////////////////////////////////////////////////////////////
 
-enum AuthorityLevel {
-  SYSTEM_AUTOMATED = 1,
-  HUMAN_VERIFIER = 2,
-  HUMAN_ADMIN = 3,
-  EXECUTIVE_OVERRIDE = 4,
-}
-
-// Derives authority level from actor + authorityProof
-function resolveAuthorityLevel(
-  actorKind: ActorKind,
-  authorityProof: string,
-): AuthorityLevel {
-  if (actorKind === ActorKind.SYSTEM) {
-    return AuthorityLevel.SYSTEM_AUTOMATED;
-  }
-
-  if (authorityProof.includes("EXECUTIVE")) {
-    return AuthorityLevel.EXECUTIVE_OVERRIDE;
-  }
-
-  if (authorityProof.includes("ADMIN")) {
-    return AuthorityLevel.HUMAN_ADMIN;
-  }
-
-  return AuthorityLevel.HUMAN_VERIFIER;
-}
-
-////////////////////////////////////////////////////////////////
-// Validation Schema
-////////////////////////////////////////////////////////////////
-
+/**
+ * Validates transport-layer correctness.
+ * Does NOT validate authority hierarchy.
+ * Does NOT validate structural integrity.
+ * Those are governance concerns handled later.
+ */
 const LedgerCommitSchema = z
   .object({
     tenantId: z.string().uuid(),
@@ -83,6 +73,7 @@ const LedgerCommitSchema = z
     supersedesCommitId: z.string().uuid().nullable().optional(),
   })
   .superRefine((data, ctx) => {
+    // HUMAN must always be attributable.
     if (data.actorKind === ActorKind.HUMAN && !data.actorUserId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -90,6 +81,8 @@ const LedgerCommitSchema = z
         message: "actorUserId required for HUMAN actor",
       });
     }
+
+    // SYSTEM must never impersonate a user.
     if (data.actorKind === ActorKind.SYSTEM && data.actorUserId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -100,7 +93,7 @@ const LedgerCommitSchema = z
   });
 
 ////////////////////////////////////////////////////////////////
-// Ledger Service
+// Ledger Service (Constitutional Core)
 ////////////////////////////////////////////////////////////////
 
 export class LedgerService {
@@ -112,6 +105,11 @@ export class LedgerService {
   private privateKey: string;
   public publicKey: string;
 
+  /**
+   * Initializes cryptographic authority.
+   * Keys are persisted to disk.
+   * If keys change, historical verification fails.
+   */
   constructor() {
     this.ensureDir(this.dataDir);
     this.ensureDir(this.keysDir);
@@ -148,9 +146,20 @@ export class LedgerService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Commit (Supersession + Hierarchy Enforcement)
+  // Commit — Constitutional Entry Point
   ////////////////////////////////////////////////////////////////
 
+  /**
+   * Commits an immutable governance event.
+   *
+   * Layered protections:
+   * 1. Transport validation
+   * 2. Structural supersession integrity
+   * 3. Authority hierarchy validation
+   * 4. Global logical clock allocation
+   * 5. Canonical hash + signature
+   * 6. Append-only persistence
+   */
   public async commit(input: unknown, tx?: Prisma.TransactionClient) {
     const parsed = LedgerCommitSchema.safeParse(input);
 
@@ -161,50 +170,90 @@ export class LedgerService {
     const data = parsed.data;
     const db = tx ?? prisma;
 
-    const incomingLevel = resolveAuthorityLevel(
-      data.actorKind,
-      data.authorityProof,
-    );
-
     ////////////////////////////////////////////////////////////////
-    // Supersession + Hierarchy Enforcement
+    // Structural Supersession Integrity
     ////////////////////////////////////////////////////////////////
 
+    /**
+     * Supersession protects authority lineage.
+     * Without it, override chains become corruptible.
+     */
     if (data.supersedesCommitId) {
       const target = await db.ledgerCommit.findUnique({
         where: { id: data.supersedesCommitId },
+        select: {
+          id: true,
+          tenantId: true,
+          supersededBy: { select: { id: true } },
+          supersedesCommitId: true,
+          actorKind: true,
+          authorityProof: true,
+        },
       });
 
+      // Target must exist.
       if (!target) {
         throw new LedgerSupersessionError("SUPERSEDED_COMMIT_NOT_FOUND");
       }
 
+      // No cross-tenant overrides.
       if (target.tenantId !== data.tenantId) {
         throw new LedgerSupersessionError(
           "CROSS_TENANT_SUPERSESSION_FORBIDDEN",
         );
       }
 
+      // No double overrides.
       if (target.supersededBy) {
         throw new LedgerSupersessionError("COMMIT_ALREADY_SUPERSEDED");
       }
 
-      const targetLevel = resolveAuthorityLevel(
-        target.actorKind,
-        target.authorityProof,
-      );
+      // Prevent circular authority lineage.
+      let cursorId: string | null = target.supersedesCommitId ?? null;
 
-      if (incomingLevel < targetLevel) {
-        throw new LedgerSupersessionError(
-          "INSUFFICIENT_AUTHORITY_TO_SUPERSEDE",
-        );
+      while (cursorId) {
+        const parent = await db.ledgerCommit.findUnique({
+          where: { id: cursorId },
+          select: { supersedesCommitId: true },
+        });
+
+        if (!parent?.supersedesCommitId) break;
+
+        if (parent.supersedesCommitId === data.supersedesCommitId) {
+          throw new LedgerSupersessionError("CIRCULAR_SUPERSESSION_DETECTED");
+        }
+
+        cursorId = parent.supersedesCommitId;
+      }
+
+      ////////////////////////////////////////////////////////////////
+      // Authority Hierarchy Enforcement
+      ////////////////////////////////////////////////////////////////
+
+      /**
+       * Structural integrity prevents corruption.
+       * Hierarchy enforcement prevents illegitimate power escalation.
+       */
+      try {
+        validateAuthoritySupersession({
+          newActorKind: data.actorKind,
+          newAuthorityProof: data.authorityProof,
+          targetActorKind: target.actorKind,
+          targetAuthorityProof: target.authorityProof,
+        });
+      } catch (e: any) {
+        throw new LedgerSupersessionError(e.message);
       }
     }
 
     ////////////////////////////////////////////////////////////////
-    // Logical clock
+    // Sovereign Logical Clock
     ////////////////////////////////////////////////////////////////
 
+    /**
+     * Ordering is database-sovereign.
+     * This guarantees global monotonicity.
+     */
     const [{ nextval }] = await db.$queryRaw<
       { nextval: bigint }[]
     >`SELECT nextval('ledger_global_seq')`;
@@ -212,9 +261,13 @@ export class LedgerService {
     const tsBigInt = nextval;
 
     ////////////////////////////////////////////////////////////////
-    // Canonical normalization
+    // Canonical Authoritative Normalization
     ////////////////////////////////////////////////////////////////
 
+    /**
+     * requestId is excluded from hashing.
+     * Observability must never contaminate authority.
+     */
     const authoritative = {
       tenantId: data.tenantId,
       caseId: data.caseId ?? null,
@@ -230,12 +283,16 @@ export class LedgerService {
 
     const commitmentHash = this.generateHash(authoritative);
 
+    /**
+     * Signature binds institutional authority to commitmentHash.
+     * If signature fails, history cannot be trusted.
+     */
     const sign = createSign("SHA256");
     sign.update(commitmentHash);
     const signature = sign.sign(this.privateKey, "hex");
 
     ////////////////////////////////////////////////////////////////
-    // Persist
+    // Append-Only Persistence
     ////////////////////////////////////////////////////////////////
 
     return db.ledgerCommit.create({
@@ -258,9 +315,13 @@ export class LedgerService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Hashing utilities
+  // Hash Utilities
   ////////////////////////////////////////////////////////////////
 
+  /**
+   * Deterministic hashing.
+   * Canonical JSON ensures replay stability.
+   */
   private generateHash(data: unknown): string {
     return createHash("sha256").update(this.canonicalize(data)).digest("hex");
   }
@@ -289,31 +350,49 @@ export class LedgerService {
 ////////////////////////////////////////////////////////////////
 // Design reasoning
 ////////////////////////////////////////////////////////////////
-// Authority hierarchy now prevents silent privilege escalation.
-// Lower-level actors cannot supersede higher authority decisions.
-// Enforcement occurs at constitutional boundary (ledger commit).
+// This layer is the constitutional boundary of institutional authority.
+//
+// Supersession integrity protects structural lineage:
+// - No cross-tenant overrides
+// - No double overrides
+// - No circular ancestry
+//
+// Authority hierarchy protects legitimacy of power:
+// - Lower authority cannot supersede higher authority
+// - SYSTEM automation cannot silently override human escalation
+// - Executive override requires explicit authority proof
+//
+// These rules are enforced at commit-time, not in services,
+// ensuring governance cannot be bypassed through domain logic.
 
 ////////////////////////////////////////////////////////////////
 // Structure
 ////////////////////////////////////////////////////////////////
-// - Validation
-// - Authority resolution
-// - Supersession checks
-// - Hierarchy enforcement
-// - Logical clock
-// - Canonical hash + signature
+// 1. Transport validation (schema boundary)
+// 2. Structural supersession integrity
+// 3. Authority hierarchy validation
+// 4. Sovereign logical clock allocation
+// 5. Canonical normalization + SHA-256 hashing
+// 6. RSA signature binding
+// 7. Append-only persistence
+//
+// Each layer addresses a different class of institutional risk.
 
 ////////////////////////////////////////////////////////////////
 // Implementation guidance
 ////////////////////////////////////////////////////////////////
-// Map LedgerSupersessionError to HTTP 409.
-// AuthorityProof must be structured consistently.
-// Future expansion: external authority policy registry.
+// - Map LedgerValidationError to HTTP 400 (invalid request).
+// - Map LedgerSupersessionError to HTTP 409 (governance conflict).
+// - AuthorityProof must follow a controlled vocabulary or policy.
+// - Never weaken supersession or hierarchy enforcement inside services.
+// - Replay verification logic must stay aligned with canonical normalization.
 
 ////////////////////////////////////////////////////////////////
 // Scalability insight
 ////////////////////////////////////////////////////////////////
-// Governance now supports structured override chains with
-// provable authority ranking. This enables executive review,
-/// regulator audit, and long-term institutional resilience.
+// Authority lineage is now structurally provable and hierarchy-constrained.
+// Override chains can be reconstructed deterministically.
+// Governance can scale across tenants without risking privilege escalation.
+// This enables regulator-grade audits, executive review,
+// and long-term institutional durability under concurrency.
 ////////////////////////////////////////////////////////////////
