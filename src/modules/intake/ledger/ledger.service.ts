@@ -1,5 +1,6 @@
 // apps/backend/src/modules/intake/ledger/ledger.service.ts
 // Sovereign ledger authority with cryptographic integrity + operational health observability + request correlation binding.
+// Assumes: Prisma schema defines ledgerCommit table and ledger_global_seq sequence (Postgres).
 
 import {
   createHash,
@@ -134,7 +135,7 @@ export class LedgerService {
     const data = parsed.data;
     const db = tx ?? prisma;
 
-    // Global sovereign logical clock
+    // Global sovereign logical clock (Postgres sequence)
     const [{ nextval }] = await db.$queryRaw<
       { nextval: bigint }[]
     >`SELECT nextval('ledger_global_seq')`;
@@ -180,7 +181,7 @@ export class LedgerService {
           authorityProof: data.authorityProof,
           intentContext: data.intentContext as any,
           payload: (data.payload ?? {}) as any,
-          requestId: getRequestId() ?? null, // stored, NOT hashed
+          requestId: getRequestId() ?? null, // stored but NOT hashed
           commitmentHash,
           signature,
           supersedesCommitId: data.supersedesCommitId ?? null,
@@ -224,19 +225,23 @@ export class LedgerService {
         payload: r.payload,
       };
 
-      if (this.generateHash(reconstructed) !== r.commitmentHash) return false;
+      if (this.generateHash(reconstructed) !== r.commitmentHash) {
+        return false;
+      }
 
       const verify = createVerify("SHA256");
       verify.update(r.commitmentHash);
 
-      if (!verify.verify(this.publicKey, r.signature, "hex")) return false;
+      if (!verify.verify(this.publicKey, r.signature, "hex")) {
+        return false;
+      }
     }
 
     return true;
   }
 
   ////////////////////////////////////////////////////////////////
-  // Health
+  // Health (Operational + Constitutional Integrity)
   ////////////////////////////////////////////////////////////////
 
   public async getHealth(): Promise<LedgerHealth> {
@@ -252,6 +257,7 @@ export class LedgerService {
 
     let sequenceExists = true;
     let sequenceDrift: string | null = null;
+    let corrupted = !integrityOk;
 
     try {
       const [{ last_value }] = await prisma.$queryRaw<
@@ -260,14 +266,21 @@ export class LedgerService {
 
       if (last?.ts) {
         const drift = last_value - last.ts;
+
         sequenceDrift = drift.toString();
+
+        // Negative drift indicates invariant breach
+        if (drift < 0n) {
+          corrupted = true;
+        }
       }
     } catch {
       sequenceExists = false;
+      corrupted = true; // Missing sequence is constitutional failure
     }
 
     return {
-      status: integrityOk ? "HEALTHY" : "CORRUPTED",
+      status: corrupted ? "CORRUPTED" : "HEALTHY",
       checkedAt,
       recordCount,
       lastTs: last?.ts?.toString() ?? null,
@@ -305,3 +318,38 @@ export class LedgerService {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// Authority and observability are explicitly separated.
+// requestId is stored for traceability but excluded from hashing,
+// preserving replay determinism and constitutional immutability.
+// Health now treats sequence absence or negative drift as corruption.
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// - Zod validation boundary
+// - Global logical clock (Postgres sequence)
+// - Canonical authoritative hashing
+// - RSA signature binding
+// - Deterministic replay verification
+// - Strict health integrity evaluation
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// Ensure ledger_global_seq exists via migration.
+// Map LedgerValidationError to HTTP 400.
+// Any CORRUPTED status should trigger operational alerting.
+// Do not modify authoritative normalization without updating replay logic.
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// This design supports horizontal scaling, deterministic replay,
+// regulator-grade audits, and cross-request traceability without
+// contaminating authority semantics. If this fails, rollback is
+// non-destructive because immutability is preserved at commit time.
+////////////////////////////////////////////////////////////////
