@@ -1,16 +1,13 @@
 // apps/backend/src/modules/cases/transitionCaseLifecycleWithLedger.ts
+// Deterministic lifecycle transition with atomic ledger authority + structured governance logging.
 
 import { prisma } from "@/lib/prisma";
-import {
-  CaseLifecycle,
-  LedgerEventType,
-  ActorKind,
-  Prisma,
-} from "@prisma/client";
+import { CaseLifecycle, ActorKind } from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
 import { LifecycleInvariantViolationError } from "./case.errors";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { log } from "@/lib/observability/logger";
 import { z } from "zod";
 
 ////////////////////////////////////////////////////////////////
@@ -78,7 +75,10 @@ export async function transitionCaseLifecycleWithLedger(
 
   const params = parsed.data;
 
-  return prisma.$transaction(async (tx) => {
+  let previousLifecycle: CaseLifecycle | null = null;
+  let next: CaseLifecycle | null = null;
+
+  await prisma.$transaction(async (tx) => {
     ////////////////////////////////////////////////////////////////
     // 1️⃣ Load authoritative lifecycle (tenant scoped)
     ////////////////////////////////////////////////////////////////
@@ -91,13 +91,13 @@ export async function transitionCaseLifecycleWithLedger(
       select: { lifecycle: true },
     });
 
-    const previousLifecycle = c.lifecycle;
+    previousLifecycle = c.lifecycle;
 
     ////////////////////////////////////////////////////////////////
     // 2️⃣ Deterministic transition
     ////////////////////////////////////////////////////////////////
 
-    const next = transitionCaseLifecycle({
+    next = transitionCaseLifecycle({
       caseId: params.caseId,
       current: previousLifecycle,
       target: params.target,
@@ -157,7 +157,7 @@ export async function transitionCaseLifecycleWithLedger(
     }
 
     ////////////////////////////////////////////////////////////////
-    // 6️⃣ Atomic ledger commit (MUST use tx)
+    // 6️⃣ Atomic ledger commit
     ////////////////////////////////////////////////////////////////
 
     await ledger.commit(
@@ -174,9 +174,58 @@ export async function transitionCaseLifecycleWithLedger(
           to: next,
         },
       },
-      tx, // 🔒 TRUE ATOMICITY
+      tx,
     );
-
-    return next;
   });
+
+  ////////////////////////////////////////////////////////////////
+  // 7️⃣ Structured governance log (outside transaction)
+  ////////////////////////////////////////////////////////////////
+
+  if (previousLifecycle === null || next === null) {
+    throw new Error("Lifecycle transition failed unexpectedly");
+  }
+
+  log("INFO", "Lifecycle transition committed", {
+    tenantId: params.tenantId,
+    caseId: params.caseId,
+    from: previousLifecycle,
+    to: next,
+  });
+
+  return next;
 }
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// Logging is intentionally placed outside the transaction to ensure only
+// committed state transitions are emitted. Lifecycle state is guarded
+// against undefined execution to avoid unsafe non-null assertions.
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// - Zod validation boundary
+// - Transaction-scoped lifecycle resolution
+// - Deterministic transition engine
+// - Invariant enforcement
+// - Strict lifecycle→ledger mapping
+// - Optimistic concurrency guard
+// - Atomic ledger commit
+// - Post-commit governance logging
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// Always pass the transaction client into ledger.commit for atomicity.
+// Map LifecycleTransitionValidationError to HTTP 400.
+// Map LifecycleInvariantViolationError to HTTP 409.
+// Never log before commit; logs must reflect committed authority.
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// This enables full traceability across HTTP → lifecycle → ledger → scheduler
+// without contaminating domain logic. Structured logs become reconstructable
+// governance events under concurrency and distributed workloads.

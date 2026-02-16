@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  LedgerEventType   
+//  ledgerCommit   
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -658,7 +658,6 @@ model LedgerCommit {
   eventType LedgerEventType
 
   /// Database-sovereign logical clock.
-  /// Allocated via nextval('ledger_global_seq') in application layer.
   ts BigInt
 
   actorKind      ActorKind
@@ -666,6 +665,9 @@ model LedgerCommit {
   authorityProof String
 
   intentContext Json?
+
+  /// Observability only — NOT part of commitment hash.
+  requestId String? @db.Uuid
 
   /// Canonical SHA-256 hash of normalized commit payload.
   commitmentHash String @unique
@@ -675,7 +677,6 @@ model LedgerCommit {
 
   payload Json
 
-  /// Supersession safety: only one commit may supersede a prior commit.
   supersedesCommitId String?       @unique @db.Uuid
   supersedes         LedgerCommit? @relation("LedgerSupersession", fields: [supersedesCommitId], references: [id], onDelete: Restrict)
   supersededBy       LedgerCommit? @relation("LedgerSupersession")
@@ -684,13 +685,12 @@ model LedgerCommit {
   case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  /// Global logical ordering
   @@unique([ts])
 
-  /// Query acceleration
   @@index([tenantId, ts])
   @@index([caseId, ts])
   @@index([eventType, ts])
+  @@index([requestId])
 }
 
 

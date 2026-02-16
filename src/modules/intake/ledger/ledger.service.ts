@@ -1,5 +1,5 @@
 // apps/backend/src/modules/intake/ledger/ledger.service.ts
-// Sovereign ledger authority with cryptographic integrity + operational health observability.
+// Sovereign ledger authority with cryptographic integrity + operational health observability + request correlation binding.
 
 import {
   createHash,
@@ -12,6 +12,7 @@ import path from "path";
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { LedgerEventType, ActorKind, Prisma } from "@prisma/client";
+import { getRequestId } from "@/lib/observability/request-context";
 
 ////////////////////////////////////////////////////////////////
 // Errors
@@ -119,9 +120,9 @@ export class LedgerService {
     }
   }
 
-  ////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////
   // Commit (Authoritative + Transaction-Aware)
-  ////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////
 
   public async commit(input: unknown, tx?: Prisma.TransactionClient) {
     const parsed = LedgerCommitSchema.safeParse(input);
@@ -131,16 +132,20 @@ export class LedgerService {
     }
 
     const data = parsed.data;
-
     const db = tx ?? prisma;
 
+    // Global sovereign logical clock
     const [{ nextval }] = await db.$queryRaw<
       { nextval: bigint }[]
     >`SELECT nextval('ledger_global_seq')`;
 
     const tsBigInt = nextval;
 
-    const normalized = {
+    ////////////////////////////////////////////////////////////////
+    // Canonical authoritative normalization (NO requestId here)
+    ////////////////////////////////////////////////////////////////
+
+    const authoritative = {
       tenantId: data.tenantId,
       caseId: data.caseId ?? null,
       eventType: data.eventType,
@@ -153,11 +158,15 @@ export class LedgerService {
       payload: data.payload ?? {},
     };
 
-    const commitmentHash = this.generateHash(normalized);
+    const commitmentHash = this.generateHash(authoritative);
 
     const sign = createSign("SHA256");
     sign.update(commitmentHash);
     const signature = sign.sign(this.privateKey, "hex");
+
+    ////////////////////////////////////////////////////////////////
+    // Persist (requestId is observational only)
+    ////////////////////////////////////////////////////////////////
 
     try {
       return await db.ledgerCommit.create({
@@ -171,6 +180,7 @@ export class LedgerService {
           authorityProof: data.authorityProof,
           intentContext: data.intentContext as any,
           payload: (data.payload ?? {}) as any,
+          requestId: getRequestId() ?? null, // stored, NOT hashed
           commitmentHash,
           signature,
           supersedesCommitId: data.supersedesCommitId ?? null,
@@ -226,7 +236,7 @@ export class LedgerService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Health (Operational Observability)
+  // Health
   ////////////////////////////////////////////////////////////////
 
   public async getHealth(): Promise<LedgerHealth> {
@@ -295,56 +305,3 @@ export class LedgerService {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   }
 }
-
-// ////////////////////////////////////////////////////////////////
-// // Example Usage
-// ////////////////////////////////////////////////////////////////
-
-// /*
-// const ledger = new LedgerService();
-
-// await ledger.commit({
-//   tenantId: "uuid",
-//   caseId: "uuid",
-//   eventType: LedgerEventType.ROUTED,
-//   actorKind: ActorKind.SYSTEM,
-//   authorityProof: "routing-engine-v1",
-//   payload: { from: "INTAKE", to: "ROUTED" },
-// });
-
-// const health = await ledger.getHealth();
-// console.log(health.status);
-// */
-
-// ////////////////////////////////////////////////////////////////
-// // Design reasoning
-// ////////////////////////////////////////////////////////////////
-// Ledger is sovereign authority. It never mutates event intent.
-// Schema enums define legality. Sequence guarantees deterministic ordering.
-// Integrity verification proves immutability. Health endpoint provides
-// operational observability without weakening authority.
-
-// ////////////////////////////////////////////////////////////////
-// // Structure
-// ////////////////////////////////////////////////////////////////
-// - Zod validation boundary
-// - Typed LedgerValidationError
-// - Global sequence allocation
-// - Canonical hashing
-// - RSA signature over commitment hash
-// - Integrity replay verification
-// - Operational health endpoint
-
-// ////////////////////////////////////////////////////////////////
-// // Implementation guidance
-// ////////////////////////////////////////////////////////////////
-// Route layer must catch LedgerValidationError and map to HTTP 400.
-// Never mutate eventType inside ledger.
-// Ensure ledger_global_seq exists in DB migration.
-
-// ////////////////////////////////////////////////////////////////
-// // Scalability insight
-// ////////////////////////////////////////////////////////////////
-// Global sequence preserves sovereign ordering.
-// Health endpoint enables regulator-grade audit observability.
-// Explicit enum binding prevents governance drift in Phase 2.
