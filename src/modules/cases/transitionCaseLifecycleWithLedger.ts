@@ -2,36 +2,67 @@
 // Enforced lifecycle transition with atomic ledger authority and invariant protection.
 
 import { prisma } from "@/lib/prisma";
-import { CaseLifecycle } from "./CaseLifecycle";
+import { CaseLifecycle, LedgerEventType, ActorKind } from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
-import { LedgerEventType } from "@prisma/client";
 import { commitLedgerEvent } from "../routing/commitRoutingLedger";
 import { LifecycleInvariantViolationError } from "./case.errors";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
+import { z } from "zod";
 
-/**
- * Enforced lifecycle transition with ledger authority.
- *
- * 🔒 Guarantees:
- * - Lifecycle change without ledger is impossible (atomic transaction)
- * - Ledger event matches lifecycle intent (no generic CASE_UPDATED misuse)
- * - EXECUTING requires explicit Execution existence
- * - Monotonic timestamp ordering enforced per case
- * - Previous lifecycle asserted to prevent race corruption
- */
-export async function transitionCaseLifecycleWithLedger(params: {
-  tenantId: string;
-  caseId: string;
-  target: CaseLifecycle;
-  actor: {
-    kind: "HUMAN" | "SYSTEM";
-    userId?: string;
-    authorityProof: string;
-  };
-  intentContext?: unknown;
-}) {
+////////////////////////////////////////////////////////////////
+// Validation Schema
+////////////////////////////////////////////////////////////////
+
+const TransitionWithLedgerSchema = z
+  .object({
+    tenantId: z.string().uuid(),
+    caseId: z.string().uuid(),
+    target: z.nativeEnum(CaseLifecycle),
+    actor: z.object({
+      kind: z.nativeEnum(ActorKind),
+      userId: z.string().uuid().optional(),
+      authorityProof: z.string().min(1),
+    }),
+    intentContext: z.unknown().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.actor.kind === ActorKind.HUMAN && !data.actor.userId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["actor", "userId"],
+        message: "userId required for HUMAN actor",
+      });
+    }
+    if (data.actor.kind === ActorKind.SYSTEM && data.actor.userId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["actor", "userId"],
+        message: "SYSTEM actor must not include userId",
+      });
+    }
+  });
+
+export type TransitionWithLedgerParams = z.infer<
+  typeof TransitionWithLedgerSchema
+>;
+
+////////////////////////////////////////////////////////////////
+// Transition + Ledger Authority
+////////////////////////////////////////////////////////////////
+
+export async function transitionCaseLifecycleWithLedger(
+  input: unknown,
+): Promise<CaseLifecycle> {
+  const parsed = TransitionWithLedgerSchema.safeParse(input);
+
+  if (!parsed.success) {
+    throw { error: parsed.error.flatten().fieldErrors };
+  }
+
+  const params = parsed.data;
+
   return prisma.$transaction(async (tx) => {
-    // 1️⃣ Load authoritative state
+    // 1️⃣ Load authoritative lifecycle
     const c = await tx.case.findUniqueOrThrow({
       where: { id: params.caseId },
       select: { lifecycle: true },
@@ -39,14 +70,14 @@ export async function transitionCaseLifecycleWithLedger(params: {
 
     const previousLifecycle = c.lifecycle;
 
-    // 2️⃣ Apply pure domain transition law (deterministic)
+    // 2️⃣ Pure deterministic transition
     const next = transitionCaseLifecycle({
       caseId: params.caseId,
       current: previousLifecycle,
       target: params.target,
     });
 
-    // 3️⃣ Execution existence invariant
+    // 3️⃣ EXECUTING invariant
     if (next === CaseLifecycle.EXECUTING) {
       const execution = await tx.execution.findUnique({
         where: { caseId: params.caseId },
@@ -60,26 +91,24 @@ export async function transitionCaseLifecycleWithLedger(params: {
       }
     }
 
-    // 4️⃣ Resolve correct ledger event (no generic CASE_UPDATED misuse)
-    const ledgerEvent: LedgerEventType =
-      CASE_LIFECYCLE_LEDGER_EVENTS[next] ?? LedgerEventType.CASE_UPDATED;
+    // 4️⃣ Resolve strict ledger event mapping
+    const ledgerEvent: LedgerEventType | undefined =
+      CASE_LIFECYCLE_LEDGER_EVENTS[next];
 
-    // 5️⃣ Enforce monotonic timestamp per case
-    const lastCommit = await tx.ledgerCommit.findFirst({
-      where: { caseId: params.caseId },
-      orderBy: { ts: "desc" },
-      select: { ts: true },
-    });
-
-    const nowTs = BigInt(Date.now());
-
-    if (lastCommit && nowTs <= lastCommit.ts) {
+    if (!ledgerEvent) {
       throw new LifecycleInvariantViolationError(
-        "NON_MONOTONIC_LEDGER_TIMESTAMP",
+        "MISSING_LEDGER_EVENT_MAPPING_FOR_LIFECYCLE",
       );
     }
 
-    // 6️⃣ Update lifecycle projection with previous-state assertion
+    // 5️⃣ Global monotonic timestamp via sequence
+    const [{ nextval }] = await tx.$queryRaw<
+      { nextval: bigint }[]
+    >`SELECT nextval('ledger_global_seq')`;
+
+    const nowTs = nextval;
+
+    // 6️⃣ Optimistic concurrency projection update
     const updated = await tx.case.updateMany({
       where: {
         id: params.caseId,
@@ -96,7 +125,7 @@ export async function transitionCaseLifecycleWithLedger(params: {
       );
     }
 
-    // 7️⃣ Commit authoritative ledger event (CAUSE)
+    // 7️⃣ Authoritative ledger commit
     await commitLedgerEvent(tx, {
       tenantId: params.tenantId,
       caseId: params.caseId,
@@ -106,56 +135,59 @@ export async function transitionCaseLifecycleWithLedger(params: {
       payload: {
         from: previousLifecycle,
         to: next,
-        projectionVersion: nowTs.toString(), // deterministic trace hook
+        projectionVersion: nowTs.toString(),
       },
-      overrideTimestamp: nowTs, // requires commitLedgerEvent to accept this (non-breaking if optional)
+      overrideTimestamp: nowTs,
     });
 
     return next;
   });
 }
 
-/*
-Design reasoning
-----------------
-Lifecycle is authoritative only if ledger is causal.
-This implementation enforces:
-1. Pure domain transition first
-2. Projection write with previous-state assertion (optimistic concurrency)
-3. Monotonic ledger timestamp
-4. Correct event mapping per lifecycle state
-5. Atomic transaction across projection + ledger
+// ////////////////////////////////////////////////////////////////
+// // Example Usage
+// ////////////////////////////////////////////////////////////////
 
-This prevents dual-write drift and race corruption.
+// /*
+// await transitionCaseLifecycleWithLedger({
+//   tenantId: "uuid",
+//   caseId: "uuid",
+//   target: CaseLifecycle.ROUTED,
+//   actor: {
+//     kind: ActorKind.SYSTEM,
+//     authorityProof: "routing-engine-v1",
+//   },
+// });
+// */
 
-Structure
----------
-1. Load current lifecycle
-2. Validate deterministic transition
-3. Enforce execution invariant
-4. Resolve ledger event
-5. Enforce monotonic ordering
-6. Optimistic projection update
-7. Commit ledger event
+// ////////////////////////////////////////////////////////////////
+// // Design reasoning
+// ////////////////////////////////////////////////////////////////
+// Lifecycle transitions are authoritative only if ledger commits are atomic
+// and causally bound. This implementation enforces schema-derived lifecycle,
+// strict event mapping, optimistic concurrency, and sequence-backed ordering.
 
-Implementation guidance
------------------------
-Ensure commitLedgerEvent supports optional overrideTimestamp.
-If not, add a safe optional parameter (non-breaking).
+// ////////////////////////////////////////////////////////////////
+// // Structure
+// ////////////////////////////////////////////////////////////////
+// 1. Validate input boundary
+// 2. Load authoritative lifecycle
+// 3. Apply pure transition law
+// 4. Enforce execution invariant
+// 5. Allocate monotonic sequence timestamp
+// 6. Optimistic projection update
+// 7. Ledger commit within same transaction
 
-Never expose raw case.update for lifecycle anywhere else.
-Search entire codebase for direct lifecycle writes.
+// ////////////////////////////////////////////////////////////////
+// // Implementation guidance
+// ////////////////////////////////////////////////////////////////
+// Never write Case.lifecycle directly anywhere else.
+// Never fallback to generic ledger events.
+// Ensure ledger_global_seq exists in database.
 
-Scalability insight
--------------------
-This design allows:
-- Deterministic replay of lifecycle from ledger
-- Drift detection by comparing projection vs ledger tail
-- Safe horizontal scaling (optimistic concurrency)
-- Protection against multi-instance race conditions
-
-Would I ship this without a second review? Yes.
-Does this protect lifecycle authority under race? Yes.
-Can it be reconciled deterministically? Yes.
-Who owns this file tomorrow? The system’s integrity does.
-*/
+// ////////////////////////////////////////////////////////////////
+// // Scalability insight
+// ////////////////////////////////////////////////////////////////
+// Sequence-backed ordering guarantees deterministic replay across
+// distributed instances. Optimistic concurrency protects against race
+// conditions without locking entire tables.

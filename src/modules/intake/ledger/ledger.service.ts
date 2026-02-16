@@ -1,5 +1,5 @@
 // apps/backend/src/modules/intake/ledger/ledger.service.ts
-// Cryptographically signed, globally sequenced, integrity-verifiable ledger authority.
+// Sovereign ledger authority with cryptographic integrity + operational health observability.
 
 import {
   createHash,
@@ -9,45 +9,71 @@ import {
 } from "crypto";
 import fs from "fs";
 import path from "path";
-import { prisma } from "../../lib/prisma";
-import { assertUuid } from "../../utils/uuid";
+import { prisma } from "@/lib/prisma";
+import { z } from "zod";
+import { LedgerEventType, ActorKind } from "@prisma/client";
 
-import {
-  LedgerHealth,
-  LedgerCommitInput,
-  ActorKind,
-  LEDGER_EVENT_TYPES,
-} from "./types/ledger.types";
+////////////////////////////////////////////////////////////////
+// Errors
+////////////////////////////////////////////////////////////////
 
-/* -------------------------------------------------------------------------- */
-/* Enum Guards                                                                */
-/* -------------------------------------------------------------------------- */
-
-function mapActorKind(input: unknown): ActorKind {
-  return input === "HUMAN" ? "HUMAN" : "SYSTEM";
+export class LedgerValidationError extends Error {
+  public readonly details: Record<string, string[] | undefined>;
+  constructor(details: Record<string, string[] | undefined>) {
+    super("Invalid ledger commit input");
+    this.name = "LedgerValidationError";
+    this.details = details;
+  }
 }
 
-function mapEventType(input: unknown, fallbackFromAction?: unknown) {
-  const raw = String(input ?? "").trim();
+////////////////////////////////////////////////////////////////
+// Validation Schema
+////////////////////////////////////////////////////////////////
 
-  if (LEDGER_EVENT_TYPES.has(raw as any)) return raw as any;
+const LedgerCommitSchema = z
+  .object({
+    tenantId: z.string().uuid(),
+    caseId: z.string().uuid().nullable().optional(),
+    eventType: z.nativeEnum(LedgerEventType),
+    actorKind: z.nativeEnum(ActorKind),
+    actorUserId: z.string().uuid().nullable().optional(),
+    authorityProof: z.string().min(1),
+    intentContext: z.unknown().optional(),
+    payload: z.unknown().optional(),
+    supersedesCommitId: z.string().uuid().nullable().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.actorKind === ActorKind.HUMAN && !data.actorUserId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["actorUserId"],
+        message: "actorUserId required for HUMAN actor",
+      });
+    }
+    if (data.actorKind === ActorKind.SYSTEM && data.actorUserId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["actorUserId"],
+        message: "SYSTEM actor must not include userId",
+      });
+    }
+  });
 
-  const action = String(fallbackFromAction ?? "").trim();
+export type LedgerCommitInput = z.infer<typeof LedgerCommitSchema>;
 
-  if (raw === "POSTWIN_BOOTSTRAPPED" || action === "INTAKE") {
-    return "CASE_CREATED";
-  }
+export type LedgerHealth = {
+  status: "HEALTHY" | "CORRUPTED";
+  checkedAt: number;
+  recordCount: number;
+  lastTs: string | null;
+  sequenceExists: boolean;
+  sequenceDrift: string | null;
+  hashIntegrityVerified: boolean;
+};
 
-  if (raw === "DELIVERY_RECORDED" || raw === "FOLLOWUP_RECORDED") {
-    return "CASE_UPDATED";
-  }
-
-  return "CASE_UPDATED";
-}
-
-/* -------------------------------------------------------------------------- */
-/* Ledger Service                                                             */
-/* -------------------------------------------------------------------------- */
+////////////////////////////////////////////////////////////////
+// Ledger Service
+////////////////////////////////////////////////////////////////
 
 export class LedgerService {
   private dataDir = path.join(process.cwd(), "data");
@@ -93,19 +119,18 @@ export class LedgerService {
     }
   }
 
-  /* ------------------------------------------------------------------------ */
-  /* Commit                                                                   */
-  /* ------------------------------------------------------------------------ */
+  ////////////////////////////////////////////////////////////////
+  // Commit (Authoritative)
+  ////////////////////////////////////////////////////////////////
 
-  public async commit(input: LedgerCommitInput) {
-    const tenantId = String(input.tenantId ?? "");
-    assertUuid(tenantId, "tenantId");
+  public async commit(input: unknown) {
+    const parsed = LedgerCommitSchema.safeParse(input);
 
-    const caseId = input.caseId ? String(input.caseId) : null;
-    if (caseId) assertUuid(caseId, "caseId");
+    if (!parsed.success) {
+      throw new LedgerValidationError(parsed.error.flatten().fieldErrors);
+    }
 
-    const actorUserId = input.actorUserId ? String(input.actorUserId) : null;
-    if (actorUserId) assertUuid(actorUserId, "actorUserId");
+    const data = parsed.data;
 
     const [{ nextval }] = await prisma.$queryRaw<
       { nextval: bigint }[]
@@ -113,21 +138,17 @@ export class LedgerService {
 
     const tsBigInt = nextval;
 
-    const eventType = mapEventType(input.eventType, input.action);
-    const actorKind = mapActorKind(input.actorKind);
-    const payload = input.payload ?? {};
-
     const normalized = {
-      tenantId,
-      caseId,
-      eventType,
+      tenantId: data.tenantId,
+      caseId: data.caseId ?? null,
+      eventType: data.eventType,
       ts: tsBigInt.toString(),
-      actorKind,
-      actorUserId,
-      authorityProof: input.authorityProof ?? null,
-      intentContext: input.intentContext ?? null,
-      supersedesCommitId: input.supersedesCommitId ?? null,
-      payload,
+      actorKind: data.actorKind,
+      actorUserId: data.actorUserId ?? null,
+      authorityProof: data.authorityProof,
+      intentContext: data.intentContext ?? null,
+      supersedesCommitId: data.supersedesCommitId ?? null,
+      payload: data.payload ?? {},
     };
 
     const commitmentHash = this.generateHash(normalized);
@@ -139,18 +160,18 @@ export class LedgerService {
     try {
       return await prisma.ledgerCommit.create({
         data: {
-          tenantId,
-          caseId,
-          eventType: eventType as any,
+          tenantId: data.tenantId,
+          caseId: data.caseId ?? null,
+          eventType: data.eventType,
           ts: tsBigInt,
-          actorKind: actorKind as any,
-          actorUserId,
-          authorityProof: input.authorityProof,
-          intentContext: input.intentContext as any,
-          payload: payload as any,
+          actorKind: data.actorKind,
+          actorUserId: data.actorUserId ?? null,
+          authorityProof: data.authorityProof,
+          intentContext: data.intentContext as any,
+          payload: (data.payload ?? {}) as any,
           commitmentHash,
           signature,
-          supersedesCommitId: input.supersedesCommitId ?? null,
+          supersedesCommitId: data.supersedesCommitId ?? null,
         },
       });
     } catch (err: any) {
@@ -163,9 +184,9 @@ export class LedgerService {
     }
   }
 
-  /* ------------------------------------------------------------------------ */
-  /* Integrity                                                                */
-  /* ------------------------------------------------------------------------ */
+  ////////////////////////////////////////////////////////////////
+  // Integrity Verification
+  ////////////////////////////////////////////////////////////////
 
   public async verifyLedgerIntegrity(): Promise<boolean> {
     const records = await prisma.ledgerCommit.findMany({
@@ -181,9 +202,9 @@ export class LedgerService {
       const reconstructed = {
         tenantId: r.tenantId,
         caseId: r.caseId ?? null,
-        eventType: String(r.eventType),
+        eventType: r.eventType,
         ts: r.ts.toString(),
-        actorKind: String(r.actorKind),
+        actorKind: r.actorKind,
         actorUserId: r.actorUserId ?? null,
         authorityProof: r.authorityProof,
         intentContext: r.intentContext ?? null,
@@ -202,13 +223,12 @@ export class LedgerService {
     return true;
   }
 
-  /* ------------------------------------------------------------------------ */
-  /* Ledger Health                                                            */
-  /* ------------------------------------------------------------------------ */
+  ////////////////////////////////////////////////////////////////
+  // Health (Operational Observability)
+  ////////////////////////////////////////////////////////////////
 
-  public async getStatus(): Promise<LedgerHealth> {
+  public async getHealth(): Promise<LedgerHealth> {
     const checkedAt = Date.now();
-
     const recordCount = await prisma.ledgerCommit.count();
 
     const last = await prisma.ledgerCommit.findFirst({
@@ -216,7 +236,7 @@ export class LedgerService {
       select: { ts: true },
     });
 
-    const ok = await this.verifyLedgerIntegrity();
+    const integrityOk = await this.verifyLedgerIntegrity();
 
     let sequenceExists = true;
     let sequenceDrift: string | null = null;
@@ -235,21 +255,19 @@ export class LedgerService {
     }
 
     return {
-      status: ok ? "HEALTHY" : "CORRUPTED",
+      status: integrityOk ? "HEALTHY" : "CORRUPTED",
       checkedAt,
       recordCount,
-      publicKeyPresent: Boolean(this.publicKey),
       lastTs: last?.ts?.toString() ?? null,
       sequenceExists,
       sequenceDrift,
-      hashIntegrityVerified: ok,
-      note: ok ? undefined : "Ledger integrity check failed.",
+      hashIntegrityVerified: integrityOk,
     };
   }
 
-  /* ------------------------------------------------------------------------ */
-  /* Hashing                                                                  */
-  /* ------------------------------------------------------------------------ */
+  ////////////////////////////////////////////////////////////////
+  // Hashing
+  ////////////////////////////////////////////////////////////////
 
   private generateHash(data: unknown): string {
     return createHash("sha256").update(this.canonicalize(data)).digest("hex");
@@ -276,43 +294,55 @@ export class LedgerService {
   }
 }
 
-/*
-Design reasoning
-----------------
-Health endpoint upgraded from uptime check to cryptographic liveness proof.
-Adds sequence observability and integrity verification.
+// ////////////////////////////////////////////////////////////////
+// // Example Usage
+// ////////////////////////////////////////////////////////////////
 
-Structure
----------
-- verifyLedgerIntegrity()
-- getStatus() enriched with:
-  lastTs
-  sequenceExists
-  sequenceDrift
-  hashIntegrityVerified
+// /*
+// const ledger = new LedgerService();
 
-Implementation guidance
------------------------
-Update LedgerHealth type to include:
-  lastTs: string | null
-  sequenceExists: boolean
-  sequenceDrift: string | null
-  hashIntegrityVerified: boolean
+// await ledger.commit({
+//   tenantId: "uuid",
+//   caseId: "uuid",
+//   eventType: LedgerEventType.ROUTED,
+//   actorKind: ActorKind.SYSTEM,
+//   authorityProof: "routing-engine-v1",
+//   payload: { from: "INTAKE", to: "ROUTED" },
+// });
 
-Scalability insight
--------------------
-This enables:
-- regulator-proof ordering guarantees
-- drift detection
-- sequence leak detection
-- operational observability without heavy cost
+// const health = await ledger.getHealth();
+// console.log(health.status);
+// */
 
-Would I ship this without review?
-Yes.
+// ////////////////////////////////////////////////////////////////
+// // Design reasoning
+// ////////////////////////////////////////////////////////////////
+// Ledger is sovereign authority. It never mutates event intent.
+// Schema enums define legality. Sequence guarantees deterministic ordering.
+// Integrity verification proves immutability. Health endpoint provides
+// operational observability without weakening authority.
 
-Does this protect ordering guarantees?
-Yes.
+// ////////////////////////////////////////////////////////////////
+// // Structure
+// ////////////////////////////////////////////////////////////////
+// - Zod validation boundary
+// - Typed LedgerValidationError
+// - Global sequence allocation
+// - Canonical hashing
+// - RSA signature over commitment hash
+// - Integrity replay verification
+// - Operational health endpoint
 
-If it fails, can it degrade safely?
-Yes.
-*/
+// ////////////////////////////////////////////////////////////////
+// // Implementation guidance
+// ////////////////////////////////////////////////////////////////
+// Route layer must catch LedgerValidationError and map to HTTP 400.
+// Never mutate eventType inside ledger.
+// Ensure ledger_global_seq exists in DB migration.
+
+// ////////////////////////////////////////////////////////////////
+// // Scalability insight
+// ////////////////////////////////////////////////////////////////
+// Global sequence preserves sovereign ordering.
+// Health endpoint enables regulator-grade audit observability.
+// Explicit enum binding prevents governance drift in Phase 2.

@@ -1,35 +1,24 @@
+// apps/backend/src/modules/routing/routing.types.ts
+// Purpose: Canonical routing result contract aligned with Prisma RoutingOutcome enum.
+// This file defines runtime-safe routing output types derived from schema authority.
+
+import { RoutingOutcome } from "@prisma/client";
+
 /**
- * Explains why a particular execution body was selected during routing.
- *
- * IMPORTANT:
- * - Routing is a decision, not acceptance.
- * - Every routing decision MUST terminate with an executionBodyId.
- * - Fallback reasons indicate why normal routing failed,
- *   not that the fallback NGO was preferred.
+ * Canonical routing outcome.
+ * Derived directly from Prisma schema.
+ * DO NOT redeclare enum locally.
+ */
+export type CanonicalRoutingOutcome = RoutingOutcome;
+
+/**
+ * Explains WHY a routing outcome occurred.
+ * This is explainability metadata only.
+ * It does NOT replace RoutingOutcome.
  */
 export type RoutingReason =
-  /**
-   * A candidate execution body explicitly matched
-   * the intent and all routing constraints.
-   */
   | "MATCHED"
-
-  /**
-   * No candidate execution bodies were available
-   * for routing at all.
-   *
-   * The system routed to the fallback execution body
-   * to preserve routing completeness.
-   */
   | "FALLBACK_NO_MATCH"
-
-  /**
-   * Candidate execution bodies existed, but none
-   * were compatible with the case intent or constraints.
-   *
-   * The system rejected the intent for all candidates
-   * and routed to the fallback execution body.
-   */
   | "FALLBACK_WRONG_INTENT";
 
 /**
@@ -37,20 +26,37 @@ export type RoutingReason =
  *
  * CONTRACT:
  * - executionBodyId is ALWAYS present.
+ * - outcome MUST align with Prisma RoutingOutcome.
  * - Routing NEVER returns null or undefined.
- * - Responsibility is NOT transferred by routing alone.
- *   Acceptance or verification must occur separately.
+ * - Routing does NOT imply acceptance or verification.
  */
-export type RoutingResult = {
+export interface RoutingResult {
   /**
-   * The execution body selected as the routing destination.
-   * This may be a normal NGO execution body or the fallback one.
+   * Execution body selected by routing.
+   * Always present.
    */
   executionBodyId: string;
 
   /**
-   * The reason this execution body was selected.
-   * Used for explainability, auditing, and ledger recording.
+   * Canonical routing outcome.
+   * Must map exactly to Prisma RoutingOutcome.
+   */
+  outcome: CanonicalRoutingOutcome;
+
+  /**
+   * Human-readable explainability metadata.
+   * Used for ledger payload + UI explanation.
    */
   reason: RoutingReason;
-};
+}
+
+/**
+ * Utility guard to enforce canonical outcome mapping.
+ * Prevents accidental string injection.
+ */
+export function assertRoutingOutcome(value: string): CanonicalRoutingOutcome {
+  if (!Object.values(RoutingOutcome).includes(value as RoutingOutcome)) {
+    throw new Error(`Invalid routing outcome: ${value}`);
+  }
+  return value as RoutingOutcome;
+}

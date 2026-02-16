@@ -1,23 +1,27 @@
-import { CaseLifecycle } from "./CaseLifecycle";
+// apps/backend/src/modules/cases/caseLifecycle.transitions.ts
+// Purpose: Canonical lifecycle transition policy derived strictly from Prisma CaseLifecycle enum.
+
+import { CaseLifecycle } from "@prisma/client";
 
 /**
- * Allowed CaseLifecycle transitions.
- *
- * This is POLICY, not implementation.
- * Keep deterministic. No side effects.
- *
- * 🧠 Invariant (Closed Transition Law):
- * If it’s not here, it does not exist.
+ * Closed Transition Law:
+ * If it is not declared here, it does not exist.
  */
 export const CASE_LIFECYCLE_TRANSITIONS: Record<
   CaseLifecycle,
   readonly CaseLifecycle[]
 > = {
-  INTAKE: [CaseLifecycle.ROUTED],
-  ROUTED: [CaseLifecycle.ACCEPTED],
-  ACCEPTED: [CaseLifecycle.EXECUTING],
-  EXECUTING: [CaseLifecycle.VERIFIED, CaseLifecycle.FLAGGED],
-  VERIFIED: [],
-  FLAGGED: [CaseLifecycle.HUMAN_REVIEW],
-  HUMAN_REVIEW: [],
+  [CaseLifecycle.INTAKE]: [CaseLifecycle.ROUTED],
+
+  [CaseLifecycle.ROUTED]: [CaseLifecycle.ACCEPTED],
+
+  [CaseLifecycle.ACCEPTED]: [CaseLifecycle.EXECUTING],
+
+  [CaseLifecycle.EXECUTING]: [CaseLifecycle.VERIFIED, CaseLifecycle.FLAGGED],
+
+  [CaseLifecycle.VERIFIED]: [],
+
+  [CaseLifecycle.FLAGGED]: [CaseLifecycle.HUMAN_REVIEW],
+
+  [CaseLifecycle.HUMAN_REVIEW]: [],
 };

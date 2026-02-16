@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//
+//  CaseLifecycle  
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -41,6 +41,8 @@ enum DisbursementStatus {
 enum CaseLifecycle {
   INTAKE
   ROUTED
+  ACCEPTED
+  EXECUTING
   VERIFIED
   FLAGGED
   HUMAN_REVIEW
@@ -575,7 +577,6 @@ model Verification {
 
   @@unique([verificationRecordId, verifierUserId])
   @@index([verifierUserId, createdAt])
-  @@unique([verificationRecordId, verifierUserId])
 }
 
 ////////////////////////////////////////////////////////////////
@@ -589,18 +590,15 @@ model ApprovalRequest {
   caseId    String   @db.Uuid
 
   status ApprovalStatus
-  resolvedAt DateTime?
-  resolvedByUserId String?
 
   policyKey String
   effect    Json
   reason    String
 
-  status    String
-  createdAt DateTime @default(now())
-  resolvedAt DateTime?
-
+  resolvedAt       DateTime?
   resolvedByUserId String? @db.Uuid
+
+  createdAt DateTime @default(now())
 
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case     Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
