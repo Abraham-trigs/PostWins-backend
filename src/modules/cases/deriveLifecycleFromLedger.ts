@@ -1,8 +1,7 @@
 // apps/backend/src/modules/cases/deriveLifecycleFromLedger.ts
 // Deterministic lifecycle projection from ordered ledger events.
 
-import { CaseLifecycle } from "./CaseLifecycle";
-import { LedgerEventType } from "@prisma/client";
+import { CaseLifecycle, LedgerEventType } from "@prisma/client";
 
 /**
  * LedgerEvent minimal shape required for lifecycle replay.
@@ -20,8 +19,7 @@ export interface LifecycleLedgerEvent {
  * - No database calls.
  * - Ledger is authoritative.
  *
- * If new lifecycle states are introduced,
- * mapping must be updated explicitly.
+ * Replay is literal, not inferential.
  */
 export function deriveLifecycleFromLedger(
   events: LifecycleLedgerEvent[],
@@ -47,16 +45,20 @@ export function deriveLifecycleFromLedger(
         break;
 
       ////////////////////////////////////////////////////////////////
-      // Acceptance (Phase 2 compatible)
+      // Acceptance (explicit)
       ////////////////////////////////////////////////////////////////
 
-      case LedgerEventType.EXECUTION_STARTED:
+      case LedgerEventType.CASE_ACCEPTED:
         lifecycle = CaseLifecycle.ACCEPTED;
         break;
 
       ////////////////////////////////////////////////////////////////
       // Execution
       ////////////////////////////////////////////////////////////////
+
+      case LedgerEventType.EXECUTION_STARTED:
+        lifecycle = CaseLifecycle.EXECUTING;
+        break;
 
       case LedgerEventType.EXECUTION_PROGRESS_RECORDED:
         lifecycle = CaseLifecycle.EXECUTING;
@@ -87,8 +89,8 @@ export function deriveLifecycleFromLedger(
         break;
 
       case LedgerEventType.LIFECYCLE_REPAIRED:
-        // No direct mutation — repair events describe correction,
-        // but replay should derive from causal events only.
+        // Repair events describe projection correction,
+        // not causal lifecycle mutation.
         break;
 
       ////////////////////////////////////////////////////////////////
@@ -102,50 +104,3 @@ export function deriveLifecycleFromLedger(
 
   return lifecycle;
 }
-
-/*
-Design reasoning
-----------------
-Ledger is sovereign truth.
-Projection must be rebuildable deterministically.
-Replay must:
-- Avoid side effects
-- Avoid implicit inference
-- Ignore non-lifecycle events
-- Explicitly map new lifecycle states
-
-Structure
----------
-- Ordered iteration
-- Explicit switch
-- Authoritative event mapping only
-- Ignore noise safely
-
-Implementation guidance
------------------------
-Always fetch ledger ordered by ts ASC.
-Never allow lifecycle to be mutated outside ledger events.
-When introducing new lifecycle states,
-update this mapping explicitly.
-
-Scalability insight
--------------------
-This enables:
-- Full table rebuild
-- Drift detection
-- Snapshot + replay
-- Horizontal scaling
-- Institutional audit defensibility
-
-Would I ship this without review?
-Yes.
-
-Does this protect lifecycle authority?
-Yes.
-
-If this fails, can it be repaired?
-Yes — deterministic replay guarantees rebuild.
-
-Who owns this tomorrow?
-Lifecycle governance.
-*/
