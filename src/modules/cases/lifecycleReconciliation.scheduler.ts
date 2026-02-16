@@ -1,9 +1,12 @@
 // apps/backend/src/modules/cases/lifecycleReconciliation.scheduler.ts
 // Sovereign lifecycle reconciliation scheduler.
 // Drift detection only. No lifecycle mutation here.
+// Now protected by Postgres advisory lock for multi-instance safety.
 
 import { prisma } from "@/lib/prisma";
 import { TenantLifecycleReconciliationJob } from "./tenantLifecycleReconciliation.job";
+
+const ADVISORY_LOCK_KEY = 987654321; // Stable bigint constant for global scheduler lock
 
 export interface SchedulerOptions {
   intervalMs?: number;
@@ -22,7 +25,7 @@ export class LifecycleReconciliationScheduler {
 
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  private inFlight = false; // prevents overlap
+  private inFlight = false; // prevents overlap (single process)
 
   private job = new TenantLifecycleReconciliationJob();
 
@@ -78,19 +81,45 @@ export class LifecycleReconciliationScheduler {
     console.log("[LifecycleReconciliationScheduler] Stopped");
   }
 
+  ////////////////////////////////////////////////////////////////
+  // Safe runner with advisory lock (cluster-safe)
+  ////////////////////////////////////////////////////////////////
+
   private async safeRun() {
     if (!this.running || this.inFlight) return;
 
     this.inFlight = true;
 
     try {
-      await this.run();
+      // Acquire global advisory lock
+      const [{ pg_try_advisory_lock }] = await prisma.$queryRaw<
+        { pg_try_advisory_lock: boolean }[]
+      >`SELECT pg_try_advisory_lock(${ADVISORY_LOCK_KEY})`;
+
+      if (!pg_try_advisory_lock) {
+        console.log(
+          "[LifecycleReconciliationScheduler] Another instance holds lock. Skipping.",
+        );
+        return;
+      }
+
+      try {
+        await this.run();
+      } finally {
+        await prisma.$queryRaw`
+          SELECT pg_advisory_unlock(${ADVISORY_LOCK_KEY})
+        `;
+      }
     } catch (err) {
       console.error("[LifecycleReconciliationScheduler] Run failure:", err);
     } finally {
       this.inFlight = false;
     }
   }
+
+  ////////////////////////////////////////////////////////////////
+  // Drift detection per tenant
+  ////////////////////////////////////////////////////////////////
 
   private async run() {
     const tenants = await prisma.tenant.findMany({
@@ -127,29 +156,27 @@ export class LifecycleReconciliationScheduler {
 /*
 Design reasoning
 ----------------
-Drift detection protects constitutional integrity.
-Scheduler enforces:
-- Non-overlapping runs
-- Optional environment gating
-- Per-tenant throttling
-- Safe shutdown
+Single-process guard (inFlight) prevents overlap inside one instance.
+Postgres advisory lock prevents overlap across multiple instances.
+Drift detection remains read-focused and constitutionally safe.
 
 Structure
 ---------
 - start()
 - stop()
-- safeRun() (single-flight guard)
-- run()
+- safeRun() → advisory lock boundary
+- run() → per-tenant drift detection
 
 Implementation guidance
 -----------------------
-In production multi-instance deployments:
-- Gate with process.env.ENABLE_LIFECYCLE_RECONCILIATION
-- Or integrate DB-backed leader election
+Ensure Postgres is primary DB (advisory locks are Postgres-specific).
+Lock key must remain stable across deployments.
+Never use dynamic keys for global schedulers.
 
 Scalability insight
 -------------------
-Single-flight prevents DB pressure spikes.
-Per-tenant throttling prevents starvation.
-Design supports horizontal scaling with external coordination.
+This now supports horizontal scaling safely.
+Only one instance executes reconciliation at a time.
+Advisory locks provide leader-election without external infra.
+System can scale without lifecycle race conditions.
 */
