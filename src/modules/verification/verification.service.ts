@@ -53,13 +53,17 @@ export class VerificationService {
    * - Records verification facts only
    * - Never mutates lifecycle
    * - Ledger commit must be atomic with DB mutation
+   * - Tenant isolation must be preserved
    */
   async recordVerification(input: unknown): Promise<VerificationResult> {
     const { verificationRecordId, verifierUserId, status, note } =
       RecordVerificationSchema.parse(input);
 
-    return prisma.$transaction(async (tx) => {
-      // 1️⃣ Load record
+    return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      ////////////////////////////////////////////////////////////////
+      // 1️⃣ Load record (tenant-scoped via record itself)
+      ////////////////////////////////////////////////////////////////
+
       const record = await tx.verificationRecord.findUnique({
         where: { id: verificationRecordId },
         include: {
@@ -77,7 +81,10 @@ export class VerificationService {
         throw new Error("Verification already finalized");
       }
 
-      // 🔒 Execution must be completed
+      ////////////////////////////////////////////////////////////////
+      // 2️⃣ Execution must be completed before verification
+      ////////////////////////////////////////////////////////////////
+
       const execution = await tx.execution.findFirst({
         where: {
           caseId: record.caseId,
@@ -92,9 +99,15 @@ export class VerificationService {
         );
       }
 
-      // 2️⃣ Role authorization
+      ////////////////////////////////////////////////////////////////
+      // 3️⃣ Role authorization (tenant-safe)
+      ////////////////////////////////////////////////////////////////
+
       const verifierRoles = await tx.userRole.findMany({
-        where: { userId: verifierUserId },
+        where: {
+          userId: verifierUserId,
+          tenantId: record.tenantId, // 🔒 prevents cross-tenant bleed
+        },
         include: { role: true },
       });
 
@@ -108,7 +121,10 @@ export class VerificationService {
         throw new Error("User not authorized to verify this claim");
       }
 
-      // 3️⃣ Duplicate prevention
+      ////////////////////////////////////////////////////////////////
+      // 4️⃣ Prevent duplicate vote
+      ////////////////////////////////////////////////////////////////
+
       const alreadyVoted = record.receivedVerifications.some(
         (v) => v.verifierUserId === verifierUserId,
       );
@@ -117,7 +133,10 @@ export class VerificationService {
         throw new Error("Verifier has already voted");
       }
 
-      // 4️⃣ Persist vote
+      ////////////////////////////////////////////////////////////////
+      // 5️⃣ Persist vote (DB-level uniqueness authoritative)
+      ////////////////////////////////////////////////////////////////
+
       try {
         await tx.verification.create({
           data: {
@@ -135,7 +154,10 @@ export class VerificationService {
         throw err;
       }
 
-      // 5️⃣ Ledger commit — VERIFICATION_SUBMITTED
+      ////////////////////////////////////////////////////////////////
+      // 6️⃣ Ledger commit — VERIFICATION_SUBMITTED
+      ////////////////////////////////////////////////////////////////
+
       await this.ledger.commit(
         {
           tenantId: record.tenantId,
@@ -149,10 +171,13 @@ export class VerificationService {
             status,
           },
         },
-        tx as unknown as Prisma.TransactionClient,
+        tx,
       );
 
-      // 6️⃣ Recompute consensus
+      ////////////////////////////////////////////////////////////////
+      // 7️⃣ Recompute consensus deterministically
+      ////////////////////////////////////////////////////////////////
+
       const [acceptedCount, rejectedCount] = await Promise.all([
         tx.verification.count({
           where: {
@@ -168,10 +193,12 @@ export class VerificationService {
         }),
       ]);
 
+      // Any rejection blocks consensus permanently
       if (rejectedCount > 0) {
-        throw new Error(
-          "Verification rejected by at least one authorized verifier",
-        );
+        return {
+          consensusReached: false,
+          record: null,
+        };
       }
 
       if (acceptedCount < record.requiredVerifiers) {
@@ -181,7 +208,10 @@ export class VerificationService {
         };
       }
 
-      // 7️⃣ Finalize consensus
+      ////////////////////////////////////////////////////////////////
+      // 8️⃣ Finalize consensus
+      ////////////////////////////////////////////////////////////////
+
       const finalized = await tx.verificationRecord.update({
         where: { id: record.id },
         data: {
@@ -190,7 +220,10 @@ export class VerificationService {
         },
       });
 
-      // 8️⃣ Ledger commit — VERIFIED (atomic)
+      ////////////////////////////////////////////////////////////////
+      // 9️⃣ Ledger commit — VERIFIED (atomic)
+      ////////////////////////////////////////////////////////////////
+
       await this.ledger.commit(
         {
           tenantId: record.tenantId,
@@ -205,7 +238,7 @@ export class VerificationService {
             acceptedCount,
           },
         },
-        tx as unknown as Prisma.TransactionClient,
+        tx,
       );
 
       return {
@@ -224,31 +257,35 @@ Two ledger events exist:
 - VERIFICATION_SUBMITTED (vote recorded)
 - VERIFIED (consensus reached)
 
-Both must be atomic with DB writes.
+Both are atomic with DB writes.
+Replay must reconstruct full voting history.
+Tenant isolation is enforced at role resolution boundary.
 
 Structure
 ---------
 1. Zod validation
 2. Load record
 3. Enforce execution invariant
-4. Authorize role
+4. Tenant-safe role authorization
 5. Prevent duplicate vote
 6. Persist vote
 7. Commit VERIFICATION_SUBMITTED
-8. Recompute consensus
+8. Deterministic consensus calculation
 9. Finalize consensus
 10. Commit VERIFIED
 
 Implementation guidance
 -----------------------
-LedgerService.commit() must support optional transaction client.
+LedgerService.commit() must accept Prisma.TransactionClient.
 Never mutate Case.lifecycle here.
-Lifecycle transition is governance-layer responsibility.
+Lifecycle transition remains governance-layer responsibility.
+Never remove tenantId filters from role resolution.
 
 Scalability insight
 -------------------
-- Fully replayable verification history
+- Fully replayable vote history
 - Deterministic consensus reconstruction
+- No cross-tenant privilege bleed
 - Atomic authority boundary
-- Multi-tenant safe
+- Safe under horizontal scaling
 */
