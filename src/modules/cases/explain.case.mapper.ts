@@ -1,5 +1,5 @@
 // src/modules/cases/explain.case.mapper.ts
-// Purpose: Deterministic explainability projection.
+// Deterministic explainability projection.
 // Strict separation between UI AuditEntry and LedgerCommit.
 // No lifecycle mutation. Read-only mapping only.
 
@@ -88,6 +88,10 @@ export function mapExplainableCaseToResponse(
   payload: ExplainableCasePayload,
   viewerRole?: string,
 ): ExplainCaseResponse {
+  ////////////////////////////////////////////////////////////////
+  // Authority Projection (deterministic)
+  ////////////////////////////////////////////////////////////////
+
   const decisionsToView = (d: AuthorityDecision): DecisionView => ({
     decisionId: d.id,
     decisionType: d.decisionType,
@@ -99,14 +103,16 @@ export function mapExplainableCaseToResponse(
     supersededAt: d.supersededAt ? d.supersededAt.toISOString() : undefined,
   });
 
-  const history = payload.authority.history.map(decisionsToView);
-  const active = payload.authority.active.map(decisionsToView);
+  // Defensive copy to avoid upstream mutation side-effects
+  const history = [...payload.authority.history].map(decisionsToView);
+  const active = [...payload.authority.active].map(decisionsToView);
 
+  // Deterministic causal explanation: last active decision only
   const causedByDecision = active.length > 0 ? active[active.length - 1] : null;
 
-  //////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////
   // Disbursement Explainability (Redacted by Viewer Role)
-  //////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////
 
   const disbursementExplanation =
     payload.disbursement && viewerRole
@@ -119,9 +125,32 @@ export function mapExplainableCaseToResponse(
         )
       : undefined;
 
-  //////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////
+  // Ledger Projection (ordered + safe bigint handling)
+  ////////////////////////////////////////////////////////////////
+
+  const orderedLedger = [...payload.ledger].sort((a, b) =>
+    a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0,
+  );
+
+  const ledgerProjection = orderedLedger.map((l) => {
+    const tsNumber =
+      l.ts <= BigInt(Number.MAX_SAFE_INTEGER)
+        ? Number(l.ts)
+        : Number.MAX_SAFE_INTEGER;
+
+    return {
+      id: l.id,
+      ts: tsNumber,
+      eventType: l.eventType,
+      actorKind: l.actorKind,
+      payload: l.payload ?? undefined,
+    };
+  });
+
+  ////////////////////////////////////////////////////////////////
   // Response
-  //////////////////////////////////////////////////////////////////
+  ////////////////////////////////////////////////////////////////
 
   return {
     case: {
@@ -153,17 +182,7 @@ export function mapExplainableCaseToResponse(
       evidence: t.evidence ?? [],
     })),
 
-    //////////////////////////////////////////////////////////////////
-    // Ledger projection (NOT raw DB exposure)
-    //////////////////////////////////////////////////////////////////
-
-    ledger: payload.ledger.map((l) => ({
-      id: l.id,
-      ts: Number(l.ts),
-      eventType: l.eventType,
-      actorKind: l.actorKind,
-      payload: l.payload ?? undefined,
-    })),
+    ledger: ledgerProjection,
 
     policies: (payload.policies ?? []).map((p) => ({
       policyKey: p.policyKey,
@@ -182,35 +201,3 @@ export function mapExplainableCaseToResponse(
     disbursement: disbursementExplanation,
   };
 }
-
-// ////////////////////////////////////////////////////////////////
-// // Design reasoning
-// ////////////////////////////////////////////////////////////////
-// This mapper is read-only and deterministic.
-// It never mutates lifecycle, ledger, or decisions.
-// Ledger commits are projected but not exposed with signature
-// or authority internals, preserving AuditEntry/Ledger separation.
-
-// ////////////////////////////////////////////////////////////////
-// // Structure
-// ////////////////////////////////////////////////////////////////
-// - Strict typed boundary
-// - Enum-bound lifecycle + decision types
-// - ISO date normalization
-// - Explicit ledger projection
-// - Disbursement redaction by viewer role
-
-// ////////////////////////////////////////////////////////////////
-// // Implementation guidance
-// ////////////////////////////////////////////////////////////////
-// Never pass raw Prisma models directly to client.
-// Always use this projection layer.
-// Do not expose signature, commitmentHash, or authorityProof
-// through this mapping.
-
-// ////////////////////////////////////////////////////////////////
-// // Scalability insight
-// ////////////////////////////////////////////////////////////////
-// Projection layer isolates UI contracts from DB evolution.
-// Ledger payload shape can evolve without breaking frontend.
-// Strict typing prevents schema drift during Phase 2 expansion.
