@@ -110,6 +110,23 @@ app.get("/__ledger/:caseId", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/__execution/:caseId", async (req, res) => {
+  try {
+    const execution = await prisma.execution.findUnique({
+      where: { caseId: req.params.caseId },
+      include: { milestones: true },
+    });
+
+    if (!execution) {
+      return res.status(404).json({ ok: false, error: "Not found" });
+    }
+
+    return res.json({ ok: true, data: execution });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: "Internal error" });
+  }
+});
+
 ////////////////////////////////////////////////////////////////
 // Root route
 ////////////////////////////////////////////////////////////////

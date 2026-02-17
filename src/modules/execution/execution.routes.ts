@@ -2,9 +2,12 @@
 
 import { Router, type Router as ExpressRouter } from "express";
 import { startExecution } from "./startExecution.service";
+import { CompleteMilestoneService } from "./completeMilestone.service";
 import { ActorKind } from "@prisma/client";
+import crypto from "crypto";
 
 const router: ExpressRouter = Router();
+const completeMilestoneService = new CompleteMilestoneService();
 
 router.post("/start", async (req, res, next) => {
   try {
@@ -24,13 +27,50 @@ router.post("/start", async (req, res, next) => {
       caseId,
       actorKind: ActorKind.HUMAN,
       actorUserId,
-      authorityProof: "HEADER_ASSERTED", // replace with real auth proof model later
+      authorityProof: "HEADER_ASSERTED",
       intentContext: undefined,
     });
 
     return res.status(201).json({
       ok: true,
       data: execution,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/milestones/complete", async (req, res, next) => {
+  try {
+    const tenantId = req.header("X-Tenant-Id");
+    const actorUserId = req.header("X-Actor-Id");
+    const idempotencyKey = req.header("Idempotency-Key");
+
+    const { milestoneId } = req.body;
+
+    if (!tenantId || !actorUserId || !milestoneId || !idempotencyKey) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing required headers or body fields",
+      });
+    }
+
+    const requestHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    const result = await completeMilestoneService.complete({
+      tenantId,
+      milestoneId,
+      actorUserId,
+      idempotencyKey,
+      requestHash,
+    });
+
+    return res.json({
+      ok: true,
+      data: result,
     });
   } catch (err) {
     next(err);
