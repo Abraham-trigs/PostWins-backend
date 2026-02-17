@@ -41,7 +41,7 @@ export class AutoTaskOrchestrator {
       }),
     ]);
 
-    if (!caseRow) throw new CaseNotFoundError();
+    if (!caseRow) throw new CaseNotFoundError(caseId);
 
     const hasRoutingDecision = routingDecisionCount > 0;
     const hasDeliveryRecorded = deliveryCount > 0;

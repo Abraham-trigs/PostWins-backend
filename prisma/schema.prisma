@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  Decision    
+//  PolicyEvaluation     
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -31,21 +31,29 @@ enum DisbursementType {
   REIMBURSEMENT
 }
 
+enum CaseStatus {
+  INTAKED
+  ROUTED
+  ACCEPTED
+  IN_REVIEW
+
+  EXECUTING
+  IN_DELIVERY
+  VERIFIED
+  FLAGGED
+
+  COMPLETED
+  REJECTED
+  CANCELLED
+  ARCHIVED
+}
+
 enum DisbursementStatus {
   AUTHORIZED
+  EXECUTING
   EXECUTED
   COMPLETED
   FAILED
-}
-
-enum CaseLifecycle {
-  INTAKE
-  ROUTED
-  ACCEPTED
-  EXECUTING
-  VERIFIED
-  FLAGGED
-  HUMAN_REVIEW
 }
 
 enum TaskId {
@@ -89,15 +97,19 @@ enum CaseType {
 
 /// ⚠️ NON-AUTHORITATIVE STATUS
 /// UI convenience only. Never infer lifecycle from this.
-enum CaseStatus {
-  INTAKED
-  IN_REVIEW
+enum CaseLifecycle {
+  INTAKE
+  ROUTED
+  ACCEPTED
+  EXECUTING
   VERIFIED
   FLAGGED
-  ROUTED
-  IN_DELIVERY
+
+  HUMAN_REVIEW
+
   COMPLETED
   REJECTED
+  CANCELLED
   ARCHIVED
 }
 
@@ -109,8 +121,22 @@ enum RoutingOutcome {
   BLOCKED
 }
 
+model PolicyEvaluation {
+  id          String   @id @default(uuid())
+  tenantId    String
+  caseId      String
+  policyKey   String
+  version     String
+  result      Json
+  context     Json? // ← ADD THIS
+  evaluatedAt DateTime @default(now())
+
+  @@index([tenantId, caseId])
+}
+
 enum ApprovalStatus {
   APPROVED
+  PENDING
   REJECTED
 }
 
@@ -134,12 +160,15 @@ enum LedgerEventType {
   CASE_ESCALATED
   CASE_REJECTED
   CASE_ARCHIVED
+  CASE_CANCELLED
 
   ROUTED
   ROUTING_SUPERSEDED
 
   VERIFICATION_SUBMITTED
   VERIFIED
+  VERIFICATION_REJECTED
+  VERIFICATION_DISPUTED
   VERIFICATION_TIMED_OUT
 
   APPEAL_OPENED
@@ -156,6 +185,10 @@ enum LedgerEventType {
   EXECUTION_PROGRESS_RECORDED
   EXECUTION_COMPLETED
   EXECUTION_ABORTED
+
+  DISBURSEMENT_AUTHORIZED
+  DISBURSEMENT_COMPLETED
+  DISBURSEMENT_FAILED
 }
 
 enum EvidenceKind {

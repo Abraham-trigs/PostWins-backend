@@ -1,5 +1,5 @@
 // apps/backend/src/modules/routing/task-progression.service.ts
-import { TaskId } from "../../domain/tasks/taskIds";
+import { TaskId } from "@prisma/client";
 
 export type TaskEvent =
   | "ENROLL"

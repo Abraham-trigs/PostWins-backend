@@ -1,5 +1,8 @@
+// filepath: apps/backend/src/modules/verification/verification.controller.ts
+// Purpose: Verification HTTP controller aligned with object-based service contract
+
 import type { Request, Response } from "express";
-import { LedgerService } from "../intake/ledger.service";
+import { LedgerService } from "../intake/ledger/ledger.service";
 import { VerificationService } from "./verification.service";
 import { VerificationStatus } from "@prisma/client";
 
@@ -8,7 +11,6 @@ const verificationService = new VerificationService(ledger);
 
 /**
  * GET /api/verification/:verificationRecordId
- * Fetch a verification record (read-only)
  */
 export async function getVerificationRecord(req: Request, res: Response) {
   const verificationRecordId = String(
@@ -41,9 +43,6 @@ export async function getVerificationRecord(req: Request, res: Response) {
 /**
  * POST /api/verification/vote
  * body: { verificationRecordId, verifierUserId, status, note? }
- *
- * Submits a single verification vote.
- * Does NOT assert truth directly.
  */
 export async function submitVerificationVote(req: Request, res: Response) {
   const verificationRecordId = String(
@@ -64,7 +63,7 @@ export async function submitVerificationVote(req: Request, res: Response) {
   }
 
   if (
-    status !== VerificationStatus.ACCEPTED &&
+    status !== VerificationStatus.APPROVED &&
     status !== VerificationStatus.REJECTED
   ) {
     return res.status(400).json({
@@ -74,12 +73,12 @@ export async function submitVerificationVote(req: Request, res: Response) {
   }
 
   try {
-    const result = await verificationService.recordVerification(
+    const result = await verificationService.recordVerification({
       verificationRecordId,
       verifierUserId,
       status,
       note,
-    );
+    });
 
     return res.status(200).json({
       ok: true,
@@ -92,3 +91,30 @@ export async function submitVerificationVote(req: Request, res: Response) {
     });
   }
 }
+
+/*
+Design reasoning
+----------------
+Service contract changed to object-based input.
+Controller must mirror service signature.
+Prevents parameter order drift and future breaking changes.
+
+Structure
+---------
+- Input extraction
+- Validation
+- Object-based service invocation
+- Deterministic JSON response
+
+Implementation guidance
+-----------------------
+Do not pass positional arguments to service.
+Always align controller with service contract.
+Future schema additions will not break call signature.
+
+Scalability insight
+-------------------
+Object-based input allows forward-compatible expansion
+without controller refactors.
+Protects governance boundary integrity.
+*/

@@ -1,6 +1,7 @@
+// apps/backend/src/modules/grants/tranche.service.ts
+
 import { prisma } from "../../lib/prisma";
 import { ActorKind, DecisionType, TrancheStatus } from "@prisma/client";
-import { Decimal } from "@prisma/client/runtime/library";
 import { DecisionService } from "../decision/decision.service";
 
 export class TrancheService {
@@ -12,6 +13,9 @@ export class TrancheService {
    * Authority is superseded.
    * Execution state is updated explicitly.
    * Lifecycle remains unchanged.
+   *
+   * No financial math occurs here.
+   * This only marks the tranche as reversed.
    */
   async reverseTranche(params: {
     tenantId: string;
@@ -22,7 +26,7 @@ export class TrancheService {
   }) {
     const { tenantId, caseId, trancheId, actorUserId, reason } = params;
 
-    // 1️⃣ Assert tranche exists and is RELEASED
+    // 1️⃣ Ensure tranche exists and is RELEASED
     const tranche = await prisma.tranche.findFirst({
       where: { id: trancheId },
       select: { status: true },
@@ -34,12 +38,12 @@ export class TrancheService {
 
     if (tranche.status !== TrancheStatus.RELEASED) {
       throw new Error(
-        `Tranche ${trancheId} is not released and cannot be reversed`,
+        `Tranche ${trancheId} is not RELEASED and cannot be reversed`,
       );
     }
 
-    // 2️⃣ Find authoritative TRANCHE decision for THIS tranche
-    const priorTrancheDecision = await prisma.decision.findFirst({
+    // 2️⃣ Locate authoritative TRANCHE decision tied to this tranche
+    const priorDecision = await prisma.decision.findFirst({
       where: {
         tenantId,
         caseId,
@@ -53,15 +57,15 @@ export class TrancheService {
       orderBy: { decidedAt: "desc" },
     });
 
-    if (!priorTrancheDecision) {
+    if (!priorDecision) {
       throw new Error(
-        `No authoritative tranche decision found for tranche ${trancheId}`,
+        `No authoritative tranche decision found for ${trancheId}`,
       );
     }
 
-    // 3️⃣ Atomic authority + execution
+    // 3️⃣ Atomic authority + execution mutation
     await prisma.$transaction(async (tx) => {
-      // 3a️⃣ Superseding decision (authority)
+      // 3a️⃣ Supersede prior authority
       await this.decisionService.applyDecision(
         {
           tenantId,
@@ -72,14 +76,14 @@ export class TrancheService {
           reason,
           intentContext: {
             trancheId,
-            originalDecisionId: priorTrancheDecision.id,
+            originalDecisionId: priorDecision.id,
           },
-          supersedesDecisionId: priorTrancheDecision.id,
+          supersedesDecisionId: priorDecision.id,
         },
         tx,
       );
 
-      // 3b️⃣ Execution state
+      // 3b️⃣ Mark execution state
       await tx.tranche.update({
         where: { id: trancheId },
         data: {
@@ -88,13 +92,13 @@ export class TrancheService {
         },
       });
 
-      // 3c️⃣ Execution telemetry (not ledger)
+      // 3c️⃣ Execution telemetry (non-ledger)
       await tx.trancheEvent.create({
         data: {
           trancheId,
           type: "TRANCHE_REVERSED",
           payload: {
-            reversedByDecisionId: priorTrancheDecision.id,
+            reversedByDecisionId: priorDecision.id,
             reason,
           },
         },
@@ -105,8 +109,11 @@ export class TrancheService {
   /**
    * Phase 4.5 — Compensate a reversed tranche
    *
-   * Creates a NEW tranche with negative effect.
-   * No history is denied. Math reconciles explicitly.
+   * Creates a NEW tranche with negative financial effect.
+   * No history is deleted.
+   * Financial math reconciles explicitly.
+   *
+   * This maintains auditability and financial correctness.
    */
   async compensateReversedTranche(params: {
     tenantId: string;
@@ -125,26 +132,38 @@ export class TrancheService {
       },
     });
 
-    if (!reversed || !reversed.plannedAmount) {
+    if (!reversed) {
+      throw new Error(`Reversed tranche not found: ${reversedTrancheId}`);
+    }
+
+    if (!reversed.plannedAmount || !reversed.plannedPercent) {
       throw new Error(
-        `Reversed tranche not found or invalid: ${reversedTrancheId}`,
+        `Reversed tranche missing financial values: ${reversedTrancheId}`,
       );
     }
 
-    // 2️⃣ Atomic compensation (execution + authority)
+    const plannedAmount = reversed.plannedAmount;
+    const plannedPercent = reversed.plannedPercent;
+
+    // 2️⃣ Atomic compensation
     await prisma.$transaction(async (tx) => {
-      // 2a️⃣ Create compensating tranche (negative amount)
+      // 2a️⃣ Create compensating tranche
+      // Must include plannedPercent (required by schema)
       const compensatingTranche = await tx.tranche.create({
         data: {
           grantId: reversed.grantId,
-          sequence: reversed.sequence + 1000, // deterministic ordering
-          plannedAmount: new Decimal(reversed.plannedAmount).neg(),
+          sequence: reversed.sequence + 1000, // deterministic ordering offset
+
+          // Reverse the financial effect
+          plannedAmount: plannedAmount.neg(),
+          plannedPercent: plannedPercent.neg(),
+
           status: TrancheStatus.RELEASED,
           releasedAt: new Date(),
         },
       });
 
-      // 2b️⃣ Authoritative TRANCHE decision (new fact)
+      // 2b️⃣ Record authoritative decision (new fact)
       await this.decisionService.applyDecision(
         {
           tenantId,
@@ -161,7 +180,7 @@ export class TrancheService {
         tx,
       );
 
-      // 2c️⃣ Execution telemetry
+      // 2c️⃣ Execution telemetry (non-ledger)
       await tx.trancheEvent.create({
         data: {
           trancheId: compensatingTranche.id,

@@ -1,3 +1,6 @@
+// src/modules/cases/case-explain.service.ts
+// Service responsible for resolving, loading, and redacting explainable case payloads.
+
 import { CaseRef } from "./case-ref";
 import { CaseRefResolver } from "./case-ref.resolver";
 import { ExplainableCaseLoader } from "./explainable-case.loader";
@@ -26,3 +29,6 @@ export class CaseExplainService {
     return this.redactor.redact(payload, viewer);
   }
 }
+
+// Export singleton instance expected by controller
+export const caseExplainService = new CaseExplainService();

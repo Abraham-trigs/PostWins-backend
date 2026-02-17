@@ -17,7 +17,7 @@ export function explainVerificationState(params: {
   });
 
   const approvals = params.votes.filter(
-    (v) => v.status === VerificationStatus.ACCEPTED,
+    (v) => v.status === VerificationStatus.APPROVED,
   );
   const rejections = params.votes.filter(
     (v) => v.status === VerificationStatus.REJECTED,
@@ -34,7 +34,7 @@ export function explainVerificationState(params: {
         case "IN_REVIEW":
           return `Verification is in progress. ${approvals.length} approval(s), ${rejections.length} rejection(s) recorded.`;
 
-        case "ACCEPTED":
+        case "APPROVED":
           return "Required quorum approved the completed execution.";
 
         case "REJECTED":
@@ -71,7 +71,7 @@ export function explainVerificationState(params: {
     counterfactuals: {
       ifNextVoteApproved:
         approvals.length + 1 >= params.requiredVerifiers
-          ? "Verification would be ACCEPTED"
+          ? "Verification would be APPROVED"
           : "Verification would remain unresolved",
 
       ifNextVoteRejected:

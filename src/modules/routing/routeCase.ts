@@ -1,5 +1,5 @@
 import type { RoutingResult } from "./routing.types";
-import { ensureKhalistarExecutionBody } from "../../../prisma/seed";
+import { prisma } from "@/lib/prisma";
 
 export async function routeCase({
   tenantId,
@@ -20,14 +20,30 @@ export async function routeCase({
   if (matched) {
     return {
       executionBodyId: matched.id,
+      outcome: "MATCHED",
       reason: "MATCHED",
     };
   }
 
-  const khalistar = await ensureKhalistarExecutionBody(tenantId);
+  /**
+   * Fallback resolution must not depend on seed logic.
+   * We resolve the canonical fallback execution body directly from DB.
+   */
+  const khalistar = await prisma.executionBody.findFirst({
+    where: {
+      tenantId,
+      isFallback: true,
+    },
+    select: { id: true },
+  });
+
+  if (!khalistar) {
+    throw new Error(`Fallback execution body not found for tenant ${tenantId}`);
+  }
 
   return {
     executionBodyId: khalistar.id,
+    outcome: candidateExecutionBodies.length === 0 ? "UNASSIGNED" : "FALLBACK",
     reason:
       candidateExecutionBodies.length === 0
         ? "FALLBACK_NO_MATCH"

@@ -65,9 +65,14 @@ export interface DecisionExplanation {
 
   decidedAt: Date;
   reason?: string;
-  intentContext?: Record<string, unknown>;
-}
 
+  /**
+   * JSON-safe boundary.
+   * Must accept full Prisma JsonValue.
+   * Controllers may normalize before sending to client.
+   */
+  intentContext?: unknown;
+}
 ////////////////////////////////////////////////////////////////
 // Normalizer
 ////////////////////////////////////////////////////////////////

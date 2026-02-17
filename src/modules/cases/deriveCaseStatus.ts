@@ -1,3 +1,6 @@
+// src/modules/cases/deriveCaseStatus.ts
+// Derives advisory CaseStatus from authoritative CaseLifecycle
+
 import { CaseLifecycle, CaseStatus } from "@prisma/client";
 
 /**
@@ -16,6 +19,12 @@ export function deriveCaseStatus(lifecycle: CaseLifecycle): CaseStatus {
     case CaseLifecycle.ROUTED:
       return CaseStatus.ROUTED;
 
+    case CaseLifecycle.ACCEPTED:
+      return CaseStatus.ACCEPTED;
+
+    case CaseLifecycle.EXECUTING:
+      return CaseStatus.EXECUTING;
+
     case CaseLifecycle.VERIFIED:
       return CaseStatus.VERIFIED;
 
@@ -25,10 +34,21 @@ export function deriveCaseStatus(lifecycle: CaseLifecycle): CaseStatus {
     case CaseLifecycle.HUMAN_REVIEW:
       return CaseStatus.IN_REVIEW;
 
+    case CaseLifecycle.COMPLETED:
+      return CaseStatus.COMPLETED;
+
+    case CaseLifecycle.REJECTED:
+      return CaseStatus.REJECTED;
+
+    case CaseLifecycle.CANCELLED:
+      return CaseStatus.CANCELLED;
+
+    case CaseLifecycle.ARCHIVED:
+      return CaseStatus.ARCHIVED;
+
     default: {
-      // Exhaustiveness guard
       const _exhaustive: never = lifecycle;
-      return CaseStatus.INTAKED;
+      return _exhaustive;
     }
   }
 }

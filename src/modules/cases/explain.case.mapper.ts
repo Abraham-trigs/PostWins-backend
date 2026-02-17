@@ -4,14 +4,18 @@
 // No lifecycle mutation. Read-only mapping only.
 
 import { ExplainCaseResponse, DecisionView } from "./explain.case.contract";
-import { explainDisbursementState } from "../disbursement";
-import { redactDisbursementExplanation } from "@/modules/explainability/redactDisbursementExplanation";
+import {
+  redactDisbursementExplanation,
+  DisbursementExplanation,
+} from "@/modules/explainability/redactDisbursementExplanation";
+import { normalizeJsonObject } from "@/shared/json/jsonBoundary";
 import {
   CaseLifecycle,
   CaseStatus,
   LedgerEventType,
   ActorKind,
   DecisionType,
+  DisbursementStatus,
 } from "@prisma/client";
 
 ////////////////////////////////////////////////////////////////
@@ -64,7 +68,7 @@ type ExplainableCasePayload = {
   }>;
 
   disbursement?: {
-    snapshot: unknown;
+    snapshot: any;
     blockingReasons?: string[];
   };
 };
@@ -81,15 +85,75 @@ type AuthorityDecision = {
 };
 
 ////////////////////////////////////////////////////////////////
+// Disbursement Domain Builder (Date-based)
+////////////////////////////////////////////////////////////////
+
+function buildDisbursementDomainExplanation(
+  snapshot: any,
+  blockingReasons: string[],
+): DisbursementExplanation {
+  const isTerminal =
+    snapshot.status === DisbursementStatus.COMPLETED ||
+    snapshot.status === DisbursementStatus.FAILED;
+
+  const whyExecuted =
+    snapshot.status === DisbursementStatus.COMPLETED
+      ? "Funds were successfully transferred and confirmed."
+      : null;
+
+  const whyNotExecuted =
+    snapshot.status === DisbursementStatus.AUTHORIZED
+      ? ["Awaiting execution processing."]
+      : snapshot.status === DisbursementStatus.EXECUTING
+        ? ["Execution is currently in progress."]
+        : snapshot.status === DisbursementStatus.FAILED
+          ? [snapshot.failureReason ?? "Execution failed."]
+          : (blockingReasons ?? []);
+
+  return {
+    id: snapshot.id,
+    caseId: snapshot.caseId,
+    status: snapshot.status,
+    type: snapshot.type,
+    summary: `Disbursement ${snapshot.status.toLowerCase()}.`,
+    amount: {
+      value: String(snapshot.amount),
+      currency: snapshot.currency,
+    },
+    payee:
+      snapshot.payeeKind && snapshot.payeeId
+        ? { kind: snapshot.payeeKind, id: snapshot.payeeId }
+        : undefined,
+    authority: snapshot.authorityProof
+      ? { proof: snapshot.authorityProof }
+      : undefined,
+    timeline: {
+      authorizedAt: snapshot.authorizedAt,
+      executedAt: snapshot.executedAt ?? null,
+      failedAt: snapshot.failedAt ?? null,
+    },
+    failure:
+      snapshot.status === DisbursementStatus.FAILED
+        ? { reason: snapshot.failureReason ?? "Unknown failure" }
+        : null,
+    explainability: {
+      whyExecuted,
+      whyNotExecuted,
+      irreversibility: isTerminal ? "Terminal financial state reached." : null,
+    },
+  };
+}
+
+////////////////////////////////////////////////////////////////
 // Mapper
 ////////////////////////////////////////////////////////////////
 
 export function mapExplainableCaseToResponse(
   payload: ExplainableCasePayload,
-  viewerRole?: string,
+  viewerRole?: any,
 ): ExplainCaseResponse {
   ////////////////////////////////////////////////////////////////
-  // Authority Projection (deterministic)
+  // Authority Projection
   ////////////////////////////////////////////////////////////////
 
   const decisionsToView = (d: AuthorityDecision): DecisionView => ({
@@ -99,34 +163,40 @@ export function mapExplainableCaseToResponse(
     actorKind: d.actorKind,
     actorUserId: d.actorUserId ?? undefined,
     reason: d.reason ?? undefined,
-    intentContext: d.intentContext ?? undefined,
+    intentContext: normalizeJsonObject(d.intentContext),
     supersededAt: d.supersededAt ? d.supersededAt.toISOString() : undefined,
   });
 
-  // Defensive copy to avoid upstream mutation side-effects
-  const history = [...payload.authority.history].map(decisionsToView);
-  const active = [...payload.authority.active].map(decisionsToView);
-
-  // Deterministic causal explanation: last active decision only
+  const history = payload.authority.history.map(decisionsToView);
+  const active = payload.authority.active.map(decisionsToView);
   const causedByDecision = active.length > 0 ? active[active.length - 1] : null;
 
   ////////////////////////////////////////////////////////////////
-  // Disbursement Explainability (Redacted by Viewer Role)
+  // Disbursement (Domain → Redact → Transport)
   ////////////////////////////////////////////////////////////////
 
-  const disbursementExplanation =
-    payload.disbursement && viewerRole
-      ? redactDisbursementExplanation(
-          explainDisbursementState({
-            disbursement: payload.disbursement.snapshot,
-            blockingReasons: payload.disbursement.blockingReasons ?? [],
-          }),
-          viewerRole,
-        )
-      : undefined;
+  let disbursement: ExplainCaseResponse["disbursement"];
+
+  if (payload.disbursement && viewerRole) {
+    const domain = buildDisbursementDomainExplanation(
+      payload.disbursement.snapshot,
+      payload.disbursement.blockingReasons ?? [],
+    );
+
+    const redacted = redactDisbursementExplanation(domain, viewerRole);
+
+    disbursement = {
+      ...redacted,
+      timeline: {
+        authorizedAt: redacted.timeline.authorizedAt.toISOString(),
+        executedAt: redacted.timeline.executedAt?.toISOString() ?? null,
+        failedAt: redacted.timeline.failedAt?.toISOString() ?? null,
+      },
+    };
+  }
 
   ////////////////////////////////////////////////////////////////
-  // Ledger Projection (ordered + safe bigint handling)
+  // Ledger Projection
   ////////////////////////////////////////////////////////////////
 
   const orderedLedger = [...payload.ledger].sort((a, b) =>
@@ -144,7 +214,7 @@ export function mapExplainableCaseToResponse(
       ts: tsNumber,
       eventType: l.eventType,
       actorKind: l.actorKind,
-      payload: l.payload ?? undefined,
+      payload: normalizeJsonObject(l.payload),
     };
   });
 
@@ -188,7 +258,7 @@ export function mapExplainableCaseToResponse(
       policyKey: p.policyKey,
       version: p.policyVersion ?? "unknown",
       evaluatedAt: p.evaluatedAt.toISOString(),
-      result: p.context ?? {},
+      result: normalizeJsonObject(p.context) ?? {},
     })),
 
     counterfactuals: (payload.counterfactuals ?? []).map((c) => ({
@@ -198,6 +268,6 @@ export function mapExplainableCaseToResponse(
       constraintsApplied: c.constraintsApplied,
     })),
 
-    disbursement: disbursementExplanation,
+    disbursement,
   };
 }

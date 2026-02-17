@@ -1,4 +1,4 @@
-import { ActorKind, LedgerEventType } from "@posta/core/types";
+import { ActorKind, LedgerEventType } from "@prisma/client";
 import { SYSTEM_AUTHORITY_PROOF } from "../../domain/system/systemActors";
 import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
@@ -16,10 +16,10 @@ export async function commitAcceptanceLedger({
   actor: { kind: "SYSTEM" } | { kind: "USER"; userId: string; orgKey: string };
 }) {
   await ledger.commit({
-    eventType: LedgerEventType.ACCEPTED,
+    eventType: LedgerEventType.CASE_ACCEPTED,
     caseId: postWinId,
 
-    actorKind: actor.kind === "SYSTEM" ? ActorKind.SYSTEM : ActorKind.USER,
+    actorKind: actor.kind === "SYSTEM" ? ActorKind.SYSTEM : ActorKind.HUMAN,
 
     actorUserId: actor.kind === "USER" ? actor.userId : null,
 

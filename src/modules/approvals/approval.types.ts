@@ -9,5 +9,5 @@ export type GatedEffect =
     }
   | {
       kind: "ADVANCE_TASK";
-      payload: { to: string };
+      payload: { from: string | null; to: string };
     };

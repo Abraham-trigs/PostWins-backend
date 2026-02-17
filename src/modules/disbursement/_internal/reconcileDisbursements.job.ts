@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { DisbursementStatus } from "@prisma/client";
+import { DisbursementStatus, ActorKind } from "@prisma/client";
 import { executeDisbursement } from "./executeDisbursement.service";
 
 export async function reconcileDisbursement(
@@ -9,6 +9,7 @@ export async function reconcileDisbursement(
     where: { id: disbursementId },
     select: {
       id: true,
+      tenantId: true,
       status: true,
     },
   });
@@ -17,10 +18,19 @@ export async function reconcileDisbursement(
     return;
   }
 
-  // 🔒 Hard guard: execution-only, authorized-only
+  // 🔒 Only authorized disbursements can be executed
   if (disbursement.status !== DisbursementStatus.AUTHORIZED) {
     return;
   }
 
-  await executeDisbursement({ disbursementId });
+  await executeDisbursement({
+    tenantId: disbursement.tenantId,
+    disbursementId: disbursement.id,
+    actor: {
+      kind: ActorKind.SYSTEM,
+      userId: undefined,
+      authorityProof: "SYSTEM_RECONCILIATION",
+    },
+    outcome: { success: true },
+  });
 }

@@ -43,7 +43,10 @@ export class DecisionQueryService {
       actorUserId: decision.actorUserId ?? undefined,
       decidedAt: decision.decidedAt,
       reason: decision.reason ?? undefined,
-      intentContext: decision.intentContext ?? undefined,
+      intentContext:
+        decision.intentContext !== null
+          ? (decision.intentContext as unknown)
+          : undefined,
     };
   }
 

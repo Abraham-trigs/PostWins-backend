@@ -37,7 +37,12 @@ export interface LifecycleReconciliationResult {
 ////////////////////////////////////////////////////////////////
 
 export class LifecycleReconciliationService {
-  constructor(private ledger: LedgerService) {}
+  private ledger: LedgerService;
+
+  constructor(ledger?: LedgerService) {
+    // Allow DI override, but default to internal instance
+    this.ledger = ledger ?? new LedgerService();
+  }
 
   async reconcileCaseLifecycle(
     inputTenantId: unknown,
@@ -86,7 +91,7 @@ export class LifecycleReconciliationService {
         data: { lifecycle: derived },
       });
 
-      await this.ledger.commit(
+      await this.ledger.appendEntry(
         {
           tenantId,
           caseId,

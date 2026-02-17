@@ -10,9 +10,9 @@ const ledgerService = new LedgerService();
 router.get("/health/ledger", async (_req: Request, res: Response) => {
   try {
     const healthData = await ledgerService.getStatus();
-    const statusCode = healthData.status === "HEALTHY" ? 200 : 503;
+    const statusCode = healthData.ok ? 200 : 503;
     res.status(statusCode).json(healthData);
-  } catch {
+  } catch (error) {
     res.status(503).json({
       status: "CORRUPTED",
       error: "Ledger health check failed unexpectedly.",

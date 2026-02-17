@@ -1,6 +1,5 @@
 // apps/backend/src/modules/cases/transitionCaseLifecycleWithLedger.ts
 // Deterministic lifecycle transition with atomic ledger authority + structured governance logging.
-// Assumes: LedgerService hashes payload deterministically and authorityEnvelope V1 is supported.
 
 import { prisma } from "@/lib/prisma";
 import { CaseLifecycle, ActorKind } from "@prisma/client";
@@ -60,13 +59,30 @@ const TransitionWithLedgerSchema = z
   });
 
 ////////////////////////////////////////////////////////////////
-// Transition + Ledger Authority
+// Overloads (Backward Compatibility Layer)
 ////////////////////////////////////////////////////////////////
+
+export async function transitionCaseLifecycleWithLedger(
+  input: unknown,
+): Promise<CaseLifecycle>;
 
 export async function transitionCaseLifecycleWithLedger(
   ledger: LedgerService,
   input: unknown,
+): Promise<CaseLifecycle>;
+
+////////////////////////////////////////////////////////////////
+// Implementation
+////////////////////////////////////////////////////////////////
+
+export async function transitionCaseLifecycleWithLedger(
+  arg1: LedgerService | unknown,
+  arg2?: unknown,
 ): Promise<CaseLifecycle> {
+  const ledger = arg1 instanceof LedgerService ? arg1 : new LedgerService();
+
+  const input = arg1 instanceof LedgerService ? arg2 : arg1;
+
   const parsed = TransitionWithLedgerSchema.safeParse(input);
 
   if (!parsed.success) {
@@ -81,10 +97,6 @@ export async function transitionCaseLifecycleWithLedger(
   let next: CaseLifecycle | null = null;
 
   await prisma.$transaction(async (tx) => {
-    ////////////////////////////////////////////////////////////////
-    // 1️⃣ Load authoritative lifecycle (tenant scoped)
-    ////////////////////////////////////////////////////////////////
-
     const c = await tx.case.findFirstOrThrow({
       where: {
         id: params.caseId,
@@ -95,19 +107,11 @@ export async function transitionCaseLifecycleWithLedger(
 
     previousLifecycle = c.lifecycle;
 
-    ////////////////////////////////////////////////////////////////
-    // 2️⃣ Deterministic transition
-    ////////////////////////////////////////////////////////////////
-
     next = transitionCaseLifecycle({
       caseId: params.caseId,
       current: previousLifecycle,
       target: params.target,
     });
-
-    ////////////////////////////////////////////////////////////////
-    // 3️⃣ EXECUTING invariant
-    ////////////////////////////////////////////////////////////////
 
     if (next === CaseLifecycle.EXECUTING) {
       const execution = await tx.execution.findFirst({
@@ -125,10 +129,6 @@ export async function transitionCaseLifecycleWithLedger(
       }
     }
 
-    ////////////////////////////////////////////////////////////////
-    // 4️⃣ Strict lifecycle → ledger mapping
-    ////////////////////////////////////////////////////////////////
-
     const ledgerEvent = CASE_LIFECYCLE_LEDGER_EVENTS[next];
 
     if (!ledgerEvent) {
@@ -137,19 +137,13 @@ export async function transitionCaseLifecycleWithLedger(
       );
     }
 
-    ////////////////////////////////////////////////////////////////
-    // 5️⃣ Optimistic concurrency update
-    ////////////////////////////////////////////////////////////////
-
     const updated = await tx.case.updateMany({
       where: {
         id: params.caseId,
         tenantId: params.tenantId,
         lifecycle: previousLifecycle,
       },
-      data: {
-        lifecycle: next,
-      },
+      data: { lifecycle: next },
     });
 
     if (updated.count !== 1) {
@@ -158,11 +152,7 @@ export async function transitionCaseLifecycleWithLedger(
       );
     }
 
-    ////////////////////////////////////////////////////////////////
-    // 6️⃣ Atomic ledger commit (with Authority Envelope V1)
-    ////////////////////////////////////////////////////////////////
-
-    await ledger.commit(
+    await ledger.appendEntry(
       {
         tenantId: params.tenantId,
         caseId: params.caseId,
@@ -184,10 +174,6 @@ export async function transitionCaseLifecycleWithLedger(
     );
   });
 
-  ////////////////////////////////////////////////////////////////
-  // 7️⃣ Structured governance log (outside transaction)
-  ////////////////////////////////////////////////////////////////
-
   if (previousLifecycle === null || next === null) {
     throw new Error("Lifecycle transition failed unexpectedly");
   }
@@ -201,38 +187,3 @@ export async function transitionCaseLifecycleWithLedger(
 
   return next;
 }
-
-////////////////////////////////////////////////////////////////
-// Design reasoning
-////////////////////////////////////////////////////////////////
-// Lifecycle transitions now use a versioned authority envelope.
-// Payload evolution becomes replay-safe while eventType remains
-// authoritative classification. Envelope versioning protects
-// long-term institutional durability.
-
-////////////////////////////////////////////////////////////////
-// Structure
-////////////////////////////////////////////////////////////////
-// - Zod validation boundary
-// - Transaction-scoped lifecycle resolution
-// - Deterministic transition engine
-// - Invariant enforcement
-// - Strict lifecycle→ledger mapping
-// - Optimistic concurrency guard
-// - Atomic ledger commit (enveloped payload)
-// - Post-commit governance logging
-
-////////////////////////////////////////////////////////////////
-// Implementation guidance
-////////////////////////////////////////////////////////////////
-// All future lifecycle commits must use buildAuthorityEnvelopeV1.
-// Never write raw payload objects again.
-// Replay logic should branch by envelopeVersion when required.
-
-////////////////////////////////////////////////////////////////
-// Scalability insight
-////////////////////////////////////////////////////////////////
-// Versioned envelopes enable safe domain evolution without
-// breaking cryptographic determinism. This protects replay,
-// auditability, and institutional memory across multi-year growth.
-////////////////////////////////////////////////////////////////

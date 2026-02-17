@@ -1,8 +1,12 @@
+// src/lib/prisma.ts
+// Prisma client singleton with domain guard extensions and stable Transaction typing
+
 import { PrismaClient } from "@prisma/client";
+import type { PrismaClient as PrismaClientType } from "@prisma/client";
 
 declare global {
   // eslint-disable-next-line no-var
-  var prisma: PrismaClient | undefined;
+  var prisma: PrismaClientType | undefined;
 }
 
 /**
@@ -88,7 +92,17 @@ function warnOnRoutingOutcomeWrite(data: unknown) {
   }
 }
 
-export const prisma = globalThis.prisma ?? prismaWithGuards;
+/**
+ * IMPORTANT:
+ * $extends() changes the inferred client type which breaks
+ * Prisma $transaction overload resolution.
+ *
+ * We explicitly cast back to PrismaClientType to stabilize typing
+ * across the codebase.
+ */
+export const prisma: PrismaClientType =
+  (globalThis.prisma as PrismaClientType | undefined) ??
+  (prismaWithGuards as unknown as PrismaClientType);
 
 if (process.env.NODE_ENV !== "production") {
   globalThis.prisma = prisma;

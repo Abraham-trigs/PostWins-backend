@@ -1,21 +1,25 @@
-// apps/backend/src/modules/cases/lifecycleReconciliation.job.ts
-// Scheduled lifecycle projection integrity job.
+// src/modules/cases/lifecycleReconciliation.job.ts
+// Scheduled lifecycle projection integrity job (ledger-authoritative governance sweep).
 
 import { prisma } from "../../lib/prisma";
 import { LifecycleReconciliationService } from "./lifecycleReconciliation.service";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 
-const reconciliationService = new LifecycleReconciliationService();
+////////////////////////////////////////////////////////////////
+// Service Wiring
+////////////////////////////////////////////////////////////////
 
-/**
- * Runs reconciliation for all tenants.
- *
- * Intended for:
- * - Scheduled cron execution
- * - Startup validation
- * - Governance integrity sweeps
- */
+const ledgerService = new LedgerService();
+const reconciliationService = new LifecycleReconciliationService(ledgerService);
+
+////////////////////////////////////////////////////////////////
+// Job
+////////////////////////////////////////////////////////////////
+
 export async function runLifecycleReconciliationJob(): Promise<void> {
-  console.info("[LifecycleReconciliationJob] Starting integrity sweep...");
+  console.info(
+    "[LifecycleReconciliationJob] Starting lifecycle integrity sweep...",
+  );
 
   const tenants = await prisma.tenant.findMany({
     select: { id: true },
@@ -26,17 +30,21 @@ export async function runLifecycleReconciliationJob(): Promise<void> {
   let totalRepaired = 0;
 
   for (const tenant of tenants) {
-    const results = await reconciliationService.reconcileTenant(tenant.id);
+    const cases = await prisma.case.findMany({
+      where: { tenantId: tenant.id },
+      select: { id: true },
+    });
 
-    totalCases += results.length;
+    for (const c of cases) {
+      totalCases++;
 
-    for (const r of results) {
-      if (r.driftDetected) {
-        totalDrift++;
-      }
-      if (r.repaired) {
-        totalRepaired++;
-      }
+      const result = await reconciliationService.reconcileCaseLifecycle(
+        tenant.id,
+        c.id,
+      );
+
+      if (result.driftDetected) totalDrift++;
+      if (result.repaired) totalRepaired++;
     }
   }
 
@@ -45,41 +53,42 @@ export async function runLifecycleReconciliationJob(): Promise<void> {
   );
 }
 
-/*
-Design reasoning
-----------------
-Ledger is authority.
-Case.lifecycle is projection.
-This job enforces projection integrity without blocking operations.
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// Ledger is canonical truth.
+// Case.lifecycle is a projection.
+// This job replays immutable facts and repairs drift atomically.
+// It does not infer. It verifies.
 
-Structure
----------
-- Iterate tenants
-- Reconcile per tenant
-- Aggregate drift metrics
-- Log results
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// - Instantiate LedgerService
+// - Inject into reconciliation service
+// - Iterate tenants
+// - Iterate cases per tenant
+// - Reconcile case-by-case
+// - Aggregate metrics
 
-Implementation guidance
------------------------
-Invoke:
-- At server startup
-- Via cron (e.g. every 10–15 minutes)
-- Before financial audit export
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// Run via:
+// - Scheduled cron (10–15 min interval)
+// - Startup validation
+// - Governance sweep before audits
+//
+// Never run per-request.
+// Never block operational flow.
 
-Do NOT run on every request.
-Do NOT block user operations.
-Treat as background governance enforcement.
-
-Scalability insight
--------------------
-Replay is deterministic.
-Can later optimize with:
-- Snapshotting
-- Incremental reconciliation
-- Sharded tenant sweeps
-
-Would I ship this? Yes.
-Does it protect lifecycle integrity? Yes.
-Is it operationally safe? Yes.
-Who owns this tomorrow? Governance boundary.
-*/
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// This implementation is O(total cases).
+// Can optimize later via:
+// - Ledger checkpoint snapshots
+// - Incremental reconciliation (last ledger ts)
+// - Tenant sharding
+//
+// Deterministic replay makes horizontal scaling safe.

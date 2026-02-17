@@ -3,7 +3,7 @@ import { VerificationStatus } from "@prisma/client";
 export type ConsensusResult =
   | { phase: "PENDING" }
   | { phase: "IN_REVIEW"; approvals: number; rejections: number }
-  | { phase: "ACCEPTED" }
+  | { phase: "APPROVED" }
   | { phase: "REJECTED" }
   | { phase: "DISPUTED" };
 
@@ -12,7 +12,7 @@ export function evaluateVerificationConsensus(params: {
   votes: { status: VerificationStatus }[];
 }): ConsensusResult {
   const approvals = params.votes.filter(
-    (v) => v.status === VerificationStatus.ACCEPTED,
+    (v) => v.status === VerificationStatus.APPROVED,
   ).length;
 
   const rejections = params.votes.filter(
@@ -21,7 +21,7 @@ export function evaluateVerificationConsensus(params: {
 
   // Quorum reached — approval wins
   if (approvals >= params.requiredVerifiers) {
-    return { phase: "ACCEPTED" };
+    return { phase: "APPROVED" };
   }
 
   // Quorum reached — rejection wins

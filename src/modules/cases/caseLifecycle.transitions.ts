@@ -6,6 +6,9 @@ import { CaseLifecycle } from "@prisma/client";
 /**
  * Closed Transition Law:
  * If it is not declared here, it does not exist.
+ *
+ * Terminal states must explicitly map to [].
+ * This ensures exhaustiveness and prevents silent drift.
  */
 export const CASE_LIFECYCLE_TRANSITIONS: Record<
   CaseLifecycle,
@@ -19,9 +22,22 @@ export const CASE_LIFECYCLE_TRANSITIONS: Record<
 
   [CaseLifecycle.EXECUTING]: [CaseLifecycle.VERIFIED, CaseLifecycle.FLAGGED],
 
-  [CaseLifecycle.VERIFIED]: [],
+  [CaseLifecycle.VERIFIED]: [CaseLifecycle.COMPLETED],
 
   [CaseLifecycle.FLAGGED]: [CaseLifecycle.HUMAN_REVIEW],
 
-  [CaseLifecycle.HUMAN_REVIEW]: [],
+  [CaseLifecycle.HUMAN_REVIEW]: [
+    CaseLifecycle.REJECTED,
+    CaseLifecycle.VERIFIED,
+  ],
+
+  // Terminal states — no forward transitions
+
+  [CaseLifecycle.COMPLETED]: [],
+
+  [CaseLifecycle.REJECTED]: [],
+
+  [CaseLifecycle.ARCHIVED]: [],
+
+  [CaseLifecycle.CANCELLED]: [],
 };

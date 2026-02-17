@@ -1,3 +1,6 @@
+// src/modules/decision/decision.query.controller.ts
+// Decision query controllers — explainability-safe and tenant-bound.
+
 import { Request, Response } from "express";
 import { DecisionType } from "@prisma/client";
 import { DecisionQueryService } from "./decision.query.service";
@@ -12,10 +15,10 @@ import {
 
 const decisionQueryService = new DecisionQueryService();
 
-/**
- * Runtime-safe DecisionType parsing.
- * Guards against enum drift and malformed routes.
- */
+////////////////////////////////////////////////////////////////
+// Helpers
+////////////////////////////////////////////////////////////////
+
 function parseDecisionType(value: string): DecisionType {
   if (!Object.values(DecisionType).includes(value as DecisionType)) {
     throw new Error(`Invalid decision type: ${value}`);
@@ -23,10 +26,6 @@ function parseDecisionType(value: string): DecisionType {
   return value as DecisionType;
 }
 
-/**
- * Helper to read tenantId injected by requireTenantId middleware.
- * Fail-fast to avoid cross-tenant leakage.
- */
 function getTenantId(req: Request): string {
   const tenantId = (req as any).tenantId;
   if (!tenantId) {
@@ -35,20 +34,30 @@ function getTenantId(req: Request): string {
   return tenantId;
 }
 
-/**
- * GET /api/cases/:caseId/decisions/:decisionType
- * What decision currently governs this case?
- */
+function getParam(param: string | string[] | undefined, label: string): string {
+  if (!param) throw new Error(`Missing route param: ${label}`);
+  if (Array.isArray(param)) {
+    if (param.length === 0) throw new Error(`Invalid route param: ${label}`);
+    return param[0];
+  }
+  return param;
+}
+
+////////////////////////////////////////////////////////////////
+// Controllers
+////////////////////////////////////////////////////////////////
+
 export const getAuthoritativeDecision = async (req: Request, res: Response) => {
   const tenantId = getTenantId(req);
   const role = resolveExplainabilityRole(req);
 
-  const { caseId, decisionType } = req.params;
+  const caseId = getParam(req.params.caseId, "caseId");
+  const decisionTypeRaw = getParam(req.params.decisionType, "decisionType");
 
   const decision = await decisionQueryService.getAuthoritativeDecision({
     tenantId,
     caseId,
-    decisionType: parseDecisionType(decisionType),
+    decisionType: parseDecisionType(decisionTypeRaw),
   });
 
   return res.json({
@@ -56,20 +65,17 @@ export const getAuthoritativeDecision = async (req: Request, res: Response) => {
   });
 };
 
-/**
- * GET /api/cases/:caseId/decisions/:decisionType/history
- * How did we get here?
- */
 export const getDecisionHistory = async (req: Request, res: Response) => {
   const tenantId = getTenantId(req);
   const role = resolveExplainabilityRole(req);
 
-  const { caseId, decisionType } = req.params;
+  const caseId = getParam(req.params.caseId, "caseId");
+  const decisionTypeRaw = getParam(req.params.decisionType, "decisionType");
 
   const history = await decisionQueryService.getDecisionChain({
     tenantId,
     caseId,
-    decisionType: parseDecisionType(decisionType),
+    decisionType: parseDecisionType(decisionTypeRaw),
   });
 
   return res.json({
@@ -77,19 +83,11 @@ export const getDecisionHistory = async (req: Request, res: Response) => {
   });
 };
 
-/**
- * GET /api/cases/:caseId/lifecycle/explain
- * Why is the case in this lifecycle?
- *
- * NOTE:
- * explanation.decisions MUST be full Decision records.
- * Do not return derived or partial projections here.
- */
 export const explainLifecycle = async (req: Request, res: Response) => {
   const tenantId = getTenantId(req);
   const role = resolveExplainabilityRole(req);
 
-  const { caseId } = req.params;
+  const caseId = getParam(req.params.caseId, "caseId");
 
   const explanation = await decisionQueryService.explainLifecycle({
     tenantId,
@@ -97,20 +95,20 @@ export const explainLifecycle = async (req: Request, res: Response) => {
   });
 
   return res.json({
-    ...explanation,
-    decisions: explanation.decisions.map((d) => redactDecision(d, role)),
+    lifecycle: explanation.lifecycle,
+    ledgerDerivedLifecycle: explanation.ledgerDerivedLifecycle,
+    drift: explanation.drift,
+    causedByDecision: explanation.causedByDecision
+      ? redactDecision(explanation.causedByDecision, role)
+      : null,
   });
 };
 
-/**
- * GET /api/cases/:caseId/ledger
- * What immutable facts were recorded?
- */
 export const getLedgerTrail = async (req: Request, res: Response) => {
   const tenantId = getTenantId(req);
   const role = resolveExplainabilityRole(req);
 
-  const { caseId } = req.params;
+  const caseId = getParam(req.params.caseId, "caseId");
 
   const ledger = await decisionQueryService.getLedgerTrail({
     tenantId,
@@ -122,21 +120,12 @@ export const getLedgerTrail = async (req: Request, res: Response) => {
   });
 };
 
-/**
- * GET /api/cases/:caseId/routing/counterfactual
- * What alternatives were considered?
- *
- * HARD GATE:
- * If role is not allowed, do not return structure,
- * metadata, or hints.
- */
 export const getRoutingCounterfactual = async (req: Request, res: Response) => {
   const tenantId = getTenantId(req);
   const role = resolveExplainabilityRole(req);
 
-  const { caseId } = req.params;
+  const caseId = getParam(req.params.caseId, "caseId");
 
-  // ✅ Counterfactual handling — correct and intentional
   if (!allowCounterfactuals(role)) {
     return res.json({ counterfactual: null });
   }

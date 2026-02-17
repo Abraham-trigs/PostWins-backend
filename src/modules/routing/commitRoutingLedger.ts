@@ -45,7 +45,7 @@ export async function commitRoutingLedger(
   const { tenantId, caseId, routingResult, intentCode } =
     CommitRoutingSchema.parse(input);
 
-  await ledger.commit(
+  await ledger.appendEntry(
     {
       tenantId,
       caseId,

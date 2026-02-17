@@ -1,4 +1,4 @@
-// apps/backend/src/modules/intake/intake.controller.ts
+// apps/backend/src/modules/intake/intake.controller.ts d
 import crypto from "crypto";
 import { Request, Response } from "express";
 
@@ -10,11 +10,13 @@ import { IntakeService } from "./intake.service";
 import { VerificationService } from "../verification/verification.service";
 import { IntegrityService } from "./intergrity/integrity.service";
 import { JourneyService } from "../routing/journey/journey.service";
-import { LedgerService } from "./ledger.service";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 import { TaskProgressionService } from "../routing/task-progression.service";
 import { ToneAdapterService } from "./tone/tone-adapter.service";
 import { LocalizationService } from "./localization/localization.service";
 import { SDGMapperService } from "./sdg/sdg-mapper.service";
+import { TaskService } from "../routing/structuring/task.service";
+import { TaskId } from "@prisma/client";
 
 // Idempotency helper
 import { commitIdempotencyResponse } from "../../middleware/idempotency.middleware";
@@ -24,7 +26,7 @@ import { prisma } from "../../lib/prisma";
 import { assertUuid, UUID_RE } from "../../utils/uuid";
 
 // Domain authority
-import { CaseLifecycle } from "../../domain/case/CaseLifecycle";
+import { CaseLifecycle } from "../cases/CaseLifecycle";
 
 // -----------------------------------------------------------------------------
 // Infrastructure
@@ -37,7 +39,7 @@ const toneAdapter = new ToneAdapterService();
 const localizationService = new LocalizationService();
 const sdgMapper = new SDGMapperService();
 
-const intakeService = new IntakeService(integrityService);
+const intakeService = new IntakeService(integrityService, new TaskService());
 const verificationService = new VerificationService(ledgerService);
 
 // -----------------------------------------------------------------------------
@@ -169,7 +171,7 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
 
         // ✅ Authoritative lifecycle (domain-owned)
         lifecycle: CaseLifecycle.INTAKE,
-        currentTask: intakeResult.taskId,
+        currentTask: intakeResult.taskId as TaskId,
 
         summary: String(narrative).trim().slice(0, 240),
         sdgGoal:

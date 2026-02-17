@@ -1,4 +1,11 @@
+// src/modules/explainability/redactDisbursementExplanation.ts
+// Domain-level disbursement explainability + role-based redaction.
+
 import { ExplainabilityRole } from "./explainability.types";
+
+////////////////////////////////////////////////////////////////
+// Domain DTO (NOT transport)
+////////////////////////////////////////////////////////////////
 
 export type DisbursementExplanation = {
   id: string;
@@ -23,6 +30,7 @@ export type DisbursementExplanation = {
     proof: string;
   };
 
+  // Domain-level time (Date)
   timeline: {
     authorizedAt: Date;
     executedAt: Date | null;
@@ -40,6 +48,10 @@ export type DisbursementExplanation = {
   };
 };
 
+////////////////////////////////////////////////////////////////
+// Redaction
+////////////////////////////////////////////////////////////////
+
 export function redactDisbursementExplanation(
   explanation: DisbursementExplanation,
   role: ExplainabilityRole,
@@ -47,7 +59,6 @@ export function redactDisbursementExplanation(
   switch (role) {
     case "INTERNAL":
     case "AUDITOR":
-      // Full visibility
       return explanation;
 
     case "PARTNER":
@@ -75,3 +86,33 @@ export function redactDisbursementExplanation(
       };
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// This file is DOMAIN-level explainability.
+// Dates remain Date objects here.
+// Serialization (Date → ISO string) belongs in the mapper layer.
+// Redaction must not perform transport transformations.
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// - Strong domain DTO
+// - Role-based structural redaction
+// - No mutation
+// - No serialization logic
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// Always call this BEFORE mapping to transport response.
+// Do NOT convert Date → string here.
+// Keep redaction pure and deterministic.
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// If additional visibility tiers are introduced,
+// extend switch without leaking transport concerns.
+// Domain boundary remains stable.

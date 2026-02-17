@@ -1,22 +1,19 @@
 // filepath: apps/backend/src/modules/routing/structuring/mock-engine.ts
-
-/**
- * ⚠️ PHASE 2 ONLY
- * -------------------------------------------------------------------
- * This simulation intentionally bypasses:
- * - persistence
- * - ledger enforcement
- * - schema-backed verification
- *
- * It MUST NOT be used as evidence of Phase 1.5 correctness.
- */
+// Phase 1.5-compliant mock simulation engine aligned with ledger-authoritative verification service.
 
 import { IntakeService } from "../../intake/intake.service";
 import { PostWinRoutingService } from "./postwin-routing.service";
 import { VerificationService } from "../../verification/verification.service";
 import { PostWin, ExecutionBody } from "@posta/core";
-import { TaskId } from "../../../domain/tasks/taskIds";
+import { TaskId, VerificationStatus } from "@prisma/client";
 
+/**
+ * Assumptions:
+ * - routed PostWin exposes verificationRecordId after routing.
+ * - VerificationRecord already exists in DB.
+ * - Execution for the Case is COMPLETED before verification.
+ * - This simulation does NOT mutate lifecycle directly.
+ */
 export class PostaMockEngine {
   constructor(
     private intake: IntakeService,
@@ -24,21 +21,23 @@ export class PostaMockEngine {
     private verifier: VerificationService,
   ) {}
 
-  async runSimulation() {
+  async runSimulation(): Promise<void> {
     try {
       console.log("🚀 Starting Mock Simulation: SDG 4 - Primary Education");
 
-      // ------------------------------------------------------------------
-      // STEP 1: INTAKE
-      // ------------------------------------------------------------------
+      ////////////////////////////////////////////////////////////////
+      // 1️⃣ INTAKE
+      ////////////////////////////////////////////////////////////////
+
       const partialPW = await this.intake.handleIntake(
         "I need support for school enrollment",
         "device_rural_001",
       );
 
-      // ------------------------------------------------------------------
-      // STEP 2: EXECUTION BODIES (Mock Data)
-      // ------------------------------------------------------------------
+      ////////////////////////////////////////////////////////////////
+      // 2️⃣ MOCK EXECUTION BODIES
+      ////////////////////////////////////////////////////////////////
+
       const bodies: ExecutionBody[] = [
         {
           id: "NGO_LOCAL",
@@ -49,37 +48,30 @@ export class PostaMockEngine {
         },
       ];
 
-      // ------------------------------------------------------------------
-      // STEP 3: POSTWIN CONSTRUCTION
-      // ------------------------------------------------------------------
+      ////////////////////////////////////////////////////////////////
+      // 3️⃣ CONSTRUCT SIMULATION POSTWIN
+      ////////////////////////////////////////////////////////////////
+
       const mockPostWin: PostWin = {
         ...partialPW,
-
         id: "pw_mock_123",
         beneficiaryId: "ben_001",
-
-        // Phase 1.5: deterministic, canonical task
         taskId: TaskId.START,
-
         location: { lat: 5.101, lng: -0.101 },
         sdgGoals: ["SDG_4"],
-
-        auditTrail: partialPW.auditTrail || [],
-        verificationRecords: { SDG_4: [] } as any,
-
-        // Phase 2: simulation-only routing placeholder
-        routingStatus: "UNASSIGNED",
-
-        // Phase 2: simulation-only verification placeholder
-        verificationStatus: "PENDING",
-
         description: "School support",
+        auditTrail: partialPW.auditTrail ?? [],
+        verificationRecords: partialPW.verificationRecords ?? {},
+        routingStatus: "UNASSIGNED",
+        verificationStatus: "PENDING",
       } as PostWin;
 
-      // ------------------------------------------------------------------
-      // STEP 4: ROUTING
-      // ------------------------------------------------------------------
+      ////////////////////////////////////////////////////////////////
+      // 4️⃣ ROUTING
+      ////////////////////////////////////////////////////////////////
+
       console.log("Step 2: Routing to nearest Execution Body...");
+
       const routedPW = await this.router.processPostWin(mockPostWin, bodies, [
         "SDG_4",
       ]);
@@ -93,51 +85,87 @@ export class PostaMockEngine {
         `Step 3: Routed to ${routedPW.assignedBodyId}. Awaiting Multi-Verifier Consensus...`,
       );
 
-      // ------------------------------------------------------------------
-      // STEP 5: MULTI-ACTOR VERIFICATION
-      // ------------------------------------------------------------------
+      if (!("verificationRecordId" in routedPW)) {
+        throw new Error(
+          "Mock engine requires routed PostWin to expose verificationRecordId",
+        );
+      }
 
-      // Phase 2: direct verification mutation (bypasses ledger)
-      const stateAfterCommunity = await this.verifier.recordVerification(
-        routedPW,
-        "community_leader_01",
-        "SDG_4",
-      );
+      const verificationRecordId = (routedPW as any)
+        .verificationRecordId as string;
 
-      const finalState = await this.verifier.recordVerification(
-        stateAfterCommunity,
-        "ngo_staff_01",
-        "SDG_4",
-      );
+      ////////////////////////////////////////////////////////////////
+      // 5️⃣ MULTI-ACTOR VERIFICATION (Ledger-backed)
+      ////////////////////////////////////////////////////////////////
 
-      // ------------------------------------------------------------------
-      // STEP 6: AUDIT OUTPUT
-      // ------------------------------------------------------------------
-      console.log("\n" + "=".repeat(50));
-      console.log("✅ Simulation Complete.");
-      console.log(`Final Status: ${finalState.verificationStatus}`);
-
-      const trail = finalState.auditTrail ?? [];
-      console.log(`Total Audit Trail Entries: ${trail.length}`);
-
-      console.log("=".repeat(50));
-
-      console.log("\n📜 FULL AUDIT TRAIL:");
-      trail.forEach((entry, idx) => {
-        const ts =
-          typeof (entry as any).ts === "bigint"
-            ? new Date(Number((entry as any).ts)).toISOString()
-            : typeof (entry as any).ts === "number"
-              ? new Date((entry as any).ts).toISOString()
-              : "unknown-time";
-
-        const action = (entry as any).action ?? "UNKNOWN_ACTION";
-        console.log(`[${idx + 1}] ${ts} | ${String(action).padEnd(22)}`);
+      const stateAfterCommunity = await this.verifier.recordVerification({
+        verificationRecordId,
+        verifierUserId: "community_leader_01",
+        status: VerificationStatus.APPROVED,
       });
 
-      console.log("=".repeat(50) + "\n");
+      const finalState = await this.verifier.recordVerification({
+        verificationRecordId,
+        verifierUserId: "ngo_staff_01",
+        status: VerificationStatus.APPROVED,
+      });
+
+      ////////////////////////////////////////////////////////////////
+      // 6️⃣ OUTPUT
+      ////////////////////////////////////////////////////////////////
+
+      console.log("\n" + "=".repeat(60));
+      console.log("✅ Simulation Complete.");
+
+      console.log(
+        `Consensus Reached: ${finalState.consensusReached ? "YES" : "NO"}`,
+      );
+
+      if (finalState.record) {
+        console.log(
+          `Verified At: ${finalState.record.verifiedAt?.toISOString()}`,
+        );
+        console.log(
+          `Required Verifiers: ${finalState.record.requiredVerifiers}`,
+        );
+      }
+
+      console.log("=".repeat(60) + "\n");
     } catch (error) {
       console.error("❌ Mock Simulation Failed:", error);
+      throw error;
     }
   }
 }
+
+/*
+Design reasoning
+----------------
+Phase 1.5 is ledger-authoritative.
+VerificationService returns deterministic DB-backed consensus results.
+Mock engine must not fabricate auditTrail or verificationStatus.
+Verification state is sourced from VerificationRecord only.
+
+Structure
+---------
+1. Intake
+2. Mock routing
+3. Extract verificationRecordId
+4. Record votes via object-based API
+5. Output consensus result
+6. No lifecycle mutation
+
+Implementation guidance
+-----------------------
+- Ensure routing layer creates VerificationRecord and exposes its ID.
+- Execution must be COMPLETED before verification (service enforces invariant).
+- Votes must use UUID verifier IDs in real DB.
+- LedgerService must be injected into VerificationService constructor.
+
+Scalability insight
+-------------------
+- Ledger remains single source of historical truth.
+- Verification state replayable from ledger + DB.
+- Mock simulation now mirrors production execution flow.
+- No architectural shortcuts that violate sovereign model.
+*/

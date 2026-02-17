@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Router as ExpressRouter } from "express";
 import {
   getAuthoritativeDecision,
   getDecisionHistory,
@@ -9,8 +10,7 @@ import {
 import { requireTenantId } from "../../middleware/requireTenantId";
 import { requireInternalAccess } from "../../middleware/requireInternalAccess";
 
-const router = Router();
-
+const router: ExpressRouter = Router();
 // 🔒 Phase 5.1: tenant-scoped + internal-only audit access
 router.use(requireTenantId);
 router.use(requireInternalAccess);

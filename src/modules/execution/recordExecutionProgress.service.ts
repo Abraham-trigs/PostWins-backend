@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { InvariantViolationError } from "@/modules/cases/case.errors";
+import { Prisma } from "@prisma/client";
 import { ExecutionProgressLabel } from "./executionProgress.labels";
 
 type RecordExecutionProgressInput = {
@@ -35,7 +36,7 @@ export async function recordExecutionProgress(
       data: {
         executionId: execution.id,
         label,
-        detail,
+        detail: detail as Prisma.InputJsonValue,
       },
     });
 

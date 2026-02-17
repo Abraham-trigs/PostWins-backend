@@ -1,12 +1,16 @@
+// apps/backend/src/modules/disbursement/_internal/authorizeDisbursement.service.ts
+// Authorizes a disbursement after strict lifecycle validation.
+// Does NOT execute funds transfer. Creates AUTHORIZED record + ledger event.
+
 import { prisma } from "@/lib/prisma";
 import {
   ActorKind,
   DisbursementStatus,
   DisbursementType,
+  LedgerEventType,
 } from "@prisma/client";
 import { IllegalLifecycleInvariantViolation } from "@/modules/cases/case.errors";
-import { commitLedgerEvent } from "@/modules/routing/commitRoutingLedger";
-import { LedgerEventType } from "@prisma/client";
+import { commitLedgerEvent } from "@/modules/intake/ledger/commitLedgerEvent";
 import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
 /* ---------------------------------------------
@@ -150,24 +154,27 @@ export async function authorizeDisbursement(
     /* -------------------------------------------------
        5️⃣ Ledger causality — authorization
        ------------------------------------------------- */
-    await commitLedgerEvent(tx, {
-      tenantId: params.tenantId,
-      caseId: params.caseId,
-      eventType: LedgerEventType.DISBURSEMENT_AUTHORIZED,
-      actor: params.actor,
-      payload: buildAuthorityEnvelopeV1({
-        domain: "DISBURSEMENT",
-        event: "AUTHORIZED",
-        data: {
-          disbursementId: disbursement.id,
-          amount: params.amount,
-          currency: params.currency,
-          destination: params.payee,
-          verificationRecordId: c.verificationRecords[0].id,
-          executionId: c.execution.id,
-        },
-      }),
-    });
+    await commitLedgerEvent(
+      {
+        tenantId: params.tenantId,
+        caseId: params.caseId,
+        eventType: LedgerEventType.DISBURSEMENT_AUTHORIZED,
+        actor: params.actor,
+        payload: buildAuthorityEnvelopeV1({
+          domain: "DISBURSEMENT",
+          event: "AUTHORIZED",
+          data: {
+            disbursementId: disbursement.id,
+            amount: params.amount,
+            currency: params.currency,
+            destination: params.payee,
+            verificationRecordId: c.verificationRecords[0].id,
+            executionId: c.execution.id,
+          },
+        }),
+      },
+      tx,
+    );
 
     return {
       kind: "AUTHORIZED",
@@ -175,3 +182,39 @@ export async function authorizeDisbursement(
     };
   });
 }
+
+/* ================================================================
+   Design reasoning
+   ================================================================ */
+// Strict lifecycle enforcement prevents premature disbursement.
+// Authorization and execution are deliberately separated.
+// Ledger event is causally tied inside the same transaction.
+
+///////////////////////////////////////////////////////////////////
+// Structure
+///////////////////////////////////////////////////////////////////
+// - Transaction boundary
+// - Idempotency guard
+// - Hard lifecycle invariants
+// - Write AUTHORIZED state
+// - Commit ledger event
+
+///////////////////////////////////////////////////////////////////
+// Implementation guidance
+///////////////////////////////////////////////////////////////////
+// - Do NOT collapse authorization + execution.
+// - Never bypass lifecycle checks.
+// - Ledger must remain in same transaction.
+// - Do not trust client lifecycle assumptions.
+
+///////////////////////////////////////////////////////////////////
+// Scalability insight
+///////////////////////////////////////////////////////////////////
+// Separation of authorization from execution allows:
+// - Async fund settlement
+// - Retry-safe execution engines
+// - External payment provider orchestration
+// - Clear audit timeline
+//
+// This protects financial correctness under scale.
+///////////////////////////////////////////////////////////////////

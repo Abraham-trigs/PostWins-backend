@@ -13,7 +13,7 @@ export class AutoRouteOrchestrator {
   async evaluateAndApply(params: {
     tenantId: string;
     caseId: string;
-    apply: boolean; // retained for interface compatibility; no longer authoritative
+    apply: boolean;
   }) {
     const { tenantId, caseId } = params;
 
@@ -35,7 +35,7 @@ export class AutoRouteOrchestrator {
       }),
     ]);
 
-    if (!caseRow) throw new CaseNotFoundError();
+    if (!caseRow) throw new CaseNotFoundError(caseId);
 
     const result = autoRouteBasic({
       lifecycle: caseRow.lifecycle,
@@ -51,8 +51,18 @@ export class AutoRouteOrchestrator {
       result,
     });
 
-    // 🔐 Phase 6.4 — Human approval gate
+    // Only PROPOSE_DECISION carries actionable authority
     if (result.kind === "PROPOSE_DECISION") {
+      const executionBody = await prisma.executionBody.findFirst({
+        where: { tenantId, isFallback: false },
+        select: { id: true },
+      });
+
+      if (!executionBody) {
+        // Defensive guard — policy should prevent this
+        throw new Error("Execution body not found");
+      }
+
       await this.approvalGate.propose({
         tenantId,
         caseId,
@@ -60,8 +70,7 @@ export class AutoRouteOrchestrator {
         effect: {
           kind: "ROUTE_CASE",
           payload: {
-            // policy decides WHAT, human decides WHETHER
-            executionBodyId: result.executionBodyId,
+            executionBodyId: executionBody.id,
           },
         },
         reason: result.reason,

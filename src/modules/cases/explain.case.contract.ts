@@ -4,6 +4,7 @@ import {
   CaseStatus,
   DecisionType,
   LedgerEventType,
+  DisbursementStatus,
 } from "@prisma/client";
 
 export type ExplainCaseRequest = {
@@ -61,6 +62,46 @@ export type CounterfactualView = {
   constraintsApplied: string[];
 };
 
+export type DisbursementExplanation = {
+  id: string;
+  caseId: string;
+
+  status: string;
+  type: string;
+
+  summary: string;
+
+  amount: {
+    value: string;
+    currency: string;
+  };
+
+  payee?: {
+    kind: string;
+    id: string;
+  };
+
+  authority?: {
+    proof: string;
+  };
+
+  timeline: {
+    authorizedAt: string;
+    executedAt: string | null;
+    failedAt: string | null;
+  };
+
+  failure?: {
+    reason: string;
+  } | null;
+
+  explainability: {
+    whyExecuted: string | null;
+    whyNotExecuted: string[];
+    irreversibility: string | null;
+  };
+};
+
 export type ExplainCaseResponse = {
   case: {
     id: string;
@@ -86,4 +127,5 @@ export type ExplainCaseResponse = {
   ledger: LedgerCommitView[];
   policies?: PolicyEvaluationView[];
   counterfactuals?: CounterfactualView[];
+  disbursement?: DisbursementExplanation;
 };

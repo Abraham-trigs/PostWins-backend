@@ -1,5 +1,5 @@
 import { PostWin, LedgerCommitment } from "@posta/core";
-import { LedgerService } from "./ledger.service";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 
 export class SyncService {
   constructor(private ledgerService: LedgerService) {}
@@ -14,7 +14,7 @@ export class SyncService {
 
     for (const pw of incomingPostWins) {
       // Create an immutable record of the sync event
-      const commitment = await this.ledgerService.commit({
+      const commitment = await this.ledgerService.appendEntry({
         ts: Date.now(),
         postWinId: pw.id,
         action: "INTAKE",

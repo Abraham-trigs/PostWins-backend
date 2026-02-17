@@ -25,8 +25,7 @@ import {
   FOLLOWUP_SCHEDULE_DAYS,
   FOLLOWUP_WINDOW_DAYS,
 } from "../../utils/postwins.paths";
-import { LedgerService } from "../intake/ledger.service";
-
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 /* -------------------------------------------------------------------------- */
 /* Timeline Types (Projection-Only)                                            */
 /* -------------------------------------------------------------------------- */

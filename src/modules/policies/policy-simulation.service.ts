@@ -34,7 +34,7 @@ export class PolicySimulationService {
     const taskResult = autoTaskAdvance({
       lifecycle: caseRow.lifecycle,
       currentTask: caseRow.currentTask,
-      hasRoutingDecision: !!hypotheticalFacts.routingDecision,
+      hasRoutingDecision: hypotheticalFacts.routingOutcome === "MATCHED",
       hasDeliveryRecorded: !!hypotheticalFacts.deliveryRecorded,
     });
 

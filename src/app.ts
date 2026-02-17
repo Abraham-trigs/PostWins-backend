@@ -37,8 +37,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
   const start = Date.now();
 
-  // IMPORTANT: synchronous context boundary
-  withRequestContext(() => {
+  // IMPORTANT: async context boundary (must return Promise)
+  void withRequestContext(async () => {
     log("INFO", "HTTP_REQUEST_STARTED", {
       method: req.method,
       path: req.originalUrl,
@@ -117,10 +117,12 @@ app.use((_req: Request, res: Response) => {
 // Global error handler (must be last)
 ////////////////////////////////////////////////////////////////
 
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const error = err as Error;
+
   log("ERROR", "HTTP_REQUEST_FAILED", {
-    message: err?.message,
-    stack: process.env.NODE_ENV === "production" ? undefined : err?.stack,
+    message: error?.message,
+    stack: process.env.NODE_ENV === "production" ? undefined : error?.stack,
   });
 
   res.status(500).json({

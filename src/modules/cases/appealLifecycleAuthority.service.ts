@@ -88,7 +88,7 @@ export class AppealLifecycleAuthorityService {
       // 2️⃣ Commit APPEAL_OPENED to ledger
       ////////////////////////////////////////////////////////////
 
-      await this.ledger.commit(
+      await this.ledger.appendEntry(
         {
           tenantId: data.tenantId,
           caseId: data.caseId,
@@ -159,7 +159,7 @@ export class AppealLifecycleAuthorityService {
       // 2️⃣ Commit APPEAL_RESOLVED (superseding prior decision)
       ////////////////////////////////////////////////////////////
 
-      await this.ledger.commit(
+      await this.ledger.appendEntry(
         {
           tenantId: data.tenantId,
           caseId: data.caseId,

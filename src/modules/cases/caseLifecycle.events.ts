@@ -31,5 +31,15 @@ export const CASE_LIFECYCLE_LEDGER_EVENTS: Record<
 
   [CaseLifecycle.FLAGGED]: LedgerEventType.CASE_FLAGGED,
 
-  [CaseLifecycle.HUMAN_REVIEW]: LedgerEventType.CASE_FLAGGED,
+  [CaseLifecycle.HUMAN_REVIEW]: LedgerEventType.CASE_ESCALATED,
+
+  // Newly added lifecycle states — must map explicitly
+
+  [CaseLifecycle.COMPLETED]: LedgerEventType.EXECUTION_COMPLETED,
+
+  [CaseLifecycle.REJECTED]: LedgerEventType.CASE_REJECTED,
+
+  [CaseLifecycle.ARCHIVED]: LedgerEventType.CASE_ARCHIVED,
+
+  [CaseLifecycle.CANCELLED]: LedgerEventType.CASE_CANCELLED,
 };

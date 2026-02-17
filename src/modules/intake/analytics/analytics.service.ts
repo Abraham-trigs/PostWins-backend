@@ -1,5 +1,6 @@
 // apps/backend/src/modules/routing/analytics.service.ts
-import { LedgerService } from "../intake/ledger.service";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { LedgerEventType } from "@prisma/client";
 
 export class AnalyticsService {
   constructor(private ledgerService: LedgerService) {}
@@ -15,10 +16,13 @@ export class AnalyticsService {
     const trail = await this.ledgerService.getAuditTrail(postWinId);
 
     // factual intake record (creation / receipt)
-    const intake = trail.find((t) => t.action === "INTAKE_RECEIVED");
-
+    const intake = trail.find(
+      (t) => t.eventType === LedgerEventType.CASE_CREATED,
+    );
     // factual execution completion record
-    const execution = trail.find((t) => t.action === "EXECUTION_COMPLETED");
+    const execution = trail.find(
+      (t) => t.eventType === LedgerEventType.EXECUTION_COMPLETED,
+    );
 
     const toMs = (v: number | bigint | undefined) => {
       if (typeof v === "bigint") return Number(v);

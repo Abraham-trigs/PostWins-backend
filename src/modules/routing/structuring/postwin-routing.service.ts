@@ -39,7 +39,7 @@ import {
 } from "@posta/core";
 import { TaskService } from "./task.service";
 import { JourneyService } from "../journey/journey.service";
-import { LedgerService } from "../../intake/ledger.service";
+import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 
 interface IntegrityFlag {
   type: string;
@@ -239,7 +239,7 @@ export class PostWinRoutingService extends EventEmitter {
     postWin.routingStatus = "FALLBACK";
     postWin.notes = "ESCALATED: Requires human review due to integrity flags.";
 
-    await this.ledgerService.commit({
+    await this.ledgerService.appendEntry({
       ts: Date.now(),
       postWinId: postWin.id,
       action: "FLAGGED",
