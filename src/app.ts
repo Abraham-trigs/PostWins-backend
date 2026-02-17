@@ -13,6 +13,7 @@ import timelineRoutes from "./modules/timeline/timeline.route";
 import verificationRouter from "./modules/verification/verification.routes";
 import { casesRouter } from "./modules/cases/cases.routes";
 import decisionQueryRoutes from "./modules/decision/decision.query.routes";
+import healthRoutes from "./modules/health/health.controller";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
@@ -37,7 +38,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
   const start = Date.now();
 
-  // IMPORTANT: async context boundary (must return Promise)
   void withRequestContext(async () => {
     log("INFO", "HTTP_REQUEST_STARTED", {
       method: req.method,
@@ -73,25 +73,16 @@ app.get("/", (_req: Request, res: Response) => {
   res.status(200).json({
     ok: true,
     service: "posta-backend",
-    health: "/health",
+    health: "/api/health",
     routes: [
       "/api/intake",
       "/api/cases",
       "/api/verification",
       "/api/timeline",
       "/api/cases/:id/decisions",
+      "/api/health",
+      "/api/health/ledger",
     ],
-  });
-});
-
-////////////////////////////////////////////////////////////////
-// Health check
-////////////////////////////////////////////////////////////////
-
-app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: "Posta Online",
-    mode: process.env.NODE_ENV ?? "unknown",
   });
 });
 
@@ -99,6 +90,7 @@ app.get("/health", (_req: Request, res: Response) => {
 // Domain routes
 ////////////////////////////////////////////////////////////////
 
+app.use("/api", healthRoutes);
 app.use("/api/intake", intakeRoutes);
 app.use("/api/cases", casesRouter);
 app.use("/api/timeline", timelineRoutes);
