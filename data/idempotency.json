@@ -80,6 +80,19 @@
         }
       },
       "recordedAt": "2026-02-07T02:13:08.832Z"
+    },
+    "bootstrap-001": {
+      "requestHash": "34a31a52ebdf2349ff2295d0f8f9c56b0f2aff77e09033a1521bf6f8d6dbf7c5",
+      "response": {
+        "requestHash": "34a31a52ebdf2349ff2295d0f8f9c56b0f2aff77e09033a1521bf6f8d6dbf7c5",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "projectId": "cd6adae2-ef0a-4ce2-b669-c3498a3c3150",
+          "postWinId": "ce0d2a68-022e-4f6e-ab8f-7053ed820b8e"
+        }
+      },
+      "recordedAt": "2026-02-17T12:35:37.342Z"
     }
   }
 }

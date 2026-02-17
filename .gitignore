@@ -12,6 +12,20 @@ data/keys/private.pem
 .env
 .env.local
 
+# Runtime state files
+data/idempotency.json
+device_registry.json
+
+# Accidental local binary or script
+node
+
+# Local build output
+dist/
+
+# Prisma local artifacts (if not already ignored)
+node_modules/
+
+
 # Secrets
 .env
 .env.*

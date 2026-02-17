@@ -161,6 +161,7 @@ export class LedgerService {
   /**
    * Lightweight operational health status.
    * Does NOT expose authority material.
+   *
    */
   public async getStatus() {
     const latest = await prisma.ledgerCommit.findFirst({

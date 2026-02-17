@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  PolicyEvaluation     
+//  ExecutionMilestone        
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -299,10 +299,11 @@ model User {
   routingDecisionsDecided RoutingDecision[] @relation("RoutingDecisionDecidedBy")
 
   // New back-relations
-  startedExecutions Execution[]       @relation("ExecutionStarter")
-  resolvedApprovals ApprovalRequest[]
-  decisions         Decision[]
-  disbursements     Disbursement[]
+  startedExecutions   Execution[]          @relation("ExecutionStarter")
+  resolvedApprovals   ApprovalRequest[]
+  decisions           Decision[]
+  disbursements       Disbursement[]
+  completedMilestones ExecutionMilestone[] @relation("MilestoneCompletedBy")
 
   @@unique([tenantId, email])
   @@index([tenantId, email])
@@ -320,6 +321,31 @@ model Session {
 
   @@index([userId, createdAt])
   @@index([expiresAt])
+}
+
+model ExecutionMilestone {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  executionId String @db.Uuid
+
+  label       String
+  description String?
+
+  /// Optional weight for weighted progress calculation
+  weight Int @default(1)
+
+  /// Completion tracking
+  completedAt       DateTime?
+  completedByUserId String?   @db.Uuid
+
+  createdAt DateTime @default(now())
+
+  execution   Execution @relation("ExecutionMilestones", fields: [executionId], references: [id], onDelete: Cascade)
+  completedBy User?     @relation("MilestoneCompletedBy", fields: [completedByUserId], references: [id], onDelete: SetNull)
+
+  /// Prevent duplicate milestone labels per execution
+  @@unique([executionId, label])
+  @@index([executionId])
+  @@index([executionId, completedAt])
 }
 
 model Organization {
@@ -526,6 +552,9 @@ model Execution {
   starter User? @relation("ExecutionStarter", fields: [startedByUserId], references: [id], onDelete: SetNull)
 
   progress ExecutionProgress[]
+
+  /// Planned deliverables (used for calculated progress)
+  milestones ExecutionMilestone[] @relation("ExecutionMilestones")
 
   @@index([tenantId, status])
   @@index([caseId])

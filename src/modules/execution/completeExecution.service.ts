@@ -36,8 +36,8 @@ export async function completeExecution(input: CompleteExecutionInput) {
 
   return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     // 1️⃣ Load execution (must exist)
-    const execution = await tx.execution.findUnique({
-      where: { caseId },
+    const execution = await tx.execution.findFirst({
+      where: { caseId, tenantId },
     });
 
     if (!execution) {
@@ -49,7 +49,7 @@ export async function completeExecution(input: CompleteExecutionInput) {
       return execution;
     }
 
-    // 3️⃣ Prevent illegal completion states
+    // 3️⃣ Prevent illegal completion states execution
     if (execution.status === ExecutionStatus.ABORTED) {
       throw new InvariantViolationError(
         "ABORTED_EXECUTION_CANNOT_BE_COMPLETED",

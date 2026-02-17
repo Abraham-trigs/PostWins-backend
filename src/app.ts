@@ -14,9 +14,12 @@ import verificationRouter from "./modules/verification/verification.routes";
 import { casesRouter } from "./modules/cases/cases.routes";
 import decisionQueryRoutes from "./modules/decision/decision.query.routes";
 import healthRoutes from "./modules/health/health.controller";
+import executionRoutes from "./modules/execution/execution.routes";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
+import { prisma } from "./lib/prisma";
+import { assertUuid } from "./utils/uuid";
 
 const app: Express = express();
 
@@ -66,6 +69,48 @@ app.get("/__ping", (_req: Request, res: Response) => {
 });
 
 ////////////////////////////////////////////////////////////////
+// DEBUG: Raw ledger inspection (temporary)
+////////////////////////////////////////////////////////////////
+
+app.get("/__ledger/:caseId", async (req: Request, res: Response) => {
+  try {
+    const rawCaseId = req.params.caseId;
+
+    if (typeof rawCaseId !== "string") {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid caseId",
+      });
+    }
+
+    assertUuid(rawCaseId, "caseId");
+
+    const commits = await prisma.ledgerCommit.findMany({
+      where: { caseId: rawCaseId },
+      orderBy: { ts: "asc" },
+    });
+
+    // Convert BigInt → string
+    const safe = commits.map((c) => ({
+      ...c,
+      ts: c.ts.toString(),
+    }));
+
+    return res.status(200).json({
+      ok: true,
+      count: safe.length,
+      commits: safe,
+    });
+  } catch (err) {
+    console.error("LEDGER_DEBUG_ERROR:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+////////////////////////////////////////////////////////////////
 // Root route
 ////////////////////////////////////////////////////////////////
 
@@ -96,6 +141,7 @@ app.use("/api/cases", casesRouter);
 app.use("/api/timeline", timelineRoutes);
 app.use("/api/verification", verificationRouter);
 app.use("/api", decisionQueryRoutes);
+app.use("/api/execution", executionRoutes);
 
 ////////////////////////////////////////////////////////////////
 // 404 fallback

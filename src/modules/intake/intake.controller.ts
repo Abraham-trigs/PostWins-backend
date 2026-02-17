@@ -1,11 +1,9 @@
-// apps/backend/src/modules/intake/intake.controller.ts d
+// apps/backend/src/modules/intake/intake.controller.ts
+// Constitutional intake controller aligned to LedgerCommitSchema
+
 import crypto from "crypto";
 import { Request, Response } from "express";
 
-// Core Types from @posta/core
-import { PostWin, AuditRecord, Journey } from "@posta/core";
-
-// Local Service Imports
 import { IntakeService } from "./intake.service";
 import { VerificationService } from "../verification/verification.service";
 import { IntegrityService } from "./intergrity/integrity.service";
@@ -16,16 +14,11 @@ import { ToneAdapterService } from "./tone/tone-adapter.service";
 import { LocalizationService } from "./localization/localization.service";
 import { SDGMapperService } from "./sdg/sdg-mapper.service";
 import { TaskService } from "../routing/structuring/task.service";
-import { TaskId } from "@prisma/client";
+import { TaskId, LedgerEventType, ActorKind } from "@prisma/client";
 
-// Idempotency helper
 import { commitIdempotencyResponse } from "../../middleware/idempotency.middleware";
-
-// Prisma + UUID utils
 import { prisma } from "../../lib/prisma";
 import { assertUuid, UUID_RE } from "../../utils/uuid";
-
-// Domain authority
 import { CaseLifecycle } from "../cases/CaseLifecycle";
 
 // -----------------------------------------------------------------------------
@@ -45,24 +38,14 @@ const verificationService = new VerificationService(ledgerService);
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
-function requireIdempotencyMeta(res: Response): {
-  key: string;
-  requestHash: string;
-} {
-  const meta = (res.locals as any).idempotency as
-    | { key: string; requestHash: string }
-    | undefined;
-
+function requireIdempotencyMeta(res: Response) {
+  const meta = (res.locals as any).idempotency;
   if (!meta?.key || !meta?.requestHash) {
     throw new Error(
       "Missing idempotency metadata. Ensure idempotencyGuard middleware is attached.",
     );
   }
   return meta;
-}
-
-function nowIso() {
-  return new Date().toISOString();
 }
 
 function requireTenantId(req: Request): string {
@@ -89,11 +72,12 @@ async function resolveAuthorUserId(
       "No active user found for this tenant. Seed a user or pass X-Actor-Id.",
     );
   }
+
   return user.id;
 }
 
 function seedVerificationRecords(sdgGoals: string[]) {
-  const createdAt = nowIso();
+  const createdAt = new Date().toISOString();
   return sdgGoals.map((sdgGoal) => ({
     sdgGoal,
     requiredVerifiers: 2,
@@ -109,11 +93,13 @@ function seedVerificationRecords(sdgGoals: string[]) {
 export const handleResolveLocation = async (req: Request, res: Response) => {
   try {
     const code = String(req.query.code ?? "").trim();
+
     if (!code) {
       return res.status(400).json({ ok: false, error: "Missing code" });
     }
 
     const result = await intakeService.resolveGhanaPostAddress(code);
+
     return res.status(200).json({
       lat: result.lat,
       lng: result.lng,
@@ -128,7 +114,7 @@ export const handleResolveLocation = async (req: Request, res: Response) => {
 };
 
 // -----------------------------------------------------------------------------
-// BOOTSTRAP: Create Case + seed PostWin
+// BOOTSTRAP → CASE_CREATED
 // -----------------------------------------------------------------------------
 export const handleIntakeBootstrap = async (req: Request, res: Response) => {
   try {
@@ -152,7 +138,6 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
         ? String(beneficiaryId)
         : null;
 
-    // Phase 1.5 canonical intake
     const intakeResult = await intakeService.handleIntake(
       String(narrative),
       req.header("X-Device-Id") ?? "unknown",
@@ -164,54 +149,40 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
         tenantId,
         authorUserId,
         beneficiaryId: beneficiaryUuid,
-
         mode: intakeResult.mode,
         scope: intakeResult.scope,
         type: intakeResult.intent,
-
-        // ✅ Authoritative lifecycle (domain-owned)
         lifecycle: CaseLifecycle.INTAKE,
         currentTask: intakeResult.taskId as TaskId,
-
         summary: String(narrative).trim().slice(0, 240),
-        sdgGoal:
-          Array.isArray(sdgGoals) && sdgGoals.length > 0
-            ? String(sdgGoals[0])
-            : null,
       },
       select: { id: true },
     });
 
-    const projectId = createdCase.id;
+    const caseId = createdCase.id;
     const postWinId = crypto.randomUUID();
-    const createdAt = nowIso();
 
-    const goals: string[] =
+    const goals =
       Array.isArray(sdgGoals) && sdgGoals.length > 0
         ? sdgGoals
         : ["SDG_4", "SDG_5"];
 
     const verificationRecords = seedVerificationRecords(goals);
 
+    // Constitutional ledger entry
     await ledgerService.appendEntry({
-      id: crypto.randomUUID(),
       tenantId,
-      type: "POSTWIN_BOOTSTRAPPED",
-      projectId,
-      occurredAt: createdAt,
-      recordedAt: createdAt,
-      integrity: {
+      caseId,
+      eventType: LedgerEventType.CASE_CREATED,
+      actorKind: ActorKind.HUMAN,
+      actorUserId: authorUserId,
+      authorityProof: `HUMAN:${authorUserId}:${key}:${requestHash}`,
+      intentContext: {
         idempotencyKey: key,
         requestHash,
-        actorId: authorUserId,
-        actorUserId: authorUserId,
-        source:
-          (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
-        createdAt,
       },
       payload: {
-        tenantId,
-        caseId: projectId,
+        caseId,
         postWinId,
         narrative: String(narrative).trim(),
         beneficiaryId: beneficiaryUuid ?? undefined,
@@ -223,8 +194,10 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
       },
     });
 
-    const responsePayload = { ok: true, projectId, postWinId };
+    const responsePayload = { ok: true, projectId: caseId, postWinId };
+
     await commitIdempotencyResponse(res, responsePayload);
+
     return res.status(201).json(responsePayload);
   } catch (err) {
     console.error("BOOTSTRAP_FAILED", err);
@@ -237,7 +210,7 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
 };
 
 // -----------------------------------------------------------------------------
-// DELIVERY: Phase 2 task progression
+// DELIVERY → EXECUTION_PROGRESS_RECORDED
 // -----------------------------------------------------------------------------
 export const handleIntakeDelivery = async (req: Request, res: Response) => {
   try {
@@ -275,7 +248,6 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
       });
     }
 
-    // Phase 2 — explicit task transition
     const nextTask = taskProgressionService.getNextTask(
       existingCase.currentTask,
       "ATTEND",
@@ -286,25 +258,22 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
       data: { currentTask: nextTask },
     });
 
-    const nowIsoStr = new Date().toISOString();
+    const actorUserId = req.header("X-Actor-Id")?.trim() || null;
 
     await ledgerService.appendEntry({
-      id: crypto.randomUUID(),
       tenantId,
-      type: "DELIVERY_RECORDED", // Phase 2: formally map to CASE_UPDATED ledger intent
-      projectId: String(projectId),
-      occurredAt: new Date(occurredAt).toISOString(),
-      recordedAt: nowIsoStr,
-      integrity: {
+      caseId: String(projectId),
+      eventType: LedgerEventType.EXECUTION_PROGRESS_RECORDED,
+      actorKind: actorUserId ? ActorKind.HUMAN : ActorKind.SYSTEM,
+      actorUserId: actorUserId ?? null,
+      authorityProof: actorUserId
+        ? `HUMAN:${actorUserId}:${key}:${requestHash}`
+        : `SYSTEM:${key}:${requestHash}`,
+      intentContext: {
         idempotencyKey: key,
         requestHash,
-        actorId: req.header("X-Actor-Id")?.trim() || undefined,
-        source:
-          (req.header("X-Source")?.trim() as "web" | "mobile" | "api") || "api",
-        createdAt: nowIsoStr,
       },
       payload: {
-        tenantId,
         caseId: String(projectId),
         deliveryId: String(deliveryId),
         occurredAt: new Date(occurredAt).toISOString(),
@@ -316,12 +285,13 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
 
     const responsePayload = {
       ok: true,
-      type: "DELIVERY_RECORDED",
+      type: "EXECUTION_PROGRESS_RECORDED",
       projectId: String(projectId),
       deliveryId: String(deliveryId),
     };
 
     await commitIdempotencyResponse(res, responsePayload);
+
     return res.status(201).json(responsePayload);
   } catch (err) {
     console.error("Delivery Intake Error:", err);
