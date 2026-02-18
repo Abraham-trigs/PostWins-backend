@@ -6,6 +6,8 @@ import express, {
   type Response,
   type NextFunction,
 } from "express";
+
+import cors from "cors";
 import { randomUUID } from "crypto";
 
 import intakeRoutes from "./modules/intake/intake.routes";
@@ -18,16 +20,44 @@ import executionRoutes from "./modules/execution/execution.routes";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
-import { prisma } from "./lib/prisma";
-import { assertUuid } from "./utils/uuid";
 
 const app: Express = express();
+
+// Disable ETag to prevent unintended 304 caching on dynamic tenant data
+app.set("etag", false);
 
 ////////////////////////////////////////////////////////////////
 // Core middleware
 ////////////////////////////////////////////////////////////////
 
 app.use(express.json({ limit: "1mb" }));
+
+////////////////////////////////////////////////////////////////
+// CORS (must be before routes)
+////////////////////////////////////////////////////////////////
+
+const allowedOrigin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
+
+app.use(
+  cors({
+    origin: allowedOrigin,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Tenant-Id",
+      "X-Request-Id",
+    ],
+  }),
+);
+
+// ...........................................................................................
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+// ...........................................................................................
 
 ////////////////////////////////////////////////////////////////
 // Correlation + structured logging middleware
@@ -66,65 +96,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.get("/__ping", (_req: Request, res: Response) => {
   res.status(200).send("pong");
-});
-
-////////////////////////////////////////////////////////////////
-// DEBUG: Raw ledger inspection (temporary)
-////////////////////////////////////////////////////////////////
-
-app.get("/__ledger/:caseId", async (req: Request, res: Response) => {
-  try {
-    const rawCaseId = req.params.caseId;
-
-    if (typeof rawCaseId !== "string") {
-      return res.status(400).json({
-        ok: false,
-        error: "Invalid caseId",
-      });
-    }
-
-    assertUuid(rawCaseId, "caseId");
-
-    const commits = await prisma.ledgerCommit.findMany({
-      where: { caseId: rawCaseId },
-      orderBy: { ts: "asc" },
-    });
-
-    // Convert BigInt → string
-    const safe = commits.map((c) => ({
-      ...c,
-      ts: c.ts.toString(),
-    }));
-
-    return res.status(200).json({
-      ok: true,
-      count: safe.length,
-      commits: safe,
-    });
-  } catch (err) {
-    console.error("LEDGER_DEBUG_ERROR:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-});
-
-app.get("/__execution/:caseId", async (req, res) => {
-  try {
-    const execution = await prisma.execution.findUnique({
-      where: { caseId: req.params.caseId },
-      include: { milestones: true },
-    });
-
-    if (!execution) {
-      return res.status(404).json({ ok: false, error: "Not found" });
-    }
-
-    return res.json({ ok: true, data: execution });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: "Internal error" });
-  }
 });
 
 ////////////////////////////////////////////////////////////////

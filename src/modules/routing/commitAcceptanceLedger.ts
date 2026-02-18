@@ -1,5 +1,5 @@
 import { ActorKind, LedgerEventType } from "@prisma/client";
-import { SYSTEM_AUTHORITY_PROOF } from "../../domain/system/systemActors";
+import { SYSTEM_AUTHORITY_PROOF } from "../../domain/system/systemActors/ngo/systemActors";
 import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 
 export async function commitAcceptanceLedger({
