@@ -31,6 +31,22 @@ enum DisbursementType {
   REIMBURSEMENT
 }
 
+enum StakeholderRole {
+  DONOR
+  REGULATOR
+  OPERATOR
+  TECHNICAL
+  OBSERVER
+}
+
+model ImpactMetric {
+  id          String          @id @default(uuid())
+  role        StakeholderRole
+  metricName  String
+  value       Float
+  lastUpdated DateTime        @updatedAt
+}
+
 enum CaseStatus {
   INTAKED
   ROUTED

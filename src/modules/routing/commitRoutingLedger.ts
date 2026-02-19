@@ -4,7 +4,7 @@
 // Transaction-aware. No enum shadowing. No mutation.
 // Enforced Authority Envelope V1.
 
-import { SYSTEM_AUTHORITY_PROOF } from "@/domain/system/systemActors/ngo/systemActors";
+import { SYSTEM_AUTHORITY_PROOF } from "@/domain/system/systemActors/systemActors";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 import {
