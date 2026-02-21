@@ -9,31 +9,38 @@ declare global {
   var prisma: PrismaClientType | undefined;
 }
 
-/**
- * Prisma client singleton.
- *
- * DOMAIN INVARIANTS (DO NOT VIOLATE):
- * - Case.lifecycle is the ONLY authoritative state
- * - Case.lifecycle must be mutated via transition helpers
- * - Case.status is advisory / derived (UI + ops only)
- * - RoutingOutcome is decision metadata, not lifecycle
- *
- * This client WARNs (does not block) on invariant violations.
- */
+////////////////////////////////////////////////////////////////
+// Prisma Base Client
+////////////////////////////////////////////////////////////////
+
 const basePrisma = new PrismaClient({
   log: ["error", "warn"],
 });
+
+////////////////////////////////////////////////////////////////
+// Domain Guard Extensions
+////////////////////////////////////////////////////////////////
+//
+// DOMAIN INVARIANTS (DO NOT VIOLATE):
+// - Case.lifecycle is AUTHORITATIVE and governed by transition helpers
+// - Case.status is advisory / derived (UI + ops only)
+// - RoutingOutcome is decision metadata, not lifecycle
+//
+// IMPORTANT:
+// Lifecycle mutation enforcement is handled at the domain layer
+// (transitionCaseLifecycleWithLedger). We no longer warn at ORM level
+// because Prisma middleware cannot reliably distinguish authorized writes.
+//
+////////////////////////////////////////////////////////////////
 
 const prismaWithGuards = basePrisma.$extends({
   query: {
     case: {
       async update({ args, query }) {
-        warnOnCaseLifecycleWrite(args.data);
         warnOnCaseAdvisoryWrite(args.data);
         return query(args);
       },
       async updateMany({ args, query }) {
-        warnOnCaseLifecycleWrite(args.data);
         warnOnCaseAdvisoryWrite(args.data);
         return query(args);
       },
@@ -51,19 +58,14 @@ const prismaWithGuards = basePrisma.$extends({
   },
 });
 
-function warnOnCaseLifecycleWrite(data: unknown) {
-  if (!data || typeof data !== "object") return;
-
-  const keys = Object.keys(data as Record<string, unknown>);
-
-  if (keys.includes("lifecycle")) {
-    console.warn(
-      "[domain-warning] Direct write to Case.lifecycle detected.",
-      "Case.lifecycle is AUTHORITATIVE and must be changed via transition helpers.",
-      "Use transitionCaseLifecycle(...) or transitionCaseLifecycleWithLedger(...).",
-    );
-  }
-}
+////////////////////////////////////////////////////////////////
+// Case.status Guard (Advisory Field)
+////////////////////////////////////////////////////////////////
+//
+// Case.status must be derived from Case.lifecycle.
+// Direct writes are discouraged.
+//
+////////////////////////////////////////////////////////////////
 
 function warnOnCaseAdvisoryWrite(data: unknown) {
   if (!data || typeof data !== "object") return;
@@ -79,6 +81,14 @@ function warnOnCaseAdvisoryWrite(data: unknown) {
   }
 }
 
+////////////////////////////////////////////////////////////////
+// RoutingOutcome Guard
+////////////////////////////////////////////////////////////////
+//
+// RoutingOutcome is decision metadata, not lifecycle state.
+//
+////////////////////////////////////////////////////////////////
+
 function warnOnRoutingOutcomeWrite(data: unknown) {
   if (!data || typeof data !== "object") return;
 
@@ -92,14 +102,15 @@ function warnOnRoutingOutcomeWrite(data: unknown) {
   }
 }
 
-/**
- * IMPORTANT:
- * $extends() changes the inferred client type which breaks
- * Prisma $transaction overload resolution.
- *
- * We explicitly cast back to PrismaClientType to stabilize typing
- * across the codebase.
- */
+////////////////////////////////////////////////////////////////
+// Prisma Singleton Export
+////////////////////////////////////////////////////////////////
+//
+// $extends() changes inferred type and breaks transaction overloads.
+// We cast back to PrismaClientType for stability.
+//
+////////////////////////////////////////////////////////////////
+
 export const prisma: PrismaClientType =
   (globalThis.prisma as PrismaClientType | undefined) ??
   (prismaWithGuards as unknown as PrismaClientType);

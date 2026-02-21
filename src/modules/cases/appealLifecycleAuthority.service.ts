@@ -1,11 +1,3 @@
-// apps/backend/src/modules/cases/appealLifecycleAuthority.service.ts
-// Appeal governance authority pipeline with lifecycle transitions + supersession binding.
-// Assumes:
-// - transitionCaseLifecycleWithLedger enforces lifecycle law
-// - LedgerService hashes payload deterministically
-// - AuthorityEnvelope V1 is active
-// - LedgerEventType includes APPEAL_OPENED and APPEAL_RESOLVED
-
 import { prisma } from "@/lib/prisma";
 import { CaseLifecycle, LedgerEventType, ActorKind } from "@prisma/client";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
@@ -45,7 +37,6 @@ const ResolveAppealSchema = z.object({
   resolution: z.enum(["VERIFIED", "FLAGGED"]),
   resolvedByUserId: z.string().uuid(),
   authorityProof: z.string().min(1),
-  supersedesCommitId: z.string().uuid(),
 });
 
 ////////////////////////////////////////////////////////////////
@@ -72,7 +63,23 @@ export class AppealLifecycleAuthorityService {
 
     return prisma.$transaction(async (tx) => {
       ////////////////////////////////////////////////////////////
-      // 1️⃣ Create appeal record
+      // 1️⃣ Validate lifecycle
+      ////////////////////////////////////////////////////////////
+
+      const existingCase = await tx.case.findFirstOrThrow({
+        where: {
+          id: data.caseId,
+          tenantId: data.tenantId,
+        },
+        select: { lifecycle: true },
+      });
+
+      if (existingCase.lifecycle !== CaseLifecycle.VERIFIED) {
+        throw new Error("APPEAL_CAN_ONLY_BE_OPENED_FROM_VERIFIED_STATE");
+      }
+
+      ////////////////////////////////////////////////////////////
+      // 2️⃣ Create appeal
       ////////////////////////////////////////////////////////////
 
       const appeal = await tx.appeal.create({
@@ -81,11 +88,12 @@ export class AppealLifecycleAuthorityService {
           caseId: data.caseId,
           openedByUserId: data.openedByUserId,
           reason: data.reason,
+          status: "OPEN",
         },
       });
 
       ////////////////////////////////////////////////////////////
-      // 2️⃣ Commit APPEAL_OPENED to ledger
+      // 3️⃣ Ledger: APPEAL_OPENED
       ////////////////////////////////////////////////////////////
 
       await this.ledger.appendEntry(
@@ -109,7 +117,7 @@ export class AppealLifecycleAuthorityService {
       );
 
       ////////////////////////////////////////////////////////////
-      // 3️⃣ Lifecycle transition VERIFIED → HUMAN_REVIEW
+      // 4️⃣ Lifecycle transition → HUMAN_REVIEW
       ////////////////////////////////////////////////////////////
 
       await transitionCaseLifecycleWithLedger(this.ledger, {
@@ -144,11 +152,55 @@ export class AppealLifecycleAuthorityService {
 
     return prisma.$transaction(async (tx) => {
       ////////////////////////////////////////////////////////////
-      // 1️⃣ Mark appeal resolved
+      // 1️⃣ Validate lifecycle
       ////////////////////////////////////////////////////////////
 
-      const appeal = await tx.appeal.update({
-        where: { id: data.appealId },
+      const existingCase = await tx.case.findFirstOrThrow({
+        where: {
+          id: data.caseId,
+          tenantId: data.tenantId,
+        },
+        select: { lifecycle: true },
+      });
+
+      if (existingCase.lifecycle !== CaseLifecycle.HUMAN_REVIEW) {
+        throw new Error("APPEAL_CAN_ONLY_BE_RESOLVED_FROM_HUMAN_REVIEW_STATE");
+      }
+
+      ////////////////////////////////////////////////////////////
+      // 2️⃣ Validate appeal
+      ////////////////////////////////////////////////////////////
+
+      const appeal = await tx.appeal.findFirstOrThrow({
+        where: {
+          id: data.appealId,
+          tenantId: data.tenantId,
+          caseId: data.caseId,
+          status: "OPEN",
+        },
+      });
+
+      ////////////////////////////////////////////////////////////
+      // 3️⃣ Server-determined supersession
+      ////////////////////////////////////////////////////////////
+
+      const latestVerifiedCommit = await tx.ledgerCommit.findFirst({
+        where: {
+          tenantId: data.tenantId,
+          caseId: data.caseId,
+          eventType: LedgerEventType.VERIFIED,
+          supersededBy: null,
+        },
+        orderBy: { ts: "desc" },
+        select: { id: true },
+      });
+
+      ////////////////////////////////////////////////////////////
+      // 4️⃣ Mark appeal resolved
+      ////////////////////////////////////////////////////////////
+
+      await tx.appeal.update({
+        where: { id: appeal.id },
         data: {
           status: "RESOLVED",
           resolvedAt: new Date(),
@@ -156,7 +208,7 @@ export class AppealLifecycleAuthorityService {
       });
 
       ////////////////////////////////////////////////////////////
-      // 2️⃣ Commit APPEAL_RESOLVED (superseding prior decision)
+      // 5️⃣ Ledger: APPEAL_RESOLVED
       ////////////////////////////////////////////////////////////
 
       await this.ledger.appendEntry(
@@ -167,7 +219,7 @@ export class AppealLifecycleAuthorityService {
           actorKind: ActorKind.HUMAN,
           actorUserId: data.resolvedByUserId,
           authorityProof: data.authorityProof,
-          supersedesCommitId: data.supersedesCommitId,
+          supersedesCommitId: latestVerifiedCommit?.id ?? null,
           payload: buildAuthorityEnvelopeV1({
             domain: "APPEAL",
             event: "RESOLVED",
@@ -181,7 +233,7 @@ export class AppealLifecycleAuthorityService {
       );
 
       ////////////////////////////////////////////////////////////
-      // 3️⃣ Lifecycle transition HUMAN_REVIEW → VERIFIED | FLAGGED
+      // 6️⃣ Lifecycle transition → VERIFIED | FLAGGED
       ////////////////////////////////////////////////////////////
 
       const targetLifecycle =
@@ -204,34 +256,3 @@ export class AppealLifecycleAuthorityService {
     });
   }
 }
-
-////////////////////////////////////////////////////////////////
-// Design reasoning
-////////////////////////////////////////////////////////////////
-// Appeals introduce reversible authority without mutating lifecycle directly.
-// All lifecycle changes flow through constitutional transition boundary.
-// Supersession binds resolution to prior authority commit.
-
-////////////////////////////////////////////////////////////////
-// Structure
-////////////////////////////////////////////////////////////////
-// - Zod validation
-// - Transaction boundary
-// - Appeal record mutation
-// - Ledger commit (enveloped)
-// - Lifecycle transition via authority service
-
-////////////////////////////////////////////////////////////////
-// Implementation guidance
-////////////////////////////////////////////////////////////////
-// Supersession validation is not enforced here yet.
-// Next step: enforce supersedesCommitId integrity inside LedgerService.
-// Map AppealAuthorityValidationError to HTTP 400.
-
-////////////////////////////////////////////////////////////////
-// Scalability insight
-////////////////////////////////////////////////////////////////
-// Supersession chains create permanent authority lineage.
-// Enables reconstruction of governance history across reversals.
-// Foundation for executive override and hierarchy enforcement.
-////////////////////////////////////////////////////////////////

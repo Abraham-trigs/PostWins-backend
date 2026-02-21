@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  ExecutionMilestone        
+// ApprovalRequest         
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -111,6 +111,30 @@ enum CaseType {
   EXECUTION
 }
 
+model Tag {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key          String   @unique
+  label        String
+  isRestricted Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  cases CaseTag[]
+}
+
+model CaseTag {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caseId    String   @db.Uuid
+  tagId     String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, tagId])
+  @@index([tagId])
+  @@index([caseId])
+}
+
 /// ⚠️ NON-AUTHORITATIVE STATUS
 /// UI convenience only. Never infer lifecycle from this.
 enum CaseLifecycle {
@@ -181,6 +205,8 @@ enum LedgerEventType {
   ROUTED
   ROUTING_SUPERSEDED
 
+  VERIFICATION_STARTED
+  VERIFICATION_REQUESTED
   VERIFICATION_SUBMITTED
   VERIFIED
   VERIFICATION_REJECTED
@@ -205,6 +231,9 @@ enum LedgerEventType {
   DISBURSEMENT_AUTHORIZED
   DISBURSEMENT_COMPLETED
   DISBURSEMENT_FAILED
+  // VERIFICATION_REQUESTED
+  //EVIDENCE_SUBMITTED
+  //COUNTER_CLAIM_SUBMITTED
 }
 
 enum EvidenceKind {
@@ -270,17 +299,18 @@ model Tenant {
   disbursements    Disbursement[]
 
   // Back relations
-  roles               Role[]
-  beneficiaries       Beneficiary[]
-  messages            Message[]
-  executionBodies     ExecutionBody[]
-  verificationRecords VerificationRecord[]
-  verifications       Verification[]
-  routingDecisions    RoutingDecision[]
-  timelineEntries     TimelineEntry[]
-  evidence            Evidence[]
-  appeals             Appeal[]
-  counterfactuals     CounterfactualRecord[]
+  roles                Role[]
+  beneficiaries        Beneficiary[]
+  messages             Message[]
+  executionBodies      ExecutionBody[]
+  executionBodyMembers ExecutionBodyMember[]
+  verificationRecords  VerificationRecord[]
+  verifications        Verification[]
+  routingDecisions     RoutingDecision[]
+  timelineEntries      TimelineEntry[]
+  evidence             Evidence[]
+  appeals              Appeal[]
+  counterfactuals      CounterfactualRecord[]
 
   @@index([createdAt])
 }
@@ -300,13 +330,14 @@ model User {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  roles           UserRole[]
-  sessions        Session[]
-  authoredCases   Case[]           @relation("CaseAuthor")
-  messages        Message[]
-  verifications   Verification[]
-  appealsOpened   Appeal[]         @relation("AppealOpenedBy")
-  appealsReviewed AppealDecision[] @relation("AppealReviewedBy")
+  roles                    UserRole[]
+  executionBodyMemberships ExecutionBodyMember[]
+  sessions                 Session[]
+  authoredCases            Case[]                @relation("CaseAuthor")
+  messages                 Message[]
+  verifications            Verification[]
+  appealsOpened            Appeal[]              @relation("AppealOpenedBy")
+  appealsReviewed          AppealDecision[]      @relation("AppealReviewedBy")
 
   auditEntries  AuditEntry[]
   ledgerCommits LedgerCommit[]
@@ -380,21 +411,43 @@ model Organization {
   @@index([tenantId, createdAt])
 }
 
+enum MessageType {
+  DISCUSSION
+  FOLLOW_UP
+  VERIFICATION_REQUEST
+  COUNTER_CLAIM
+  EVIDENCE_SUBMISSION
+}
+
 model Message {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
   caseId   String @db.Uuid
   authorId String @db.Uuid
 
-  body      String
-  createdAt DateTime @default(now())
+  parentId String?   @db.Uuid
+  parent   Message?  @relation("Thread", fields: [parentId], references: [id])
+  replies  Message[] @relation("Thread")
+
+  clientMutationId String? @db.Uuid
+
+  type MessageType
+  body String?
+
+  navigationContext Json?
+  metadata          Json?
+
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
   author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
+  @@unique([tenantId, clientMutationId])
   @@index([caseId, createdAt])
   @@index([tenantId, createdAt])
+  @@index([parentId])
 }
 
 model Role {
@@ -490,15 +543,19 @@ model BeneficiaryPII {
 /// Case.lifecycle MUST NOT be directly written.
 /// All transitions must pass through:
 ///   transitionCaseLifecycleWithLedger
+
 model Case {
   id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId      String  @db.Uuid
   authorUserId  String  @db.Uuid
   beneficiaryId String? @db.Uuid
+  referenceCode String  @unique
 
   mode  OperationalMode
   scope AccessScope
   type  CaseType
+
+  tags CaseTag[]
 
   lifecycle CaseLifecycle @default(INTAKE)
   status    CaseStatus    @default(INTAKED)
@@ -611,7 +668,25 @@ model ExecutionBody {
   assignments      CaseAssignment[]
   routingDecisions RoutingDecision[]
 
+  members ExecutionBodyMember[]
+
   @@index([tenantId, isFallback])
+}
+
+model ExecutionBodyMember {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String   @db.Uuid
+  executionBodyId String   @db.Uuid
+  userId          String   @db.Uuid
+  createdAt       DateTime @default(now())
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  executionBody ExecutionBody @relation(fields: [executionBodyId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([executionBodyId, userId])
+  @@index([tenantId, executionBodyId])
+  @@index([userId])
 }
 
 /// Single authoritative assignment per Case.
@@ -734,6 +809,8 @@ model ApprovalRequest {
 
   resolvedAt       DateTime?
   resolvedByUserId String?   @db.Uuid
+
+  resolutionNote String?
 
   createdAt DateTime @default(now())
 

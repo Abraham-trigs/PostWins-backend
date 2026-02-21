@@ -1,20 +1,20 @@
 // apps/backend/src/modules/routing/acceptCase.service.ts
-// Accepts a case and transitions lifecycle to ACCEPTED.
-// Commits canonical ledger event inside the same transaction.
 
 import { prisma } from "@/lib/prisma";
 import { CaseLifecycle } from "../cases/CaseLifecycle";
 import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
-import { LedgerEventType, ActorKind } from "@prisma/client";
-import { commitLedgerEvent } from "@/modules/intake/ledger/commitLedgerEvent";
+import { ActorKind } from "@prisma/client";
+import { InvariantViolationError } from "../cases/case.errors";
 
 /**
  * Acceptance command.
  *
- * 🧠 Key:
- * - Ownership becomes explicit here.
- * - Humans and systems share the same path.
- * - No special-casing beyond actor.kind.
+ * Authority Rules:
+ * - HUMAN must belong to assigned execution body.
+ * - SYSTEM must explicitly declare authority.
+ * - Lifecycle transition commits ledger event exactly once.
+ * - Tenant isolation enforced.
+ * - Idempotent if already ACCEPTED.
  */
 export async function acceptCase(params: {
   tenantId: string;
@@ -23,71 +23,100 @@ export async function acceptCase(params: {
   isSystem?: boolean;
 }) {
   return prisma.$transaction(async (tx) => {
-    const assignment = await tx.caseAssignment.findUniqueOrThrow({
-      where: { caseId: params.caseId },
+    ////////////////////////////////////////////////////////////////
+    // 1️⃣ Ensure case exists + tenant scoped
+    ////////////////////////////////////////////////////////////////
+
+    const existingCase = await tx.case.findFirstOrThrow({
+      where: {
+        id: params.caseId,
+        tenantId: params.tenantId,
+      },
+      select: {
+        id: true,
+        lifecycle: true,
+      },
     });
 
-    // 🔒 Membership check MUST exist (execution body membership)
-    // Do not commit without this guard
+    // Idempotency guard
+    if (existingCase.lifecycle === CaseLifecycle.ACCEPTED) {
+      return { ok: true };
+    }
 
-    const actor = {
-      kind: params.isSystem ? ActorKind.SYSTEM : ActorKind.HUMAN,
-      userId: params.userId,
-      authorityProof: params.isSystem
-        ? "KHALISTAR_EXECUTION_AUTHORITY"
-        : "EXECUTION_BODY_ACCEPTANCE",
-    } as const;
+    // Optional strict lifecycle invariant
+    if (existingCase.lifecycle !== CaseLifecycle.ROUTED) {
+      throw new InvariantViolationError(
+        "CASE_MUST_BE_ROUTED_BEFORE_ACCEPTANCE",
+      );
+    }
+
+    ////////////////////////////////////////////////////////////////
+    // 2️⃣ Load assignment (tenant enforced through case relation)
+    ////////////////////////////////////////////////////////////////
+
+    const assignment = await tx.caseAssignment.findFirstOrThrow({
+      where: {
+        caseId: params.caseId,
+        case: { tenantId: params.tenantId },
+      },
+      select: {
+        executionBodyId: true,
+      },
+    });
+
+    ////////////////////////////////////////////////////////////////
+    // 3️⃣ Enforce HUMAN authority
+    ////////////////////////////////////////////////////////////////
+
+    if (!params.isSystem) {
+      if (!params.userId) {
+        throw new InvariantViolationError("HUMAN_ACCEPTANCE_REQUIRES_USER_ID");
+      }
+
+      const membership = await tx.executionBodyMember.findFirst({
+        where: {
+          tenantId: params.tenantId,
+          executionBodyId: assignment.executionBodyId,
+          userId: params.userId,
+        },
+        select: { id: true },
+      });
+
+      if (!membership) {
+        throw new InvariantViolationError("USER_NOT_MEMBER_OF_EXECUTION_BODY");
+      }
+    }
+
+    ////////////////////////////////////////////////////////////////
+    // 4️⃣ Structured actor
+    ////////////////////////////////////////////////////////////////
+
+    const actor =
+      params.isSystem === true
+        ? {
+            kind: ActorKind.SYSTEM,
+            authorityProof: "SYSTEM_EXECUTION_AUTHORITY",
+          }
+        : {
+            kind: ActorKind.HUMAN,
+            userId: params.userId!,
+            authorityProof: "EXECUTION_BODY_ACCEPTANCE",
+          };
+
+    ////////////////////////////////////////////////////////////////
+    // 5️⃣ Single authoritative lifecycle transition
+    ////////////////////////////////////////////////////////////////
 
     await transitionCaseLifecycleWithLedger({
       tenantId: params.tenantId,
       caseId: params.caseId,
       target: CaseLifecycle.ACCEPTED,
       actor,
+      intentContext: {
+        executionBodyId: assignment.executionBodyId,
+      },
     });
 
-    await commitLedgerEvent(
-      {
-        tenantId: params.tenantId,
-        caseId: params.caseId,
-        eventType: LedgerEventType.CASE_ACCEPTED,
-        actor,
-        payload: {
-          executionBodyId: assignment.executionBodyId,
-        },
-      },
-      tx,
-    );
+    return { ok: true };
   });
 }
-
-/* ================================================================
-   Design reasoning
-   ================================================================ */
-// Acceptance establishes explicit ownership.
-// Lifecycle transition and ledger causality are atomic.
-// Actor structure is standardized across domains.
-
-///////////////////////////////////////////////////////////////////
-// Structure
-///////////////////////////////////////////////////////////////////
-// - Transaction boundary
-// - Assignment resolution
-// - Structured actor creation
-// - Lifecycle transition
-// - Canonical ledger commit
-
-///////////////////////////////////////////////////////////////////
-// Implementation guidance
-///////////////////////////////////////////////////////////////////
-// - Enforce execution body membership before accepting.
-// - Keep lifecycle transition + ledger commit atomic.
-// - Never bypass structured actor contract.
-// - Do not commit ledger outside transaction.
-
-///////////////////////////////////////////////////////////////////
-// Scalability insight
-///////////////////////////////////////////////////////////////////
-// Atomic transition prevents split-brain lifecycle states.
-// Canonical ledger entry ensures audit consistency.
-// Structured actor allows uniform authorization modeling across system + human paths.
-///////////////////////////////////////////////////////////////////

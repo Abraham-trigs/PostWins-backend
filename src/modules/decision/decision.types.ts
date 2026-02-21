@@ -5,6 +5,18 @@ import { ActorKind, DecisionType } from "@prisma/client";
 import { z } from "zod";
 
 ////////////////////////////////////////////////////////////////
+// Decision Effect Schema (Authoritative Effect Contract)
+////////////////////////////////////////////////////////////////
+
+export const DecisionEffectSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("EXECUTION_VERIFIED"),
+  }),
+]);
+
+export type DecisionEffect = z.infer<typeof DecisionEffectSchema>;
+
+////////////////////////////////////////////////////////////////
 // Validation Schema
 ////////////////////////////////////////////////////////////////
 
@@ -22,9 +34,11 @@ export const ApplyDecisionSchema = z
     intentContext: z.record(z.unknown()).optional(),
 
     supersedesDecisionId: z.string().uuid().optional(),
+
+    // 🔑 Required authoritative effect
+    effect: DecisionEffectSchema,
   })
   .superRefine((data, ctx) => {
-    // Enforce HUMAN must provide actorUserId
     if (data.actorKind === ActorKind.HUMAN && !data.actorUserId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -33,7 +47,6 @@ export const ApplyDecisionSchema = z
       });
     }
 
-    // SYSTEM must NOT provide actorUserId
     if (data.actorKind === ActorKind.SYSTEM && data.actorUserId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -44,7 +57,7 @@ export const ApplyDecisionSchema = z
   });
 
 ////////////////////////////////////////////////////////////////
-// Input Type (Derived from Schema)
+// Input Type
 ////////////////////////////////////////////////////////////////
 
 export type ApplyDecisionParams = z.infer<typeof ApplyDecisionSchema>;
@@ -66,13 +79,9 @@ export interface DecisionExplanation {
   decidedAt: Date;
   reason?: string;
 
-  /**
-   * JSON-safe boundary.
-   * Must accept full Prisma JsonValue.
-   * Controllers may normalize before sending to client.
-   */
   intentContext?: unknown;
 }
+
 ////////////////////////////////////////////////////////////////
 // Normalizer
 ////////////////////////////////////////////////////////////////
@@ -98,48 +107,3 @@ export function normalizeApplyDecisionInput(
 export function isAuthoritativeDecision(supersededAt: Date | null): boolean {
   return supersededAt === null;
 }
-
-////////////////////////////////////////////////////////////////
-// Example Usage
-////////////////////////////////////////////////////////////////
-
-/*
-const params = normalizeApplyDecisionInput({
-  tenantId: "uuid",
-  caseId: "uuid",
-  decisionType: DecisionType.ROUTING,
-  actorKind: ActorKind.SYSTEM,
-});
-
-DecisionService.apply(params);
-*/
-
-////////////////////////////////////////////////////////////////
-// Design reasoning
-////////////////////////////////////////////////////////////////
-// This file enforces that all write-side decision operations derive directly
-// from Prisma enums and are validated at the boundary. Actor authority is
-// explicit and cannot drift. No runtime inference allowed.
-
-////////////////////////////////////////////////////////////////
-// Structure
-////////////////////////////////////////////////////////////////
-// - Zod schema is canonical contract
-// - Type inferred from schema
-// - DTO separated from write model
-// - Normalizer provides consistent error shape
-// - Authority helper included
-
-////////////////////////////////////////////////////////////////
-// Implementation guidance
-////////////////////////////////////////////////////////////////
-// Always call normalizeApplyDecisionInput before writing to DB.
-// Never construct ApplyDecisionParams manually.
-// Never allow services to accept raw unknown input.
-
-////////////////////////////////////////////////////////////////
-// Scalability insight
-////////////////////////////////////////////////////////////////
-// When Phase 2 introduces additional DecisionType values (e.g. GRANT,
-// TRANCHE), this file remains stable because it binds to Prisma enums.
-// Authority logic scales without branching explosion.

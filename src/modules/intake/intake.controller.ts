@@ -20,9 +20,12 @@ import { commitIdempotencyResponse } from "../../middleware/idempotency.middlewa
 import { prisma } from "../../lib/prisma";
 import { assertUuid, UUID_RE } from "../../utils/uuid";
 import { CaseLifecycle } from "../cases/CaseLifecycle";
+import { DecisionService } from "../decision/decision.service";
+import { DecisionOrchestrationService } from "../decision/decision-orchestration.service";
+import { OrchestratorService } from "../orchestrator/orchestrator.service";
 
 // -----------------------------------------------------------------------------
-// Infrastructure
+// Infrastructure (Explicit Composition Root)
 // -----------------------------------------------------------------------------
 const ledgerService = new LedgerService();
 const integrityService = new IntegrityService();
@@ -33,7 +36,20 @@ const localizationService = new LocalizationService();
 const sdgMapper = new SDGMapperService();
 
 const intakeService = new IntakeService(integrityService, new TaskService());
-const verificationService = new VerificationService(ledgerService);
+
+// Updated dependency chain
+const orchestratorService = new OrchestratorService();
+
+const decisionOrchestrator = new DecisionOrchestrationService(
+  orchestratorService,
+);
+
+const decisionService = new DecisionService(decisionOrchestrator);
+
+const verificationService = new VerificationService(
+  ledgerService,
+  decisionService,
+);
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -143,12 +159,18 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
       req.header("X-Device-Id") ?? "unknown",
     );
 
+    const referenceCode = `CASE-${Date.now()}-${crypto
+      .randomBytes(3)
+      .toString("hex")
+      .toUpperCase()}`;
+
     const createdCase = await prisma.case.create({
       data: {
         id: crypto.randomUUID(),
         tenantId,
         authorUserId,
         beneficiaryId: beneficiaryUuid,
+        referenceCode,
         mode: intakeResult.mode,
         scope: intakeResult.scope,
         type: intakeResult.intent,
@@ -169,7 +191,6 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
 
     const verificationRecords = seedVerificationRecords(goals);
 
-    // Constitutional ledger entry
     await ledgerService.appendEntry({
       tenantId,
       caseId,
@@ -203,7 +224,7 @@ export const handleIntakeBootstrap = async (req: Request, res: Response) => {
     console.error("BOOTSTRAP_FAILED", err);
     return res.status(500).json({
       ok: false,
-      error: "Posta System Error: bootstrap intake failed.",
+      error: "PostWins System Error: bootstrap intake failed.",
       details: err instanceof Error ? err.message : String(err),
     });
   }
@@ -297,7 +318,7 @@ export const handleIntakeDelivery = async (req: Request, res: Response) => {
     console.error("Delivery Intake Error:", err);
     return res.status(500).json({
       ok: false,
-      error: "Posta System Error: Delivery intake failed.",
+      error: "PostWins System Error: Delivery intake failed.",
       details: err instanceof Error ? err.message : String(err),
     });
   }

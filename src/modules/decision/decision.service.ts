@@ -1,68 +1,26 @@
 // src/modules/decision/decision.service.ts
-// Purpose: Authoritative decision application with ledger-backed lifecycle projection.
+// Authoritative decision persistence.
+// Lifecycle mutation delegated to Orchestrator.
+// No static lifecycle projection map.
 
 import crypto from "crypto";
 import { prisma } from "../../lib/prisma";
-import { CaseLifecycle, DecisionType, Prisma, ActorKind } from "@prisma/client";
+import { DecisionType, Prisma, ActorKind } from "@prisma/client";
 
-import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
+import { DecisionOrchestrationService } from "./decision-orchestration.service";
 import { ApplyDecisionParams } from "./decision.types";
 
-////////////////////////////////////////////////////////////////
-// Lifecycle Projection Map
-////////////////////////////////////////////////////////////////
-
-const DECISION_OUTCOME_LIFECYCLE: Partial<Record<DecisionType, CaseLifecycle>> =
-  {
-    ROUTING: CaseLifecycle.ROUTED,
-    VERIFICATION: CaseLifecycle.VERIFIED,
-    FLAGGING: CaseLifecycle.FLAGGED,
-    APPEAL: CaseLifecycle.HUMAN_REVIEW,
-    BUDGET: CaseLifecycle.ROUTED,
-  };
-
-////////////////////////////////////////////////////////////////
-// Helpers
-////////////////////////////////////////////////////////////////
-
-function buildIntentEnvelope(
-  decisionId: string,
-  decisionType: DecisionType,
-  supersedesDecisionId: string | undefined,
-  reason: string | undefined,
-  intentContext: unknown,
-): Prisma.InputJsonValue {
-  const base: Record<string, unknown> = {
-    decisionId,
-    decisionType,
-    supersedesDecisionId: supersedesDecisionId ?? null,
-    reason: reason ?? null,
-  };
-
-  if (
-    intentContext &&
-    typeof intentContext === "object" &&
-    !Array.isArray(intentContext)
-  ) {
-    Object.assign(base, intentContext as Record<string, unknown>);
-  }
-
-  return base as Prisma.InputJsonValue;
-}
-
-////////////////////////////////////////////////////////////////
-// Service
-////////////////////////////////////////////////////////////////
-
 export class DecisionService {
+  constructor(private orchestrator: DecisionOrchestrationService) {}
+
   /**
-   * Apply an authoritative decision.
+   * Apply authoritative decision.
    *
-   * Invariants:
-   * - Immutable history
+   * Guarantees:
+   * - Immutable decision history
    * - Explicit supersession
    * - Single active decision per (caseId, decisionType)
-   * - Lifecycle reflects authoritative intent only
+   * - Effect execution delegated
    */
   async applyDecision(
     params: ApplyDecisionParams,
@@ -77,21 +35,14 @@ export class DecisionService {
       reason,
       intentContext,
       supersedesDecisionId,
+      effect,
     } = params;
 
-    const target = DECISION_OUTCOME_LIFECYCLE[decisionType];
-
-    if (!target) {
-      throw new Error(
-        `DecisionType ${decisionType} does not project lifecycle`,
-      );
-    }
-
     ////////////////////////////////////////////////////////////////
-    // 1️⃣ Supersede existing active decisions
+    // 1️⃣ Supersede active decisions
     ////////////////////////////////////////////////////////////////
 
-    const activeDecisions = await tx.decision.findMany({
+    const active = await tx.decision.findMany({
       where: {
         tenantId,
         caseId,
@@ -100,10 +51,10 @@ export class DecisionService {
       },
     });
 
-    for (const prior of activeDecisions) {
+    for (const prior of active) {
       if (supersedesDecisionId && prior.id !== supersedesDecisionId) {
         throw new Error(
-          `Explicit supersession mismatch: expected ${supersedesDecisionId}, found ${prior.id}`,
+          `Supersession mismatch: expected ${supersedesDecisionId}, found ${prior.id}`,
         );
       }
 
@@ -114,7 +65,7 @@ export class DecisionService {
     }
 
     ////////////////////////////////////////////////////////////////
-    // 2️⃣ Persist authoritative decision
+    // 2️⃣ Persist decision
     ////////////////////////////////////////////////////////////////
 
     const decision = await tx.decision.create({
@@ -133,25 +84,19 @@ export class DecisionService {
     });
 
     ////////////////////////////////////////////////////////////////
-    // 3️⃣ Ledger-backed lifecycle projection
+    // 3️⃣ Execute effect via Orchestrator
     ////////////////////////////////////////////////////////////////
 
-    await transitionCaseLifecycleWithLedger({
-      tenantId,
-      caseId,
-      target,
-      actor: {
-        kind: actorKind,
-        userId: actorUserId ?? null,
-        authorityProof: "AUTHORITATIVE_DECISION",
+    await this.orchestrator.executeDecisionEffect(
+      {
+        tenantId,
+        caseId,
+        decisionId: decision.id,
+        effect,
+        actorKind,
+        actorUserId,
       },
-      intentContext: buildIntentEnvelope(
-        decision.id,
-        decisionType,
-        supersedesDecisionId,
-        reason,
-        intentContext,
-      ),
-    });
+      tx,
+    );
   }
 }

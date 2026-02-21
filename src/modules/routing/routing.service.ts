@@ -1,12 +1,13 @@
 // apps/backend/src/modules/routing/routing.service.ts
-// Sovereign Phase 1.5 routing service.
-// Deterministic, multi-tenant scoped, ledger-authoritative, lifecycle-neutral.
+// Sovereign routing service.
+// Deterministic, idempotent, multi-tenant scoped, ledger-authoritative.
 
 import { prisma } from "@/lib/prisma";
-import { RoutingOutcome, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 import { commitRoutingLedger } from "./commitRoutingLedger";
+import { computeRouting } from "./computeRouting";
 
 ////////////////////////////////////////////////////////////////
 // Validation
@@ -16,10 +17,6 @@ const RouteCaseSchema = z.object({
   tenantId: z.string().uuid(),
   caseId: z.string().uuid(),
   intentCode: z.string().min(1),
-});
-
-const CapabilitiesSchema = z.object({
-  sdgGoals: z.array(z.string()),
 });
 
 export type RouteCaseParams = z.infer<typeof RouteCaseSchema>;
@@ -34,24 +31,42 @@ export class RoutingService {
   /**
    * LAW:
    * - Does NOT mutate lifecycle
-   * - Must be tenant-scoped
-   * - Must commit ledger event atomically
+   * - Tenant-scoped
+   * - Deterministic
+   * - Idempotent
+   * - Ledger commit atomic
    */
   async routeCase(input: unknown) {
     const { tenantId, caseId, intentCode } = RouteCaseSchema.parse(input);
 
     return prisma.$transaction(async (tx) => {
       ////////////////////////////////////////////////////////////////
-      // 1️⃣ Ensure case exists (tenant scoped)
+      // 1️⃣ Ensure case exists
       ////////////////////////////////////////////////////////////////
 
-      const c = await tx.case.findFirstOrThrow({
+      await tx.case.findFirstOrThrow({
         where: { id: caseId, tenantId },
-        select: { id: true, sdgGoal: true },
+        select: { id: true },
       });
 
       ////////////////////////////////////////////////////////////////
-      // 2️⃣ Fetch execution bodies (tenant scoped)
+      // 2️⃣ Idempotency
+      ////////////////////////////////////////////////////////////////
+
+      const existing = await tx.routingDecision.findFirst({
+        where: { tenantId, caseId },
+        orderBy: { decidedAt: "desc" },
+      });
+
+      if (existing) {
+        return {
+          executionBodyId: existing.chosenExecutionBodyId,
+          outcome: existing.routingOutcome,
+        };
+      }
+
+      ////////////////////////////////////////////////////////////////
+      // 3️⃣ Load execution bodies (tenant-scoped)
       ////////////////////////////////////////////////////////////////
 
       const bodies = await tx.executionBody.findMany({
@@ -63,49 +78,48 @@ export class RoutingService {
         },
       });
 
-      if (bodies.length === 0) {
-        throw new Error("NO_EXECUTION_BODIES_REGISTERED");
-      }
-
       ////////////////////////////////////////////////////////////////
-      // 3️⃣ Deterministic matching
+      // 4️⃣ Prepare deterministic candidates
       ////////////////////////////////////////////////////////////////
 
-      const matched = bodies.find((b) =>
-        this.matchesIntent(b.capabilities, c.sdgGoal),
-      );
+      const candidates = bodies.map((b) => ({
+        id: b.id,
+        supportsIntent: (code: string) => {
+          if (!b.capabilities || typeof b.capabilities !== "object")
+            return false;
+
+          const goals = (b.capabilities as any).sdgGoals ?? [];
+          return Array.isArray(goals) && goals.includes(code);
+        },
+      }));
 
       const fallback = bodies.find((b) => b.isFallback === true);
 
-      let chosenBodyId: string;
-      let outcome: RoutingOutcome;
+      ////////////////////////////////////////////////////////////////
+      // 5️⃣ Canonical routing computation
+      ////////////////////////////////////////////////////////////////
 
-      if (matched) {
-        chosenBodyId = matched.id;
-        outcome = RoutingOutcome.MATCHED;
-      } else if (fallback) {
-        chosenBodyId = fallback.id;
-        outcome = RoutingOutcome.FALLBACK;
-      } else {
-        // No silent assignment.
-        throw new Error("ROUTING_UNASSIGNABLE_NO_FALLBACK");
-      }
+      const result = computeRouting({
+        intentCode,
+        candidateExecutionBodies: candidates,
+        fallbackExecutionBodyId: fallback?.id,
+      });
 
       ////////////////////////////////////////////////////////////////
-      // 4️⃣ Persist routing decision snapshot
+      // 6️⃣ Persist routing snapshot
       ////////////////////////////////////////////////////////////////
 
       await tx.routingDecision.create({
         data: {
           tenantId,
           caseId,
-          routingOutcome: outcome,
-          chosenExecutionBodyId: chosenBodyId,
+          routingOutcome: result.outcome,
+          chosenExecutionBodyId: result.executionBodyId,
         },
       });
 
       ////////////////////////////////////////////////////////////////
-      // 5️⃣ Ledger commit (atomic with tx)
+      // 7️⃣ Ledger commit (atomic)
       ////////////////////////////////////////////////////////////////
 
       await commitRoutingLedger(
@@ -114,39 +128,15 @@ export class RoutingService {
           tenantId,
           caseId,
           intentCode,
-          routingResult: {
-            executionBodyId: chosenBodyId,
-            outcome,
-            reason:
-              outcome === RoutingOutcome.MATCHED
-                ? "MATCHED"
-                : "FALLBACK_NO_MATCH",
-          },
+          routingResult: result,
         },
         tx as Prisma.TransactionClient,
       );
 
       return {
-        executionBodyId: chosenBodyId,
-        outcome,
+        executionBodyId: result.executionBodyId,
+        outcome: result.outcome,
       };
     });
-  }
-
-  ////////////////////////////////////////////////////////////////
-  // Deterministic Intent Matching
-  ////////////////////////////////////////////////////////////////
-
-  private matchesIntent(
-    capabilities: unknown,
-    sdgGoal: string | null,
-  ): boolean {
-    if (!sdgGoal) return false;
-
-    const parsed = CapabilitiesSchema.safeParse(capabilities);
-
-    if (!parsed.success) return false;
-
-    return parsed.data.sdgGoals.includes(sdgGoal);
   }
 }

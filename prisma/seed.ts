@@ -1,5 +1,5 @@
 // apps/backend/prisma/seed.ts
-/**
+/**caseEntity
  * Purpose:
  * Production-grade structured seed script generating:
  * - Single tenant
@@ -394,12 +394,15 @@ async function simulateCases(context: Awaited<ReturnType<typeof seedBase>>) {
       //////////////////////////////////////////////////////////////////
       // CASE INTAKE
       //////////////////////////////////////////////////////////////////
+      const referenceCode = `CASE-${Date.now()}-${faker.string.alphanumeric(6).toUpperCase()}`;
+
       const caseEntity = await tx.case.create({
         data: {
           id: uuid(),
           tenantId: tenant.id,
           authorUserId: users.admin.id,
           beneficiaryId: beneficiary.id,
+          referenceCode, // ✅ Required invariant
           mode: "ASSISTED",
           scope: "INTERNAL",
           type: "EXECUTION",
@@ -407,9 +410,7 @@ async function simulateCases(context: Awaited<ReturnType<typeof seedBase>>) {
           sdgGoal: "SDG-" + faker.number.int({ min: 1, max: 17 }),
           status: "INTAKED",
         },
-      });
-
-      //////////////////////////////////////////////////////////////////
+      }); //////////////////////////////////////////////////////////////////
       // GRANT LINK
       //////////////////////////////////////////////////////////////////
       await tx.grantCase.create({

@@ -1,49 +1,84 @@
-import { prisma } from "@/lib/prisma";
-import { CaseLifecycle } from "./CaseLifecycle";
-import { transitionCaseLifecycleWithLedger } from "./transitionCaseLifecycleWithLedger";
-import { InvariantViolationError } from "./case.errors";
+// apps/backend/src/modules/orchestrator/orchestrator.service.ts
 
-type OrchestrateExecutionVerificationInput = {
+import { Prisma, ActorKind, ExecutionStatus } from "@prisma/client";
+import { CaseLifecycle } from "../cases/CaseLifecycle";
+import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
+import { InvariantViolationError } from "../cases/case.errors";
+import { DecisionEffect } from "../decision/decision.types";
+
+type ExecuteEffectParams = {
   tenantId: string;
   caseId: string;
-
-  actor: {
-    kind: "SYSTEM" | "HUMAN";
-    userId?: string;
-    authorityProof: string;
-  };
+  decisionId: string;
+  effect: DecisionEffect;
 };
 
-export async function orchestrateExecutionVerification(
-  input: OrchestrateExecutionVerificationInput,
-) {
-  const { tenantId, caseId, actor } = input;
+type OrchestratorActor = {
+  kind: ActorKind;
+  userId?: string;
+  authorityProof: string;
+};
 
-  return prisma.$transaction(async (tx) => {
-    // 1️⃣ Load case (authoritative lifecycle)
-    const c = await tx.case.findUniqueOrThrow({
-      where: { id: caseId },
+export class OrchestratorService {
+  async executeEffect(
+    params: ExecuteEffectParams,
+    actor: OrchestratorActor,
+    tx: Prisma.TransactionClient,
+  ) {
+    const { tenantId, caseId, decisionId, effect } = params;
+
+    switch (effect.kind) {
+      case "EXECUTION_VERIFIED":
+        return this.handleExecutionVerified(
+          tenantId,
+          caseId,
+          decisionId,
+          actor,
+          tx,
+        );
+
+      default:
+        throw new Error(`Unsupported effect kind: ${effect.kind}`);
+    }
+  }
+
+  ////////////////////////////////////////////////////////////////
+  // EXECUTION_VERIFIED
+  ////////////////////////////////////////////////////////////////
+
+  private async handleExecutionVerified(
+    tenantId: string,
+    caseId: string,
+    decisionId: string,
+    actor: OrchestratorActor,
+    tx: Prisma.TransactionClient,
+  ) {
+    const c = await tx.case.findFirst({
+      where: { id: caseId, tenantId },
       select: { lifecycle: true },
     });
+
+    if (!c) {
+      throw new InvariantViolationError("CASE_NOT_FOUND");
+    }
 
     if (c.lifecycle !== CaseLifecycle.EXECUTING) {
       throw new InvariantViolationError("CASE_NOT_IN_EXECUTING_STATE");
     }
 
-    // 2️⃣ Execution must be completed
-    const execution = await tx.execution.findUnique({
-      where: { caseId },
+    const execution = await tx.execution.findFirst({
+      where: { caseId, tenantId },
       select: { status: true },
     });
 
-    if (!execution || execution.status !== "COMPLETED") {
+    if (!execution || execution.status !== ExecutionStatus.COMPLETED) {
       throw new InvariantViolationError("EXECUTION_NOT_COMPLETED");
     }
 
-    // 3️⃣ Verification consensus must exist
     const verified = await tx.verificationRecord.findFirst({
       where: {
         caseId,
+        tenantId,
         consensusReached: true,
       },
       select: { id: true },
@@ -53,16 +88,15 @@ export async function orchestrateExecutionVerification(
       throw new InvariantViolationError("VERIFICATION_NOT_FINALIZED");
     }
 
-    // 4️⃣ Advance lifecycle (single authoritative write)
     return transitionCaseLifecycleWithLedger({
       tenantId,
       caseId,
       target: CaseLifecycle.VERIFIED,
       actor,
       intentContext: {
-        executionCompleted: true,
-        verificationConsensus: verified.id,
+        decisionId,
+        verificationRecordId: verified.id,
       },
     });
-  });
+  }
 }

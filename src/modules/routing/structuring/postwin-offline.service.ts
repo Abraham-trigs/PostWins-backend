@@ -1,51 +1,46 @@
-// filepath: src/modules/routing/postwin-offline.service.ts
+// filepath: apps/backend/src/modules/routing/structuring/postwin-offline.service.ts
+// Purpose: Offline intake queue for Case creation replay.
+// Transport-only. No lifecycle mutation.
+// No verification logic.
+// No ledger logic.
 
-/**
- * ⚠️ PHASE 2 ONLY
- * -------------------------------------------------------------------
- * Offline transport and replay service.
- *
- * This service may invoke orchestration pipelines that:
- * - advance routing
- * - trigger verification
- * - append ledger entries
- *
- * It MUST NOT be used as evidence of Phase 1.5 invariants.
- */
+import { IntakeService } from "../../intake/intake.service";
+import { PostWinRoutingService } from "./postwin-routing.service";
+import { ExecutionBody, PostWin } from "@posta/core";
 
-import { PostWin, ExecutionBody } from "@posta/core";
-import { PostWinPipelineService } from "./postwin-pipeline.service";
-// NOTE:
-// Phase 2 transport + replay service.
-// Does not itself infer or mutate state,
-// but delegates to orchestration pipelines that may.
-
-// Simple offline queue
-interface OfflineQueueItem {
-  postWin: PostWin;
-  availableBodies: ExecutionBody[];
+interface OfflineIntakeItem {
+  tenantId: string;
+  beneficiaryId: string;
+  message: string;
+  partnerUserId?: string;
 }
 
 export class PostWinOfflineService {
-  private queue: OfflineQueueItem[] = [];
-  private pipeline: PostWinPipelineService;
+  private queue: OfflineIntakeItem[] = [];
 
-  constructor(pipeline: PostWinPipelineService) {
-    this.pipeline = pipeline;
+  constructor(
+    private intake: IntakeService,
+    private router: PostWinRoutingService,
+  ) {
     this.startBackgroundSync();
   }
 
-  /**
-   * Accept PostWin intake even when offline
-   */
-  async enqueuePostWin(postWin: PostWin, availableBodies: ExecutionBody[]) {
-    this.queue.push({ postWin, availableBodies });
-    console.log(`PostWin queued for beneficiary ${postWin.beneficiaryId}`);
+  ////////////////////////////////////////////////////////////////
+  // Enqueue raw intake command (transport only)
+  ////////////////////////////////////////////////////////////////
+
+  async enqueueIntake(params: OfflineIntakeItem) {
+    this.queue.push(params);
+
+    console.log(
+      `Intake queued for beneficiary ${params.beneficiaryId} (tenant ${params.tenantId})`,
+    );
   }
 
-  /**
-   * Background synchronization loop
-   */
+  ////////////////////////////////////////////////////////////////
+  // Background synchronization loop
+  ////////////////////////////////////////////////////////////////
+
   private startBackgroundSync() {
     setInterval(async () => {
       if (this.queue.length === 0) return;
@@ -55,25 +50,46 @@ export class PostWinOfflineService {
 
       for (const item of itemsToSync) {
         try {
-          // Phase 2: delegated orchestration (may advance routing & verification)
-          const processed = await this.pipeline.intakeAndRoute(
-            item.postWin.description ?? "",
-            item.postWin.beneficiaryId ?? "",
-            item.availableBodies,
-            item.postWin.authorId,
+          ////////////////////////////////////////////////////////////////
+          // 1️⃣ Intake (domain command)
+          ////////////////////////////////////////////////////////////////
+
+          const intakeResult = await this.intake.handleIntake(
+            item.message,
+            "offline_device",
           );
-          console.log(
-            `Synced PostWin for beneficiary ${processed.beneficiaryId}`,
+
+          ////////////////////////////////////////////////////////////////
+          // 2️⃣ Projection-only routing (no lifecycle mutation)
+          ////////////////////////////////////////////////////////////////
+
+          const projectedPostWin: PostWin = {
+            id: intakeResult.id ?? "offline_projection",
+            beneficiaryId: item.beneficiaryId,
+            taskId: intakeResult.taskId,
+            mode: intakeResult.mode,
+            scope: intakeResult.scope,
+            intent: intakeResult.intent,
+            sdgGoals: intakeResult.sdgGoals ?? [],
+            routingStatus: "PENDING",
+          };
+
+          const availableBodies: ExecutionBody[] = [];
+
+          await this.router.processPostWin(
+            projectedPostWin,
+            availableBodies,
+            intakeResult.sdgGoals ?? [],
           );
+
+          console.log(`Synced intake for beneficiary ${item.beneficiaryId}`);
         } catch (err) {
-          console.error(
-            `Failed to sync PostWin for ${item.postWin.beneficiaryId}`,
-            err,
-          );
-          // Requeue for next sync attempt
+          console.error(`Failed to sync intake for ${item.beneficiaryId}`, err);
+
+          // Safe requeue
           this.queue.push(item);
         }
       }
-    }, 5000); // every 5 seconds; configurable
+    }, 5000);
   }
 }

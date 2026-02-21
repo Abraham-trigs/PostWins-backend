@@ -2,7 +2,7 @@
 // Deterministic lifecycle transition with atomic ledger authority + structured governance logging.
 
 import { prisma } from "@/lib/prisma";
-import { CaseLifecycle, ActorKind } from "@prisma/client";
+import { CaseLifecycle, ActorKind, Prisma } from "@prisma/client";
 import { transitionCaseLifecycle } from "./transitionCaseLifecycle";
 import { LifecycleInvariantViolationError } from "./case.errors";
 import { CASE_LIFECYCLE_LEDGER_EVENTS } from "./caseLifecycle.events";
@@ -10,6 +10,12 @@ import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
 import { log } from "@/lib/observability/logger";
 import { z } from "zod";
+
+////////////////////////////////////////////////////////////////
+// Internal Governance Symbol (not persisted, not enumerable)
+////////////////////////////////////////////////////////////////
+
+const LIFECYCLE_AUTH_SYMBOL = Symbol.for("POSTA_LIFECYCLE_AUTH");
 
 ////////////////////////////////////////////////////////////////
 // Errors
@@ -25,7 +31,7 @@ export class LifecycleTransitionValidationError extends Error {
 }
 
 ////////////////////////////////////////////////////////////////
-// Validation Schema
+// Validation Schema hasLedger
 ////////////////////////////////////////////////////////////////
 
 const TransitionWithLedgerSchema = z
@@ -59,7 +65,7 @@ const TransitionWithLedgerSchema = z
   });
 
 ////////////////////////////////////////////////////////////////
-// Overloads (Backward Compatibility Layer)
+// Overloads
 ////////////////////////////////////////////////////////////////
 
 export async function transitionCaseLifecycleWithLedger(
@@ -67,8 +73,19 @@ export async function transitionCaseLifecycleWithLedger(
 ): Promise<CaseLifecycle>;
 
 export async function transitionCaseLifecycleWithLedger(
+  input: unknown,
+  tx: Prisma.TransactionClient,
+): Promise<CaseLifecycle>;
+
+export async function transitionCaseLifecycleWithLedger(
   ledger: LedgerService,
   input: unknown,
+): Promise<CaseLifecycle>;
+
+export async function transitionCaseLifecycleWithLedger(
+  ledger: LedgerService,
+  input: unknown,
+  tx: Prisma.TransactionClient,
 ): Promise<CaseLifecycle>;
 
 ////////////////////////////////////////////////////////////////
@@ -78,11 +95,15 @@ export async function transitionCaseLifecycleWithLedger(
 export async function transitionCaseLifecycleWithLedger(
   arg1: LedgerService | unknown,
   arg2?: unknown,
+  arg3?: Prisma.TransactionClient,
 ): Promise<CaseLifecycle> {
-  const ledger = arg1 instanceof LedgerService ? arg1 : new LedgerService();
+  const hasLedger = arg1 instanceof LedgerService;
 
-  const input = arg1 instanceof LedgerService ? arg2 : arg1;
-
+  const ledger = hasLedger ? arg1 : new LedgerService();
+  const input = hasLedger ? arg2 : arg1;
+  const externalTx: Prisma.TransactionClient | undefined = hasLedger
+    ? (arg3 as Prisma.TransactionClient | undefined)
+    : (arg2 as Prisma.TransactionClient | undefined);
   const parsed = TransitionWithLedgerSchema.safeParse(input);
 
   if (!parsed.success) {
@@ -96,7 +117,7 @@ export async function transitionCaseLifecycleWithLedger(
   let previousLifecycle: CaseLifecycle | null = null;
   let next: CaseLifecycle | null = null;
 
-  await prisma.$transaction(async (tx) => {
+  const execute = async (tx: Prisma.TransactionClient) => {
     const c = await tx.case.findFirstOrThrow({
       where: {
         id: params.caseId,
@@ -137,13 +158,20 @@ export async function transitionCaseLifecycleWithLedger(
       );
     }
 
+    ////////////////////////////////////////////////////////////////
+    // Authorized lifecycle write (symbol marker)
+    ////////////////////////////////////////////////////////////////
+
     const updated = await tx.case.updateMany({
       where: {
         id: params.caseId,
         tenantId: params.tenantId,
         lifecycle: previousLifecycle,
       },
-      data: { lifecycle: next },
+      data: {
+        lifecycle: next,
+        [LIFECYCLE_AUTH_SYMBOL]: true,
+      } as any, // symbol not part of Prisma schema
     });
 
     if (updated.count !== 1) {
@@ -172,7 +200,13 @@ export async function transitionCaseLifecycleWithLedger(
       },
       tx,
     );
-  });
+  };
+
+  if (externalTx) {
+    await execute(externalTx);
+  } else {
+    await prisma.$transaction(execute);
+  }
 
   if (previousLifecycle === null || next === null) {
     throw new Error("Lifecycle transition failed unexpectedly");

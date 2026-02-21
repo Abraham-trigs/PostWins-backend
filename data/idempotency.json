@@ -171,6 +171,32 @@
         }
       },
       "recordedAt": "2026-02-18T02:26:54.802Z"
+    },
+    "bootstrap-006": {
+      "requestHash": "69a02431ee7d7956c544c0b2a423937c7287ee0c946481a8ba46b10dcc202039",
+      "response": {
+        "requestHash": "69a02431ee7d7956c544c0b2a423937c7287ee0c946481a8ba46b10dcc202039",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "projectId": "8a4f38fb-a3a6-4550-94bd-a35c4123b33f",
+          "postWinId": "9e3f3fe7-b765-49e6-98f4-04c059034d85"
+        }
+      },
+      "recordedAt": "2026-02-21T17:36:57.837Z"
+    },
+    "bootstrap-007": {
+      "requestHash": "261422f25f50cb130cbabd2d396c338b69a605742e76b88ce30bdfd49fdba4d8",
+      "response": {
+        "requestHash": "261422f25f50cb130cbabd2d396c338b69a605742e76b88ce30bdfd49fdba4d8",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "projectId": "914a9bcf-1b6b-4323-8849-361d0f3eef83",
+          "postWinId": "3b5d080d-f47c-476c-95c5-5da5dfb0b27e"
+        }
+      },
+      "recordedAt": "2026-02-21T17:45:55.455Z"
     }
   }
 }

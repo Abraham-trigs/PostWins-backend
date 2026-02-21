@@ -17,18 +17,16 @@
     "declaration": true,
     "declarationMap": true,
 
-    "baseUrl": "./src",
+    // ✅ Proper alias resolution
+    "baseUrl": ".",
     "paths": {
-      "@/*": ["*"]
+      "@/*": ["src/*"]
     }
   },
+
+  // ✅ Include everything under src
   "include": ["src/**/*.ts"],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "**/*.test.ts",
-    "**/*.spec.ts",
-    "**/__tests__/**",
-    "**/_test_/**"
-  ]
+
+  // ✅ Exclude only build artifacts + node_modules
+  "exclude": ["node_modules", "dist"]
 }

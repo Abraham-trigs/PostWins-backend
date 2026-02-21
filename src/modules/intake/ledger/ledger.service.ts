@@ -72,7 +72,7 @@ const LedgerCommitSchema = z
   });
 
 ////////////////////////////////////////////////////////////////
-// Ledger Service
+// Ledger Service getStatus
 ////////////////////////////////////////////////////////////////
 
 export class LedgerService {
@@ -171,12 +171,12 @@ export class LedgerService {
 
     return {
       ok: true,
-      latestCommitTs: latest?.ts ?? null,
+      latestCommitTs: latest?.ts ? latest.ts.toString() : null,
     };
   }
 
   ////////////////////////////////////////////////////////////////
-  // Constitutional Commit
+  // Constitutional latest
   ////////////////////////////////////////////////////////////////
 
   private async commit(input: unknown, tx?: Prisma.TransactionClient) {

@@ -3,6 +3,7 @@
 // Multi-instance safe via Postgres advisory lock (optional).
 
 import app from "./app";
+
 import { PostaMockEngine } from "./modules/routing/structuring/mock-engine";
 import { IntakeService } from "./modules/intake/intake.service";
 import { PostWinRoutingService } from "./modules/routing/structuring/postwin-routing.service";
@@ -14,6 +15,11 @@ import { JourneyService } from "./modules/routing/journey/journey.service";
 import { LifecycleReconciliationScheduler } from "./modules/cases/lifecycleReconciliation.scheduler";
 import { prisma } from "./lib/prisma";
 
+// ✅ Governance Layer
+import { OrchestratorService } from "./modules/orchestrator/orchestrator.service";
+import { DecisionOrchestrationService } from "./modules/decision/decision-orchestration.service";
+import { DecisionService } from "./modules/decision/decision.service";
+
 ////////////////////////////////////////////////////////////////
 // Environment
 ////////////////////////////////////////////////////////////////
@@ -22,8 +28,7 @@ const PORT = Number(process.env.PORT) || 3001;
 const MODE = process.env.MODE || "production";
 
 const ENABLE_SCHEDULER = process.env.ENABLE_LIFECYCLE_SCHEDULER === "true";
-
-const ENABLE_SCHEDULER_LOCK = process.env.ENABLE_LIFECYCLE_LOCK !== "false"; // default true
+const ENABLE_SCHEDULER_LOCK = process.env.ENABLE_LIFECYCLE_LOCK !== "false";
 
 const SCHEDULER_INTERVAL_MS =
   Number(process.env.LIFECYCLE_INTERVAL_MS) || 24 * 60 * 60 * 1000;
@@ -47,13 +52,20 @@ if (MODE === "MOCK") {
   const ledger = new LedgerService();
   const integrity = new IntegrityService();
 
+  // 🔁 Governance wiring
+  const orchestrator = new OrchestratorService();
+  const decisionOrchestration = new DecisionOrchestrationService(orchestrator);
+  const decisionService = new DecisionService(decisionOrchestration);
+
+  // 🧠 Domain services
   const tasks = new TaskService();
   const journey = new JourneyService();
-  const verifier = new VerificationService(ledger);
-  const router = new PostWinRoutingService(tasks, journey, ledger);
+
+  const verifier = new VerificationService(ledger, decisionService);
+  const router = new PostWinRoutingService(tasks, journey);
   const intake = new IntakeService(integrity, tasks);
 
-  const mockEngine = new PostaMockEngine(intake, router, verifier);
+  const mockEngine = new PostaMockEngine(intake, verifier);
 
   mockEngine.runSimulation().catch((err) => {
     console.error("Mock Simulation Failed:", err);
@@ -68,7 +80,6 @@ async function acquireSchedulerLock(): Promise<boolean> {
   if (!ENABLE_SCHEDULER_LOCK) return true;
 
   try {
-    // Arbitrary constant lock key (stable across instances)
     const [{ pg_try_advisory_lock }] = await prisma.$queryRaw<
       { pg_try_advisory_lock: boolean }[]
     >`SELECT pg_try_advisory_lock(937421)`;

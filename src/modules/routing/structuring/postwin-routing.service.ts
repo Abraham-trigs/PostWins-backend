@@ -1,45 +1,26 @@
 /**
  * 🚫 GOVERNANCE NOTICE
  * --------------------------------------------------
- * This service operates on PostWin (Phase 2) only.
+ * This service operates strictly as a routing projection layer.
  *
  * It MUST NOT:
  * - read Case.lifecycle
  * - write Case.lifecycle
  * - infer Case.lifecycle
- * - call transitionCaseLifecycle*
+ * - mutate verification state
+ * - commit ledger entries
  *
- * Any lifecycle change must be performed by
- * a Phase 1.5 / governance service upstream.
- */
-
-// apps/backend/src/modules/routing/postwin-routing.service.ts
-// Purpose: Validates PostWin task integrity, hydrates state, routes to bodies, and manages reliable event delivery with retries.
-
-/**
- * 🚫 PHASE 2 ONLY — NOT PHASE 1.5 COMPLIANT
- * -------------------------------------------------------------------
- * This service performs full PostWin orchestration, including:
- * - task sequencing and completion
- * - routing decisions
- * - verification consensus
- * - ledger mutation
- * - human escalation
- *
- * It intentionally bypasses Phase 1.5 invariants and MUST NOT be
- * used as evidence of Phase 1.5 correctness.
+ * Governance authority belongs exclusively to:
+ * - Lifecycle services
+ * - Execution services
+ * - Verification services
+ * - Ledger commit layer
  */
 
 import { EventEmitter } from "events";
-import {
-  PostWin,
-  ExecutionBody,
-  Journey,
-  VerificationRecord,
-} from "@posta/core";
+import { PostWin, ExecutionBody, Journey } from "@posta/core";
 import { TaskService } from "./task.service";
 import { JourneyService } from "../journey/journey.service";
-import { LedgerService } from "@/modules/intake/ledger/ledger.service";
 
 interface IntegrityFlag {
   type: string;
@@ -54,18 +35,17 @@ export class PostWinRoutingService extends EventEmitter {
   constructor(
     private taskService: TaskService,
     private journeyService: JourneyService,
-    private ledgerService: LedgerService,
   ) {
     super();
   }
 
   /**
-   * Internal helper to handle event emission with Exponential Backoff retries.
-   * Routes to "ROUTING_DLQ" on final failure.
+   * Reliable emission helper with exponential backoff.
+   * This emits projection events only.
    */
   private async emitWithRetry(
     eventName: string,
-    payload: any,
+    payload: unknown,
     attempt: number = 0,
   ): Promise<void> {
     try {
@@ -73,15 +53,12 @@ export class PostWinRoutingService extends EventEmitter {
     } catch (error) {
       if (attempt < this.MAX_RETRIES) {
         const delay = Math.pow(2, attempt) * this.BASE_DELAY_MS;
-        console.warn(
-          `[PostWinRouting] Retry ${attempt + 1} for ${eventName} in ${delay}ms...`,
-        );
 
         await new Promise((resolve) => setTimeout(resolve, delay));
+
         return this.emitWithRetry(eventName, payload, attempt + 1);
       }
 
-      // Final failure: Route to Dead Letter Queue for manual intervention
       this.emit("ROUTING_DLQ", {
         originalEvent: eventName,
         payload,
@@ -95,7 +72,17 @@ export class PostWinRoutingService extends EventEmitter {
   }
 
   /**
-   * Core orchestration entrypoint for PostWin routing
+   * Core routing entrypoint.
+   *
+   * This method:
+   * - Validates task sequence
+   * - Routes to an execution body
+   * - Returns projection updates
+   *
+   * It does NOT:
+   * - Mutate lifecycle
+   * - Mutate verification
+   * - Commit ledger
    */
   async processPostWin(
     postWin: PostWin,
@@ -105,147 +92,69 @@ export class PostWinRoutingService extends EventEmitter {
     const beneficiaryId = postWin.beneficiaryId ?? "unknown";
     const taskId = postWin.taskId ?? "ENROLL";
 
-    /**
-     * STEP 1: Ensure journey exists
-     */
+    // Stateless journey projection (no persistence)
+    const journey: Journey = {
+      beneficiaryId,
+      completedTaskIds: [],
+    };
 
-    const journey: Journey =
-      // Phase 2: task completion & journey mutation
-      this.journeyService.getOrCreateJourney(beneficiaryId);
+    // Validate task sequence integrity
+    const taskValid = this.taskService.validateTaskSequence(journey, taskId);
 
-    /**
-     * STEP 2: Validate task sequence integrity
-     */
-    for (const sdg of sdgGoals) {
-      const taskValid = this.taskService.validateTaskSequence(journey, taskId);
-
-      if (!taskValid) {
-        postWin.routingStatus = "BLOCKED";
-        postWin.verificationStatus = "PENDING";
-        postWin.notes = `Cannot perform task ${taskId} before completing dependencies for ${sdg}`;
-        return postWin;
-      }
+    if (!taskValid) {
+      return {
+        ...postWin,
+        routingStatus: "BLOCKED",
+        notes: `Cannot perform task ${taskId} before completing required dependencies.`,
+      };
     }
 
-    /**
-     * STEP 3: Map Verification Records
-     */
-    const verificationRecords: VerificationRecord[] = sdgGoals.map(
-      (goal): VerificationRecord => ({
-        sdgGoal: goal,
-        requiredVerifiers: 2,
-        receivedVerifications: [],
-        consensusReached: false,
-        timestamps: { routedAt: new Date().toISOString() },
-      }),
-    );
-
-    /**
-     * STEP 4: Mark task completed and Route
-     */
-    this.journeyService.completeTask(beneficiaryId, taskId);
-
-    const assignedBodyId = await this.journeyService.routePostWin(
+    // Rank bodies deterministically
+    const rankedBodies = this.journeyService.rankBodies(
       postWin,
       availableBodies,
     );
 
-    /**
-     * STEP 5: MUTATE AND HYDRATE
-     * Explicitly attaching data to the postWin reference BEFORE emission.
-     */
-    const finalAssignedBody = assignedBodyId || "Khalistar_Foundation";
+    const assignedBodyId = rankedBodies[0]?.id;
 
-    postWin.verificationRecords = verificationRecords;
-    postWin.assignedBodyId = finalAssignedBody;
-    postWin.routingStatus = assignedBodyId ? "MATCHED" : "FALLBACK";
-    postWin.verificationStatus = "PENDING";
+    const routingStatus = assignedBodyId ? "MATCHED" : "FALLBACK";
 
-    postWin.auditTrail = [
-      ...(postWin.auditTrail || []),
-      {
-        action: "ROUTED",
-        actor: "Posta-AI",
-        assignedBodyId: finalAssignedBody,
-        timestamp: new Date().toISOString(),
-        note: `Task validated and routed to ${finalAssignedBody}`,
-      },
-    ];
+    const projectedPostWin: PostWin = {
+      ...postWin,
+      assignedBodyId: assignedBodyId ?? undefined,
+      routingStatus,
+    };
 
-    /**
-     * STEP 6: RELIABLE EMISSION
-     */
     await this.emitWithRetry("ROUTING_COMPLETE", {
-      postWinId: postWin.id,
-      postWin,
+      postWinId: projectedPostWin.id,
+      routingStatus,
+      assignedBodyId: projectedPostWin.assignedBodyId,
     });
 
-    return postWin;
+    return projectedPostWin;
   }
 
   /**
-   * Adds a verifier approval and checks consensus threshold
+   * Projection-only escalation signal.
+   *
+   * Does NOT commit ledger.
+   * Does NOT mutate lifecycle.
+   * Returns suggested routing override.
    */
-  async addVerifierApproval(
+  evaluateEscalation(
     postWin: PostWin,
-    verifierId: string,
-    sdgGoal: string,
-  ) {
-    const record = postWin.verificationRecords?.find(
-      (r) => r.sdgGoal === sdgGoal,
-    );
-
-    if (!record) {
-      throw new Error(`No verification record found for SDG goal ${sdgGoal}.`);
-    }
-
-    record.receivedVerifications ??= [];
-
-    if (!record.receivedVerifications.includes(verifierId)) {
-      record.receivedVerifications.push(verifierId);
-    }
-
-    if (record.receivedVerifications.length >= record.requiredVerifiers) {
-      record.consensusReached = true;
-      postWin.verificationStatus = "VERIFIED";
-
-      record.timestamps ??= {};
-      record.timestamps.routedAt ??= new Date().toISOString();
-
-      postWin.auditTrail = postWin.auditTrail || [];
-      postWin.auditTrail.push({
-        action: "VERIFIED",
-        actor: verifierId,
-        timestamp: new Date().toISOString(),
-        note: `Consensus reached for ${sdgGoal}`,
-      });
-
-      await this.emitWithRetry("VERIFICATION_CONSENSUS", {
-        postWinId: postWin.id,
-        postWin,
-      });
-    }
-  }
-
-  private shouldEscalate(postWin: PostWin, flags: IntegrityFlag[]): boolean {
+    flags: IntegrityFlag[],
+  ): { escalated: boolean; reason?: string } {
     const hasHighSeverityFlag = flags.some((f) => f.severity === "HIGH");
     const isLowConfidence = (postWin.localization?.confidence ?? 1) < 0.7;
-    return hasHighSeverityFlag || isLowConfidence;
-  }
 
-  async finalizeRouting(postWin: PostWin, flags: IntegrityFlag[]) {
-    if (!this.shouldEscalate(postWin, flags)) return;
+    if (hasHighSeverityFlag || isLowConfidence) {
+      return {
+        escalated: true,
+        reason: "Requires human review due to integrity or confidence risk.",
+      };
+    }
 
-    postWin.routingStatus = "FALLBACK";
-    postWin.notes = "ESCALATED: Requires human review due to integrity flags.";
-
-    await this.ledgerService.appendEntry({
-      ts: Date.now(),
-      postWinId: postWin.id,
-      action: "FLAGGED",
-      actorId: "POSTA_AI_SAFETY",
-      previousState: "ROUTING",
-      newState: "HUMAN_REVIEW_REQUIRED",
-    } as any);
+    return { escalated: false };
   }
 }

@@ -11,6 +11,7 @@ import {
   AccessScope,
   CaseType,
 } from "@prisma/client";
+import crypto from "node:crypto";
 
 describe("Execution Workflow Integration", () => {
   const tenantId = "11111111-1111-1111-1111-111111111111";
@@ -46,9 +47,11 @@ describe("Execution Workflow Integration", () => {
       },
     });
 
-    // 3️⃣ Seed Case
+    // 3️⃣ Seed Case (aligned with updated schema)
     const testCase = await prisma.case.create({
       data: {
+        id: crypto.randomUUID(), // Explicit primary key
+        referenceCode: crypto.randomUUID(), // REQUIRED by schema
         tenantId,
         authorUserId: actorUserId,
         mode: OperationalMode.MOCK,
@@ -135,36 +138,24 @@ describe("Execution Workflow Integration", () => {
 /* -------------------------------------------------------------------------------------------------
 Design reasoning
 
-Foreign keys require real parents.
-Multi-tenant integrity demands Tenant and User exist before Case.
-
-Integration tests must simulate full relational truth.
+Schema now requires referenceCode and explicit id alignment.
+Tests must mirror production invariants to avoid drift.
 
 ---------------------------------------------------------------------------------------------------
 Structure
 
-Tenant → User → Case → Execution → Milestone
-
-FK-safe cleanup in reverse order.
+Tenant → User → Case (with id + referenceCode) → Execution → Milestone
 
 ---------------------------------------------------------------------------------------------------
 Implementation guidance
 
-If additional required relations are added:
-Seed them in correct order.
-
-For larger test suites:
-Use a dedicated test DB or transaction rollback strategy.
+If Case model changes again:
+Update seed block immediately.
+Never rely on implicit defaults when schema is strict.
 
 ---------------------------------------------------------------------------------------------------
 Scalability insight
 
-Never bypass foreign keys in tests.
-They are your safety net.
-
-If this fails:
-It is protecting you.
-
-Owner tomorrow:
-The engineer maintaining domain integrity.
+Schema strictness in tests prevents silent production bugs.
+If this compiles, your model alignment is correct.
 ------------------------------------------------------------------------------------------------- */

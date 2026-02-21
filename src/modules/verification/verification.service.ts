@@ -1,7 +1,4 @@
 // src/modules/verification/verification.service.ts
-// Sovereign Phase 1.5 verification service.
-// Consensus-target model. No lifecycle mutation. Ledger-authoritative.
-// Authority Envelope V1 enforced for all ledger commits.
 
 import { prisma } from "@/lib/prisma";
 import { LedgerService } from "@/modules/intake/ledger/ledger.service";
@@ -13,24 +10,16 @@ import {
   ExecutionStatus,
   LedgerEventType,
   Prisma,
+  DecisionType,
 } from "@prisma/client";
 import { LifecycleInvariantViolationError } from "@/modules/cases/case.errors";
+import { DecisionService } from "@/modules/decision/decision.service";
 import { z } from "zod";
 
 ////////////////////////////////////////////////////////////////
 // Validation
 ////////////////////////////////////////////////////////////////
 
-/**
- * Input schema for recording a verification vote.
- *
- * Strictly enforces:
- * - UUID format
- * - Enum alignment with Prisma schema
- * - Optional note payload
- *
- * Prevents drift between API boundary and DB vocabulary.
- */
 const RecordVerificationSchema = z.object({
   verificationRecordId: z.string().uuid(),
   verifierUserId: z.string().uuid(),
@@ -38,14 +27,6 @@ const RecordVerificationSchema = z.object({
   note: z.string().optional(),
 });
 
-/**
- * Deterministic result contract.
- *
- * - consensusReached: whether quorum finalized
- * - record: finalized record only when consensus true
- *
- * Never mutates Case lifecycle here.
- */
 type VerificationResult = {
   consensusReached: boolean;
   record: VerificationRecord | null;
@@ -56,12 +37,11 @@ type VerificationResult = {
 ////////////////////////////////////////////////////////////////
 
 export class VerificationService {
-  constructor(private ledger: LedgerService) {}
+  constructor(
+    private ledger: LedgerService,
+    private decisionService: DecisionService,
+  ) {}
 
-  /**
-   * Read-only loader.
-   * Does not mutate state.
-   */
   async getVerificationRecordById(verificationRecordId: string) {
     return prisma.verificationRecord.findUnique({
       where: { id: verificationRecordId },
@@ -72,24 +52,13 @@ export class VerificationService {
     });
   }
 
-  /**
-   * LAW:
-   * - Records verification facts only
-   * - Never mutates Case.lifecycle
-   * - Ledger commit must be atomic with DB mutation
-   * - Tenant isolation must be preserved
-   * - All ledger payloads must use Authority Envelope V1
-   *
-   * Verification is a fact-recording system.
-   * Governance transition is separate.
-   */
   async recordVerification(input: unknown): Promise<VerificationResult> {
     const { verificationRecordId, verifierUserId, status, note } =
       RecordVerificationSchema.parse(input);
 
     return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       ////////////////////////////////////////////////////////////////
-      // 1️⃣ Load record (authoritative source of tenant + policy)
+      // 1️⃣ Load record
       ////////////////////////////////////////////////////////////////
 
       const record = await tx.verificationRecord.findUnique({
@@ -97,7 +66,6 @@ export class VerificationService {
         include: {
           requiredRoles: true,
           receivedVerifications: true,
-          case: true,
         },
       });
 
@@ -111,7 +79,6 @@ export class VerificationService {
 
       ////////////////////////////////////////////////////////////////
       // 2️⃣ Execution invariant
-      // Verification may only occur after execution completion
       ////////////////////////////////////////////////////////////////
 
       const execution = await tx.execution.findFirst({
@@ -129,19 +96,13 @@ export class VerificationService {
       }
 
       ////////////////////////////////////////////////////////////////
-      // 3️⃣ Tenant-safe role authorization
-      //
-      // NOTE:
-      // UserRole does not carry tenantId directly.
-      // Tenant isolation enforced through Role.tenantId.
+      // 3️⃣ Role authorization
       ////////////////////////////////////////////////////////////////
 
       const verifierRoles = await tx.userRole.findMany({
         where: {
           userId: verifierUserId,
-          role: {
-            tenantId: record.tenantId,
-          },
+          role: { tenantId: record.tenantId },
         },
         include: { role: true },
       });
@@ -158,8 +119,6 @@ export class VerificationService {
 
       ////////////////////////////////////////////////////////////////
       // 4️⃣ Prevent duplicate vote
-      //
-      // DB-level unique constraint is final authority.
       ////////////////////////////////////////////////////////////////
 
       const alreadyVoted = record.receivedVerifications.some(
@@ -171,31 +130,21 @@ export class VerificationService {
       }
 
       ////////////////////////////////////////////////////////////////
-      // 5️⃣ Persist vote (fact recording)
+      // 5️⃣ Persist vote
       ////////////////////////////////////////////////////////////////
 
-      try {
-        await tx.verification.create({
-          data: {
-            tenantId: record.tenantId,
-            verificationRecordId: record.id,
-            verifierUserId,
-            status,
-            note,
-          },
-        });
-      } catch (err: any) {
-        if (err.code === "P2002") {
-          throw new Error("Verifier has already voted");
-        }
-        throw err;
-      }
+      await tx.verification.create({
+        data: {
+          tenantId: record.tenantId,
+          verificationRecordId: record.id,
+          verifierUserId,
+          status,
+          note,
+        },
+      });
 
       ////////////////////////////////////////////////////////////////
-      // 6️⃣ Ledger appendEntry — VERIFICATION_SUBMITTED
-      //
-      // Atomic with DB mutation.
-      // Envelope V1 protects replay determinism.
+      // 6️⃣ Ledger — VERIFICATION_SUBMITTED (fact only)
       ////////////////////////////////////////////////////////////////
 
       await this.ledger.appendEntry(
@@ -219,11 +168,7 @@ export class VerificationService {
       );
 
       ////////////////////////////////////////////////////////////////
-      // 7️⃣ Deterministic quorum evaluation
-      //
-      // IMPORTANT:
-      // Rejection does NOT auto-block unless quorum reached.
-      // This maintains consistency with consensus evaluator.
+      // 7️⃣ Quorum evaluation
       ////////////////////////////////////////////////////////////////
 
       const [approvedCount, rejectedCount] = await Promise.all([
@@ -241,27 +186,12 @@ export class VerificationService {
         }),
       ]);
 
-      // Rejection quorum reached
-      if (rejectedCount >= record.requiredVerifiers) {
-        return {
-          consensusReached: false,
-          record: null,
-        };
-      }
-
-      // Approval quorum not yet met
       if (approvedCount < record.requiredVerifiers) {
-        return {
-          consensusReached: false,
-          record: null,
-        };
+        return { consensusReached: false, record: null };
       }
 
       ////////////////////////////////////////////////////////////////
-      // 8️⃣ Finalize consensus
-      //
-      // Only consensus flag is mutated.
-      // Case lifecycle remains untouched.
+      // 8️⃣ Finalize consensus (no lifecycle change)
       ////////////////////////////////////////////////////////////////
 
       const finalized = await tx.verificationRecord.update({
@@ -273,26 +203,23 @@ export class VerificationService {
       });
 
       ////////////////////////////////////////////////////////////////
-      // 9️⃣ Ledger commit — VERIFIED
+      // 9️⃣ Trigger authoritative decision
       ////////////////////////////////////////////////////////////////
 
-      await this.ledger.appendEntry(
+      await this.decisionService.applyDecision(
         {
           tenantId: record.tenantId,
           caseId: record.caseId,
-          eventType: LedgerEventType.VERIFIED,
+          decisionType: DecisionType.VERIFICATION,
           actorKind: ActorKind.HUMAN,
           actorUserId: verifierUserId,
-          authorityProof: "VERIFICATION_CONSENSUS",
-          payload: buildAuthorityEnvelopeV1({
-            domain: "VERIFICATION",
-            event: "VERIFIED",
-            data: {
-              verificationRecordId: record.id,
-              requiredVerifiers: record.requiredVerifiers,
-              approvedCount,
-            },
-          }),
+          reason: "Verification consensus reached",
+          intentContext: {
+            verificationRecordId: record.id,
+          },
+          effect: {
+            kind: "EXECUTION_VERIFIED",
+          },
         },
         tx,
       );
@@ -304,41 +231,3 @@ export class VerificationService {
     });
   }
 }
-
-/*
-Design reasoning
-----------------
-Verification records facts.
-Governance transitions occur elsewhere.
-
-Two ledger events:
-- VERIFICATION_SUBMITTED (vote recorded)
-- VERIFIED (consensus reached)
-
-Both atomic with DB mutation.
-Replay must reconstruct full voting history.
-
-Tenant isolation enforced at role boundary.
-Authority Envelope V1 ensures replay-safe evolution.
-
-Structure
----------
-1. Zod validation
-2. Load record
-3. Enforce execution invariant
-4. Tenant-safe role authorization
-5. Prevent duplicate vote
-6. Persist vote
-7. Commit VERIFICATION_SUBMITTED
-8. Deterministic quorum evaluation
-9. Finalize consensus
-10. Commit VERIFIED
-
-Scalability insight
--------------------
-- Fully replayable vote history
-- Deterministic quorum reconstruction
-- No cross-tenant privilege bleed
-- Atomic authority boundary
-- Versioned envelope protects institutional durability
-*/

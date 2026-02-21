@@ -1,171 +1,297 @@
-// filepath: apps/backend/src/modules/routing/structuring/mock-engine.ts
-// Phase 1.5-compliant mock simulation engine aligned with ledger-authoritative verification service.
+// apps/backend/src/modules/routing/structuring/mock-engine.ts
+// Purpose: Fully constitutional ledger-accurate mock simulation following lifecycle law.
 
+//////////////////////////////////////////////////////////////////
+// Assumptions
+//////////////////////////////////////////////////////////////////
+// - transitionCaseLifecycleWithLedger enforces transition matrix.
+// - Allowed path: INTAKE → ROUTED → ACCEPTED → EXECUTING → VERIFIED
+// - completeExecution does NOT mutate lifecycle directly.
+// - VerificationService triggers VERIFIED via decision orchestration.
+
+//////////////////////////////////////////////////////////////////
+// Design Reasoning
+//////////////////////////////////////////////////////////////////
+// The mock must follow lifecycle constitutional order. Direct jumps
+// (INTAKE → EXECUTING) are illegal. Therefore this simulation
+// performs every legal transition in sequence before execution
+// completion and verification consensus. This preserves governance
+// integrity and ledger correctness.
+
+//////////////////////////////////////////////////////////////////
+// Structure
+//////////////////////////////////////////////////////////////////
+// 1. Tenant + Users
+// 2. Role configuration (VERIFIER)
+// 3. Case creation
+// 4. Lawful lifecycle transitions (INTAKE → ROUTED → ACCEPTED → EXECUTING)
+// 5. Execution creation + evidence
+// 6. Execution completion
+// 7. Verification approvals
+// 8. Final lifecycle confirmation
+
+//////////////////////////////////////////////////////////////////
+// Implementation
+//////////////////////////////////////////////////////////////////
+
+import { prisma } from "@/lib/prisma";
 import { IntakeService } from "../../intake/intake.service";
-import { PostWinRoutingService } from "./postwin-routing.service";
 import { VerificationService } from "../../verification/verification.service";
-import { PostWin, ExecutionBody } from "@posta/core";
-import { TaskId, VerificationStatus } from "@prisma/client";
+import { completeExecution } from "@/modules/execution/completeExecution.service";
+import { transitionCaseLifecycleWithLedger } from "@/modules/cases/transitionCaseLifecycleWithLedger";
+import {
+  TaskId,
+  VerificationStatus,
+  ActorKind,
+  ExecutionStatus,
+} from "@prisma/client";
+import { CaseLifecycle } from "@/modules/cases/CaseLifecycle";
+import crypto from "node:crypto";
 
-/**
- * Assumptions:
- * - routed PostWin exposes verificationRecordId after routing.
- * - VerificationRecord already exists in DB.
- * - Execution for the Case is COMPLETED before verification.
- * - This simulation does NOT mutate lifecycle directly.
- */
 export class PostaMockEngine {
   constructor(
     private intake: IntakeService,
-    private router: PostWinRoutingService,
     private verifier: VerificationService,
   ) {}
 
   async runSimulation(): Promise<void> {
-    try {
-      console.log("🚀 Starting Mock Simulation: SDG 4 - Primary Education");
+    console.log("🚀 Starting PostWin Ledger-Accurate Simulation");
 
-      ////////////////////////////////////////////////////////////////
-      // 1️⃣ INTAKE
-      ////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////
+    // 1️⃣ Tenant
+    ////////////////////////////////////////////////////////////////
 
-      const partialPW = await this.intake.handleIntake(
-        "I need support for school enrollment",
-        "device_rural_001",
-      );
+    const tenant = await prisma.tenant.create({
+      data: {
+        name: "Mock Tenant",
+        slug: `mock-${crypto.randomUUID().slice(0, 8)}`,
+      },
+    });
 
-      ////////////////////////////////////////////////////////////////
-      // 2️⃣ MOCK EXECUTION BODIES
-      ////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////
+    // 2️⃣ Users
+    ////////////////////////////////////////////////////////////////
 
-      const bodies: ExecutionBody[] = [
-        {
-          id: "NGO_LOCAL",
-          name: "Village Support",
-          location: { lat: 5.1, lng: -0.1, radius: 10 },
-          capabilities: ["SDG_4"],
-          trustScore: 0.9,
-        },
-      ];
+    const author = await prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        name: "Mock Author",
+        email: `author-${crypto.randomUUID()}@mock.test`,
+        isActive: true,
+      },
+    });
 
-      ////////////////////////////////////////////////////////////////
-      // 3️⃣ CONSTRUCT SIMULATION POSTWIN
-      ////////////////////////////////////////////////////////////////
+    const verifierA = await prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        name: "Verifier A",
+        email: `verifierA-${crypto.randomUUID()}@mock.test`,
+        isActive: true,
+      },
+    });
 
-      const mockPostWin: PostWin = {
-        ...partialPW,
-        id: "pw_mock_123",
-        beneficiaryId: "ben_001",
-        taskId: TaskId.START,
-        location: { lat: 5.101, lng: -0.101 },
-        sdgGoals: ["SDG_4"],
-        description: "School support",
-        auditTrail: partialPW.auditTrail ?? [],
-        verificationRecords: partialPW.verificationRecords ?? {},
-        routingStatus: "UNASSIGNED",
-        verificationStatus: "PENDING",
-      } as PostWin;
+    const verifierB = await prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        name: "Verifier B",
+        email: `verifierB-${crypto.randomUUID()}@mock.test`,
+        isActive: true,
+      },
+    });
 
-      ////////////////////////////////////////////////////////////////
-      // 4️⃣ ROUTING
-      ////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////
+    // 3️⃣ Beneficiary
+    ////////////////////////////////////////////////////////////////
 
-      console.log("Step 2: Routing to nearest Execution Body...");
+    const beneficiary = await prisma.beneficiary.create({
+      data: {
+        tenantId: tenant.id,
+        displayName: "Ama Mensah",
+      },
+    });
 
-      const routedPW = await this.router.processPostWin(mockPostWin, bodies, [
-        "SDG_4",
-      ]);
+    ////////////////////////////////////////////////////////////////
+    // 4️⃣ Intake classification
+    ////////////////////////////////////////////////////////////////
 
-      if (routedPW.routingStatus === "BLOCKED") {
-        console.error(`❌ Routing Blocked: ${routedPW.notes}`);
-        return;
-      }
+    const intakeResult = await this.intake.handleIntake(
+      "I need support for school enrollment",
+      "device_mock_001",
+    );
 
-      console.log(
-        `Step 3: Routed to ${routedPW.assignedBodyId}. Awaiting Multi-Verifier Consensus...`,
-      );
+    ////////////////////////////////////////////////////////////////
+    // 5️⃣ VERIFIER Role + Assignment
+    ////////////////////////////////////////////////////////////////
 
-      if (!("verificationRecordId" in routedPW)) {
-        throw new Error(
-          "Mock engine requires routed PostWin to expose verificationRecordId",
-        );
-      }
+    const verifierRole = await prisma.role.create({
+      data: {
+        tenantId: tenant.id,
+        key: "VERIFIER",
+        name: "Case Verifier",
+      },
+    });
 
-      const verificationRecordId = (routedPW as any)
-        .verificationRecordId as string;
+    await prisma.userRole.createMany({
+      data: [
+        { userId: verifierA.id, roleId: verifierRole.id },
+        { userId: verifierB.id, roleId: verifierRole.id },
+      ],
+    });
 
-      ////////////////////////////////////////////////////////////////
-      // 5️⃣ MULTI-ACTOR VERIFICATION (Ledger-backed)
-      ////////////////////////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////
+    // 6️⃣ Create Case (INTAKE)
+    ////////////////////////////////////////////////////////////////
 
-      const stateAfterCommunity = await this.verifier.recordVerification({
-        verificationRecordId,
-        verifierUserId: "community_leader_01",
-        status: VerificationStatus.APPROVED,
-      });
+    const createdCase = await prisma.case.create({
+      data: {
+        referenceCode: crypto.randomUUID(),
+        tenantId: tenant.id,
+        authorUserId: author.id,
+        beneficiaryId: beneficiary.id,
+        mode: intakeResult.mode,
+        scope: intakeResult.scope,
+        type: intakeResult.intent,
+        lifecycle: CaseLifecycle.INTAKE,
+        currentTask: TaskId.START,
+        summary: "School enrollment support",
+      },
+    });
 
-      const finalState = await this.verifier.recordVerification({
-        verificationRecordId,
-        verifierUserId: "ngo_staff_01",
-        status: VerificationStatus.APPROVED,
-      });
+    ////////////////////////////////////////////////////////////////
+    // 7️⃣ Lawful Lifecycle Progression
+    ////////////////////////////////////////////////////////////////
 
-      ////////////////////////////////////////////////////////////////
-      // 6️⃣ OUTPUT
-      ////////////////////////////////////////////////////////////////
+    const actor = {
+      kind: ActorKind.SYSTEM,
+      authorityProof: "MOCK_ENGINE_LIFECYCLE",
+    };
 
-      console.log("\n" + "=".repeat(60));
-      console.log("✅ Simulation Complete.");
+    await transitionCaseLifecycleWithLedger({
+      tenantId: tenant.id,
+      caseId: createdCase.id,
+      target: CaseLifecycle.ROUTED,
+      actor,
+    });
 
-      console.log(
-        `Consensus Reached: ${finalState.consensusReached ? "YES" : "NO"}`,
-      );
+    await transitionCaseLifecycleWithLedger({
+      tenantId: tenant.id,
+      caseId: createdCase.id,
+      target: CaseLifecycle.ACCEPTED,
+      actor,
+    });
 
-      if (finalState.record) {
-        console.log(
-          `Verified At: ${finalState.record.verifiedAt?.toISOString()}`,
-        );
-        console.log(
-          `Required Verifiers: ${finalState.record.requiredVerifiers}`,
-        );
-      }
+    await prisma.execution.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: createdCase.id,
+        status: ExecutionStatus.IN_PROGRESS,
+      },
+    });
 
-      console.log("=".repeat(60) + "\n");
-    } catch (error) {
-      console.error("❌ Mock Simulation Failed:", error);
-      throw error;
+    ////////////////////////////////////////////////////////////////
+    // 8️⃣ Create Execution
+    ////////////////////////////////////////////////////////////////
+
+    await transitionCaseLifecycleWithLedger({
+      tenantId: tenant.id,
+      caseId: createdCase.id,
+      target: CaseLifecycle.EXECUTING,
+      actor,
+    });
+
+    ////////////////////////////////////////////////////////////////
+    // 9️⃣ Insert Timeline + Evidence
+    ////////////////////////////////////////////////////////////////
+
+    const timelineEntry = await prisma.timelineEntry.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: createdCase.id,
+        type: "DELIVERY",
+        body: "Mock delivery evidence entry",
+      },
+    });
+
+    await prisma.evidence.create({
+      data: {
+        tenantId: tenant.id,
+        timelineEntryId: timelineEntry.id,
+        kind: "PHOTO",
+        storageKey: "mock/photo.jpg",
+        sha256: crypto.createHash("sha256").update("mock-photo").digest("hex"),
+        mimeType: "image/jpeg",
+        byteSize: 1024,
+      },
+    });
+
+    ////////////////////////////////////////////////////////////////
+    // 🔟 Complete Execution
+    ////////////////////////////////////////////////////////////////
+
+    await completeExecution({
+      tenantId: tenant.id,
+      caseId: createdCase.id,
+      actorKind: ActorKind.SYSTEM,
+      authorityProof: "MOCK_ENGINE_EXECUTION_COMPLETE",
+    });
+
+    // 🔎 DEBUG — confirm execution status after completion
+    const exec = await prisma.execution.findUnique({
+      where: { caseId: createdCase.id },
+      select: { status: true, completedAt: true },
+    });
+
+    console.log("Execution Status After Completion:", exec);
+
+    ////////////////////////////////////////////////////////////////
+    // 1️⃣1️⃣ Verification Consensus
+    ////////////////////////////////////////////////////////////////
+
+    const verificationRecord = await prisma.verificationRecord.findFirst({
+      where: {
+        tenantId: tenant.id,
+        caseId: createdCase.id,
+        consensusReached: false,
+      },
+    });
+
+    if (!verificationRecord) {
+      throw new Error("VerificationRecord not initialized");
     }
+
+    await this.verifier.recordVerification({
+      verificationRecordId: verificationRecord.id,
+      verifierUserId: verifierA.id,
+      status: VerificationStatus.APPROVED,
+    });
+
+    const finalState = await this.verifier.recordVerification({
+      verificationRecordId: verificationRecord.id,
+      verifierUserId: verifierB.id,
+      status: VerificationStatus.APPROVED,
+    });
+
+    console.log("Consensus Reached:", finalState.consensusReached);
+
+    ////////////////////////////////////////////////////////////////
+    // 1️⃣2️⃣ Final Lifecycle Check
+    ////////////////////////////////////////////////////////////////
+
+    const finalCase = await prisma.case.findUnique({
+      where: { id: createdCase.id },
+      select: { lifecycle: true },
+    });
+
+    console.log("Final Lifecycle:", finalCase?.lifecycle);
   }
 }
 
-/*
-Design reasoning
-----------------
-Phase 1.5 is ledger-authoritative.
-VerificationService returns deterministic DB-backed consensus results.
-Mock engine must not fabricate auditTrail or verificationStatus.
-Verification state is sourced from VerificationRecord only.
-
-Structure
----------
-1. Intake
-2. Mock routing
-3. Extract verificationRecordId
-4. Record votes via object-based API
-5. Output consensus result
-6. No lifecycle mutation
-
-Implementation guidance
------------------------
-- Ensure routing layer creates VerificationRecord and exposes its ID.
-- Execution must be COMPLETED before verification (service enforces invariant).
-- Votes must use UUID verifier IDs in real DB.
-- LedgerService must be injected into VerificationService constructor.
-
-Scalability insight
--------------------
-- Ledger remains single source of historical truth.
-- Verification state replayable from ledger + DB.
-- Mock simulation now mirrors production execution flow.
-- No architectural shortcuts that violate sovereign model.
-*/
+//////////////////////////////////////////////////////////////////
+// Scalability Insight execution.create
+//////////////////////////////////////////////////////////////////
+// This simulation now mirrors production constitutional flow.
+// Additional routing decisions, execution milestones, or grant
+// disbursements can be layered without breaking lifecycle law.
+// Because transitions are ledger-backed, governance integrity
+// scales with system complexity.
+//////////////////////////////////////////////////////////////////

@@ -1,6 +1,5 @@
-// NOTE:
-// Lifecycle is authoritative.
-// If this change represents a decision, use transitionCaseLifecycleWithLedger.
+// apps/backend/src/modules/cases/cases.controller.ts
+// Purpose: List cases with authoritative lifecycle + latest message signal.
 
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
@@ -26,15 +25,11 @@ export async function listCases(req: Request, res: Response) {
     select: {
       id: true,
 
-      // ✅ AUTHORITATIVE
+      // ✅ AUTHORITATIVE: Constitutional Truth
       lifecycle: true,
 
-      // ⚠️ ADVISORY
-      // status: true,
-
-      // ✅ CANONICAL TASK IDENTIFIER (LABEL ONLY)
+      // ✅ ADVISORY: Metadata for UI Display
       currentTask: true,
-
       type: true,
       scope: true,
       sdgGoal: true,
@@ -42,12 +37,23 @@ export async function listCases(req: Request, res: Response) {
       createdAt: true,
       updatedAt: true,
 
-      // decision metadata (snapshot only)
+      // Latest routing decision snapshot
       routingDecisions: {
         orderBy: { decidedAt: "desc" },
         take: 1,
         select: {
           routingOutcome: true,
+        },
+      },
+
+      // 🔥 NEW: Fetch only the latest message for the chat preview
+      messages: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          body: true,
+          type: true,
+          createdAt: true,
         },
       },
     },
@@ -57,27 +63,30 @@ export async function listCases(req: Request, res: Response) {
     const decisionOutcome =
       row.routingDecisions[0]?.routingOutcome ?? "UNASSIGNED";
 
+    // Extract the latest signal if it exists
+    const lastMessage = row.messages[0] ?? null;
+
     return {
       id: row.id,
 
-      // authoritative
+      // Authoritative State
       lifecycle: row.lifecycle,
 
-      // advisory
-      // status: row.status,
-
-      // ✅ task label (no semantics attached)
+      // UI Labels
       currentTask: row.currentTask,
-
-      // decision metadata
       routingOutcome: decisionOutcome,
 
+      // Case Metadata
       type: row.type,
       scope: row.scope,
       sdgGoal: row.sdgGoal,
       summary: row.summary,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+
+      // 🔥 Last Message Projection
+      // This maps directly to the frontend's c.lastMessage check
+      lastMessage,
     };
   });
 

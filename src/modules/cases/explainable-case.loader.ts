@@ -1,4 +1,5 @@
-// explainable-case.loader.ts
+// src/modules/cases/explainable-case.loader.ts
+
 import { prisma } from "../../lib/prisma";
 import { CaseNotFoundError } from "./case.errors";
 
@@ -9,12 +10,33 @@ export class ExplainableCaseLoader {
     const caseRow = await prisma.case.findFirst({
       where: { id: caseId, tenantId },
       include: {
-        auditTrail: { orderBy: { createdAt: "asc" } },
-        timelineEntries: { orderBy: { createdAt: "asc" } },
+        beneficiary: {
+          include: {
+            pii: true,
+          },
+        },
+        tags: {
+          include: {
+            tag: {
+              select: {
+                key: true,
+                isRestricted: true,
+              },
+            },
+          },
+        },
+        auditTrail: {
+          orderBy: { createdAt: "asc" },
+        },
+        timelineEntries: {
+          orderBy: { createdAt: "asc" },
+          include: {
+            evidence: true,
+          },
+        },
       },
     });
 
-    // Loader responsibility: existence truth
     if (!caseRow) {
       throw new CaseNotFoundError(`Case not found: ${caseId}`);
     }
