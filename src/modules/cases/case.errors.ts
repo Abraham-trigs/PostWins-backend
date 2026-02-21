@@ -1,20 +1,26 @@
 // src/modules/cases/case.errors.ts
 // Canonical error surface for Case domain (backward-compatible during migration)
 
-export class IllegalLifecycleTransitionError extends Error {
+import { DomainError } from "@/lib/errors/domain-error";
+
+export class IllegalLifecycleTransitionError extends DomainError {
   constructor(
     public readonly from: string,
     public readonly to: string,
     public readonly caseId: string,
   ) {
-    super(`Illegal lifecycle transition ${from} → ${to} for case ${caseId}`);
+    super(
+      `Illegal lifecycle transition ${from} → ${to} for case ${caseId}`,
+      409,
+      "ILLEGAL_LIFECYCLE_TRANSITION",
+    );
     this.name = "IllegalLifecycleTransitionError";
   }
 }
 
-export class LifecycleInvariantViolationError extends Error {
+export class LifecycleInvariantViolationError extends DomainError {
   constructor(message: string) {
-    super(message);
+    super(message, 409, "LIFECYCLE_INVARIANT_VIOLATION");
     this.name = "LifecycleInvariantViolationError";
   }
 }
@@ -34,23 +40,23 @@ export class InvariantViolationError extends LifecycleInvariantViolationError {
   }
 }
 
-export class CaseNotFoundError extends Error {
+export class CaseNotFoundError extends DomainError {
   constructor(public readonly caseId: string) {
-    super(`Case ${caseId} not found`);
+    super(`Case ${caseId} not found`, 404, "CASE_NOT_FOUND");
     this.name = "CaseNotFoundError";
   }
 }
 
-export class CaseForbiddenError extends Error {
+export class CaseForbiddenError extends DomainError {
   constructor(public readonly caseId: string) {
-    super(`Access to case ${caseId} is forbidden`);
+    super(`Access to case ${caseId} is forbidden`, 403, "CASE_FORBIDDEN");
     this.name = "CaseForbiddenError";
   }
 }
 
-export class ResolverError extends Error {
+export class ResolverError extends DomainError {
   constructor(message: string) {
-    super(message);
+    super(message, 400, "RESOLVER_ERROR");
     this.name = "ResolverError";
   }
 }

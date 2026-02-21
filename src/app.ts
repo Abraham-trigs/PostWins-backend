@@ -20,6 +20,7 @@ import executionRoutes from "./modules/execution/execution.routes";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
+import { DomainError } from "@/lib/errors/domain-error";
 
 const app: Express = express();
 
@@ -52,12 +53,11 @@ app.use(
   }),
 );
 
-// ...........................................................................................
+// Prevent caching on API routes
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
-// ...........................................................................................
 
 ////////////////////////////////////////////////////////////////
 // Correlation + structured logging middleware
@@ -144,6 +144,14 @@ app.use((_req: Request, res: Response) => {
 ////////////////////////////////////////////////////////////////
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof DomainError) {
+    return res.status(err.status).json({
+      ok: false,
+      error: err.message,
+      code: err.code,
+    });
+  }
+
   const error = err as Error;
 
   log("ERROR", "HTTP_REQUEST_FAILED", {
@@ -151,7 +159,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     stack: process.env.NODE_ENV === "production" ? undefined : error?.stack,
   });
 
-  res.status(500).json({
+  return res.status(500).json({
     ok: false,
     error: "Internal Server Error",
   });
