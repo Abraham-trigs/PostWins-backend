@@ -60,7 +60,7 @@ function main() {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, content);
 
-  console.log("✔ Enums generated in packages/core");
+  console.log("✔ {PostWin Enums generated in packages/core");
 }
 
 main();

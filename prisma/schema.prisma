@@ -445,11 +445,49 @@ model Message {
   author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, clientMutationId])
-  @@index([caseId, createdAt])
-  @@index([tenantId, createdAt])
+
+  // ⚡ Cursor pagination index
+  @@index([tenantId, caseId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([tenantId, caseId, createdAt(sort: Desc)])
   @@index([parentId])
 }
 
+model MessageReceipt {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String   @db.Uuid
+  messageId  String   @db.Uuid
+  userId     String   @db.Uuid
+
+  deliveredAt DateTime?
+  seenAt      DateTime?
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId])
+  @@index([messageId])
+}
+
+model CaseReadPosition {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  caseId    String   @db.Uuid
+  userId    String   @db.Uuid
+
+  lastReadMessageId String  @db.Uuid
+  lastReadAt        DateTime
+
+  updatedAt         DateTime @updatedAt
+
+  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, userId])
+  @@index([tenantId, caseId, lastReadAt])
+}
 model Role {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String   @db.Uuid

@@ -1,25 +1,25 @@
 // apps/backend/src/modules/message/ws-gateway.ts
-// Purpose: Case-scoped WebSocket gateway with presence + ephemeral typing + Redis Pub/Sub scaling + server-side typing throttle.
+// Purpose: Case-scoped WebSocket gateway with presence + typing + message broadcast +
+// durable receipt propagation + cursor-based read tracking (multi-instance safe) +
+// unread delta propagation and per-user unread reset.
 
 import { WebSocket } from "ws";
 import crypto from "crypto";
 import { addPresence, removePresence, getCaseOnlineUsers } from "./presence";
 import { redisPub, redisSub } from "../../lib/redis";
+import { MessageReceiptService } from "./message-receipt.service";
+import { ReadPositionService } from "./read-position.service";
 
-/* =========================================================
-   Assumptions
-   - socket.auth injected before registerSocket
-   - presence.ts is in-memory only
-   - Redis available for multi-instance broadcast
-   - No DB writes
-========================================================= */
-
+const INSTANCE_ID = crypto.randomUUID();
 const TYPING_THROTTLE_MS = 300;
+
+const receiptService = new MessageReceiptService();
+const readPositionService = new ReadPositionService();
 
 type SocketWithMeta = WebSocket & {
   socketId: string;
   caseId: string;
-  lastTypingAt?: number; // server-side throttle guard
+  lastTypingAt?: number;
   auth?: {
     userId: string;
     tenantId: string;
@@ -31,24 +31,86 @@ type TypingUpdatePayload = {
   isTyping: boolean;
 };
 
+type ReceiptPayload = {
+  messageId: string;
+  userId: string;
+  deliveredAt?: string;
+  seenAt?: string;
+};
+
+type UnreadDeltaPayload = {
+  userId: string;
+  delta: number;
+};
+
 type RedisEnvelope =
+  | { instanceId: string; kind: "PRESENCE"; caseId: string; payload: unknown }
   | {
-      kind: "PRESENCE";
-      caseId: string;
-      payload: unknown;
-    }
-  | {
+      instanceId: string;
       kind: "TYPING";
       caseId: string;
       payload: TypingUpdatePayload;
+    }
+  | {
+      instanceId: string;
+      kind: "MESSAGE_CREATED";
+      caseId: string;
+      payload: any;
+    }
+  | {
+      instanceId: string;
+      kind: "MESSAGE_RECEIPT";
+      caseId: string;
+      payload: ReceiptPayload;
+    }
+  | {
+      instanceId: string;
+      kind: "UNREAD_DELTA";
+      caseId: string;
+      payload: UnreadDeltaPayload;
     };
 
 const caseSockets = new Map<string, Set<SocketWithMeta>>();
 const subscribedCases = new Set<string>();
 
-/* =========================================================
-   Register Socket
-========================================================= */
+////////////////////////////////////////////////////////////////
+// Global Redis Listener
+////////////////////////////////////////////////////////////////
+
+redisSub.on("message", (_, raw) => {
+  try {
+    const envelope = JSON.parse(raw) as RedisEnvelope;
+
+    if (envelope.instanceId === INSTANCE_ID) return;
+
+    const sockets = caseSockets.get(envelope.caseId);
+    if (!sockets || sockets.size === 0) return;
+
+    let type: string | null = null;
+
+    if (envelope.kind === "PRESENCE") type = "PRESENCE_UPDATE";
+    if (envelope.kind === "TYPING") type = "TYPING_UPDATE";
+    if (envelope.kind === "MESSAGE_CREATED") type = "MESSAGE_CREATED";
+    if (envelope.kind === "MESSAGE_RECEIPT") type = "MESSAGE_RECEIPT";
+    if (envelope.kind === "UNREAD_DELTA") type = "UNREAD_DELTA";
+
+    if (!type) return;
+
+    const message = JSON.stringify({ type, payload: envelope.payload });
+
+    for (const socket of sockets) {
+      if (socket.readyState === socket.OPEN) {
+        socket.send(message);
+      }
+    }
+  } catch {
+    // ignore malformed
+  }
+});
+
+////////////////////////////////////////////////////////////////
+// Register Socket
+////////////////////////////////////////////////////////////////
 
 export function registerSocket(caseId: string, ws: WebSocket) {
   const socket = ws as SocketWithMeta;
@@ -62,12 +124,7 @@ export function registerSocket(caseId: string, ws: WebSocket) {
   }
 
   caseSockets.get(caseId)!.add(socket);
-
   ensureRedisSubscription(caseId);
-
-  //////////////////////////////////////////////////////////////
-  // Presence Add
-  //////////////////////////////////////////////////////////////
 
   if (socket.auth) {
     addPresence(caseId, socket.socketId, socket.auth);
@@ -75,176 +132,225 @@ export function registerSocket(caseId: string, ws: WebSocket) {
 
   publishPresence(caseId);
 
-  //////////////////////////////////////////////////////////////
-  // Typing Transport (Throttled)
-  //////////////////////////////////////////////////////////////
-
-  socket.on("message", (raw) => {
+  socket.on("message", async (raw) => {
     try {
       const data = JSON.parse(raw.toString());
-      if (!socket.auth?.userId) return;
+      if (!socket.auth?.userId || !socket.auth?.tenantId) return;
 
       const now = Date.now();
 
       if (data.type === "TYPING_START") {
-        // throttle START only
-        if (now - (socket.lastTypingAt ?? 0) < TYPING_THROTTLE_MS) {
-          return;
-        }
-
+        if (now - (socket.lastTypingAt ?? 0) < TYPING_THROTTLE_MS) return;
         socket.lastTypingAt = now;
         publishTyping(caseId, socket.auth.userId, true);
       }
 
       if (data.type === "TYPING_STOP") {
-        // STOP should not be throttled
         publishTyping(caseId, socket.auth.userId, false);
+      }
+
+      if (data.type === "MESSAGE_DELIVERED_BATCH") {
+        if (!Array.isArray(data.messageIds)) return;
+
+        for (const messageId of data.messageIds) {
+          if (!messageId) continue;
+
+          const receipt = await receiptService.markDelivered(
+            socket.auth.tenantId,
+            messageId,
+            socket.auth.userId,
+          );
+
+          publishReceipt(caseId, {
+            messageId: receipt.messageId,
+            userId: receipt.userId,
+            deliveredAt: receipt.deliveredAt?.toISOString(),
+          });
+        }
+      }
+
+      if (data.type === "MESSAGE_SEEN_BATCH") {
+        if (!Array.isArray(data.messageIds)) return;
+
+        for (const messageId of data.messageIds) {
+          if (!messageId) continue;
+
+          const receipt = await receiptService.markSeen(
+            socket.auth.tenantId,
+            messageId,
+            socket.auth.userId,
+          );
+
+          publishReceipt(caseId, {
+            messageId: receipt.messageId,
+            userId: receipt.userId,
+            seenAt: receipt.seenAt?.toISOString(),
+          });
+        }
+      }
+
+      if (data.type === "CASE_READ_UP_TO") {
+        if (!data.messageId) return;
+
+        await readPositionService.updatePosition(
+          socket.auth.tenantId,
+          caseId,
+          socket.auth.userId,
+          data.messageId,
+        );
+
+        // STEP 45 — per-user unread reset (no Redis broadcast)
+        socket.send(
+          JSON.stringify({
+            type: "UNREAD_RESET",
+            payload: { caseId },
+          }),
+        );
       }
     } catch {
       // ignore malformed
     }
   });
 
-  //////////////////////////////////////////////////////////////
-  // Disconnect
-  //////////////////////////////////////////////////////////////
-
   socket.on("close", () => {
-    caseSockets.get(caseId)?.delete(socket);
+    const group = caseSockets.get(caseId);
+    group?.delete(socket);
 
     if (socket.auth) {
       removePresence(caseId, socket.socketId);
-    }
-
-    if (socket.auth?.userId) {
       publishTyping(caseId, socket.auth.userId, false);
     }
 
     publishPresence(caseId);
+
+    if (group && group.size === 0) {
+      caseSockets.delete(caseId);
+      redisSub.unsubscribe(redisChannel(caseId));
+      subscribedCases.delete(caseId);
+    }
   });
 }
 
-/* =========================================================
-   Redis Subscription Per Case
-========================================================= */
+////////////////////////////////////////////////////////////////
+// Redis Subscription
+////////////////////////////////////////////////////////////////
 
 function ensureRedisSubscription(caseId: string) {
   if (subscribedCases.has(caseId)) return;
-
-  const channel = redisChannel(caseId);
-
-  redisSub.subscribe(channel);
+  redisSub.subscribe(redisChannel(caseId));
   subscribedCases.add(caseId);
-
-  redisSub.on("message", (_, message) => {
-    try {
-      const envelope = JSON.parse(message) as RedisEnvelope;
-      if (envelope.caseId !== caseId) return;
-
-      if (envelope.kind === "PRESENCE") {
-        broadcastPresenceLocal(caseId, envelope.payload);
-      }
-
-      if (envelope.kind === "TYPING") {
-        broadcastTypingLocal(caseId, envelope.payload);
-      }
-    } catch {
-      // ignore
-    }
-  });
 }
 
 function redisChannel(caseId: string) {
-  return `case:${caseId}`;
+  return `ws:case:${caseId}`;
 }
 
-/* =========================================================
-   Publish Presence (Redis)
-========================================================= */
+////////////////////////////////////////////////////////////////
+// Publishers
+////////////////////////////////////////////////////////////////
+
+export function publishMessage(caseId: string, message: any) {
+  publish(caseId, "MESSAGE_CREATED", message);
+  publishUnreadDelta(caseId, message.authorId); // STEP 44
+}
+
+export function publishReceipt(caseId: string, payload: ReceiptPayload) {
+  publish(caseId, "MESSAGE_RECEIPT", payload);
+}
+
+export function publishAck(
+  caseId: string,
+  authorId: string,
+  clientMutationId: string,
+  messageId: string,
+) {
+  const sockets = caseSockets.get(caseId);
+  if (!sockets) return;
+
+  const ack = JSON.stringify({
+    type: "MESSAGE_ACK",
+    payload: { clientMutationId, messageId },
+  });
+
+  for (const socket of sockets) {
+    if (socket.readyState === socket.OPEN && socket.auth?.userId === authorId) {
+      socket.send(ack);
+    }
+  }
+}
 
 function publishPresence(caseId: string) {
-  const onlineUsers = getCaseOnlineUsers(caseId);
-
-  const envelope: RedisEnvelope = {
-    kind: "PRESENCE",
-    caseId,
-    payload: onlineUsers,
-  };
-
-  redisPub.publish(redisChannel(caseId), JSON.stringify(envelope));
+  publish(caseId, "PRESENCE", getCaseOnlineUsers(caseId));
 }
-
-function broadcastPresenceLocal(caseId: string, payload: unknown) {
-  const sockets = caseSockets.get(caseId);
-  if (!sockets) return;
-
-  const message = JSON.stringify({
-    type: "PRESENCE_UPDATE",
-    payload,
-  });
-
-  for (const socket of sockets) {
-    if (socket.readyState === socket.OPEN) {
-      socket.send(message);
-    }
-  }
-}
-
-/* =========================================================
-   Publish Typing (Redis)
-========================================================= */
 
 function publishTyping(caseId: string, userId: string, isTyping: boolean) {
-  const envelope: RedisEnvelope = {
-    kind: "TYPING",
-    caseId,
-    payload: { userId, isTyping },
-  };
-
-  redisPub.publish(redisChannel(caseId), JSON.stringify(envelope));
+  publish(caseId, "TYPING", { userId, isTyping });
 }
 
-function broadcastTypingLocal(caseId: string, payload: TypingUpdatePayload) {
+////////////////////////////////////////////////////////////////
+// STEP 44 — Local Unread Delta Publisher
+////////////////////////////////////////////////////////////////
+
+function publishUnreadDelta(caseId: string, authorId: string) {
   const sockets = caseSockets.get(caseId);
   if (!sockets) return;
 
-  const message = JSON.stringify({
-    type: "TYPING_UPDATE",
-    payload,
-  });
-
   for (const socket of sockets) {
-    if (socket.readyState === socket.OPEN) {
+    if (
+      socket.readyState === socket.OPEN &&
+      socket.auth?.userId &&
+      socket.auth.userId !== authorId
+    ) {
+      const message = JSON.stringify({
+        type: "UNREAD_DELTA",
+        payload: {
+          caseId,
+          delta: 1,
+        },
+      });
+
       socket.send(message);
     }
   }
 }
 
-/* =========================================================
-   Design reasoning
-   - Server-side throttle prevents malicious typing floods.
-   - START events are throttled; STOP always allowed.
-   - No additional Redis load.
-   - Zero DB writes.
-========================================================= */
+////////////////////////////////////////////////////////////////
+// Core Publish
+////////////////////////////////////////////////////////////////
 
-/* =========================================================
-   Structure
-   - registerSocket()
-   - ensureRedisSubscription()
-   - publishPresence / publishTyping
-   - broadcast*Local()
-========================================================= */
+function publish(caseId: string, kind: RedisEnvelope["kind"], payload: any) {
+  const envelope: RedisEnvelope = {
+    instanceId: INSTANCE_ID,
+    kind,
+    caseId,
+    payload,
+  };
 
-/* =========================================================
-   Implementation guidance
-   - Frontend should still debounce (defense-in-depth).
-   - Throttle window adjustable via TYPING_THROTTLE_MS.
-========================================================= */
+  redisPub.publish(redisChannel(caseId), JSON.stringify(envelope));
 
-/* =========================================================
-   Scalability insight
-   - Protects CPU and Redis under abuse.
-   - Per-socket isolation.
-   - O(1) throttle check.
-========================================================= */
+  const sockets = caseSockets.get(caseId);
+  if (!sockets) return;
+
+  const type =
+    kind === "PRESENCE"
+      ? "PRESENCE_UPDATE"
+      : kind === "TYPING"
+        ? "TYPING_UPDATE"
+        : kind === "MESSAGE_CREATED"
+          ? "MESSAGE_CREATED"
+          : kind === "MESSAGE_RECEIPT"
+            ? "MESSAGE_RECEIPT"
+            : kind === "UNREAD_DELTA"
+              ? "UNREAD_DELTA"
+              : null;
+
+  if (!type) return;
+
+  const localMessage = JSON.stringify({ type, payload });
+
+  for (const socket of sockets) {
+    if (socket.readyState === socket.OPEN) {
+      socket.send(localMessage);
+    }
+  }
+}

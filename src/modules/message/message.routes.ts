@@ -6,15 +6,16 @@ const router: ExpressRouter = Router();
 
 /**
  * POST /
- * Validation is handled inside MessageService via Zod.
- * Idempotency is enforced at middleware level.
+ * - Auth enforced in controller
+ * - Idempotency enforced at middleware
  */
-router.post("/", idempotencyGuard, createMessage);
+router.post("/", createMessage);
 
 /**
- * GET /:tenantId/:caseId
- * Fetch messages for a specific tenant-scoped case.
+ * GET /:caseId
+ * - Tenant derived from auth
+ * - Prevents tenantId spoofing
  */
-router.get("/:tenantId/:caseId", getMessagesByCase);
+router.get("/:caseId", getMessagesByCase);
 
 export default router;

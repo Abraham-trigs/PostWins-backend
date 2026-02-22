@@ -1,44 +1,10 @@
-// src/modules/message/message.service.ts
-// Purpose: Threaded, navigation-aware, tenant-safe message service (deterministic).
-
-////////////////////////////////////////////////////////////////
-// Design reasoning
-////////////////////////////////////////////////////////////////
-// Messages are workflow-layer artifacts.
-// They must be:
-// - Tenant isolated
-// - Case validated
-// - Author validated
-// - Thread-safe
-// - Deterministically correlated via clientMutationId
-//
-// This enables:
-// - Optimistic UI reconciliation
-// - Exactly-once UI semantics
-// - WebSocket + REST convergence
-// - No heuristic matching
-
-////////////////////////////////////////////////////////////////
-// Structure
-////////////////////////////////////////////////////////////////
-// - NavigationContextSchema
-// - CreateMessageSchema (with clientMutationId)
-// - createMessage()
-// - getMessagesByCase()
-
-////////////////////////////////////////////////////////////////
-// Scalability insight
-////////////////////////////////////////////////////////////////
-// Storing clientMutationId allows:
-// - deterministic optimistic reconciliation
-// - offline queue replay
-// - idempotent message creation
-// - exactly-once UI semantics
+// apps/backend/src/modules/message/message.service.ts
 
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { MessageType, Prisma } from "@prisma/client";
 import { assertUuid } from "@/utils/uuid";
+import { decodeCursor, encodeCursor } from "./cursor";
 
 ////////////////////////////////////////////////////////////////
 // Validation Schemas
@@ -65,8 +31,6 @@ export const CreateMessageSchema = z.object({
   type: z.nativeEnum(MessageType),
   body: z.string().trim().min(1).max(5000),
   navigationContext: NavigationContextSchema.optional(),
-
-  // ⚡ Deterministic optimistic correlation token
   clientMutationId: z.string().uuid().optional(),
 });
 
@@ -78,7 +42,7 @@ export type CreateMessageInput = z.infer<typeof CreateMessageSchema>;
 
 export class MessageService {
   ////////////////////////////////////////////////////////////////
-  // Create Message
+  // Create Message (Idempotent + Race Safe)
   ////////////////////////////////////////////////////////////////
 
   async createMessage(input: unknown) {
@@ -97,7 +61,19 @@ export class MessageService {
 
     return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       ////////////////////////////////////////////////////////////////
-      // Validate Case (Tenant Isolation)
+      // Idempotency pre-check
+      ////////////////////////////////////////////////////////////////
+
+      if (clientMutationId) {
+        const existing = await tx.message.findFirst({
+          where: { tenantId, clientMutationId },
+        });
+
+        if (existing) return existing;
+      }
+
+      ////////////////////////////////////////////////////////////////
+      // Isolation checks
       ////////////////////////////////////////////////////////////////
 
       const existingCase = await tx.case.findFirst({
@@ -105,90 +81,173 @@ export class MessageService {
         select: { id: true },
       });
 
-      if (!existingCase) {
-        throw new Error("CASE_NOT_FOUND");
-      }
-
-      ////////////////////////////////////////////////////////////////
-      // Validate Author (Tenant Isolation)
-      ////////////////////////////////////////////////////////////////
+      if (!existingCase) throw new Error("CASE_NOT_FOUND");
 
       const authorExists = await tx.user.findFirst({
         where: { id: authorId, tenantId },
         select: { id: true },
       });
 
-      if (!authorExists) {
-        throw new Error("AUTHOR_NOT_IN_TENANT");
-      }
-
-      ////////////////////////////////////////////////////////////////
-      // Validate Parent Message (Thread Safety)
-      ////////////////////////////////////////////////////////////////
+      if (!authorExists) throw new Error("AUTHOR_NOT_IN_TENANT");
 
       if (parentId) {
         const parentMessage = await tx.message.findFirst({
-          where: {
-            id: parentId,
-            caseId,
-            tenantId,
-          },
+          where: { id: parentId, caseId, tenantId },
           select: { id: true },
         });
 
-        if (!parentMessage) {
-          throw new Error("PARENT_MESSAGE_NOT_FOUND");
-        }
+        if (!parentMessage) throw new Error("PARENT_MESSAGE_NOT_FOUND");
       }
 
       ////////////////////////////////////////////////////////////////
-      // Create Message (Deterministic + Stateless)
+      // Create (race-safe)
       ////////////////////////////////////////////////////////////////
 
-      return tx.message.create({
-        data: {
-          tenantId,
-          caseId,
-          authorId,
-          parentId: parentId ?? null,
-          type,
-          body,
+      try {
+        return await tx.message.create({
+          data: {
+            tenantId,
+            caseId,
+            authorId,
+            parentId: parentId ?? null,
+            type,
+            body,
+            clientMutationId: clientMutationId ?? null,
+            navigationContext:
+              (navigationContext as Prisma.InputJsonValue) ?? null,
+          },
+        });
+      } catch (err: any) {
+        if (clientMutationId && err.code === "P2002") {
+          const existing = await tx.message.findFirst({
+            where: { tenantId, clientMutationId },
+          });
 
-          // ⚡ Persist mutation token for UI reconciliation
-          clientMutationId: clientMutationId ?? null,
+          if (existing) return existing;
+        }
 
-          // SQL NULL semantics for JSON
-          navigationContext:
-            (navigationContext as Prisma.InputJsonValue) ?? null,
-        },
-      });
+        throw err;
+      }
     });
   }
 
   ////////////////////////////////////////////////////////////////
-  // Fetch Messages By Case
+  // Cursor-Based Pagination (limit+1)
   ////////////////////////////////////////////////////////////////
 
-  async getMessagesByCase(tenantId: string, caseId: string) {
+  async getMessagesByCase(
+    tenantId: string,
+    caseId: string,
+    cursor?: string,
+    limit: number = 30,
+  ) {
     assertUuid(tenantId, "tenantId");
     assertUuid(caseId, "caseId");
 
-    return prisma.message.findMany({
-      where: { tenantId, caseId },
-      include: {
-        author: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        _count: {
-          select: {
-            replies: true,
-          },
-        },
+    limit = Math.min(Math.max(limit, 1), 100);
+
+    let cursorPayload: { createdAt: Date; id: string } | undefined;
+
+    if (cursor) {
+      const decoded = decodeCursor(cursor);
+
+      cursorPayload = {
+        createdAt: new Date(decoded.createdAt),
+        id: decoded.id,
+      };
+    }
+
+    const messages = await prisma.message.findMany({
+      where: {
+        tenantId,
+        caseId,
+        ...(cursorPayload && {
+          OR: [
+            { createdAt: { lt: cursorPayload.createdAt } },
+            {
+              createdAt: cursorPayload.createdAt,
+              id: { lt: cursorPayload.id },
+            },
+          ],
+        }),
       },
-      orderBy: { createdAt: "asc" },
+      include: {
+        author: { select: { id: true, name: true } },
+        _count: { select: { replies: true } },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
+
+    const hasMore = messages.length > limit;
+
+    if (hasMore) messages.pop();
+
+    const nextCursor =
+      hasMore && messages.length > 0
+        ? encodeCursor({
+            createdAt: messages[messages.length - 1].createdAt.toISOString(),
+            id: messages[messages.length - 1].id,
+          })
+        : null;
+
+    return {
+      messages: messages.reverse(),
+      nextCursor,
+      hasMore,
+    };
+  }
+
+  ////////////////////////////////////////////////////////////////
+  // Unread Count (MessageId → createdAt resolution)
+  ////////////////////////////////////////////////////////////////
+
+  async getUnreadCount(tenantId: string, caseId: string, userId: string) {
+    assertUuid(tenantId, "tenantId");
+    assertUuid(caseId, "caseId");
+    assertUuid(userId, "userId");
+
+    const position = await prisma.caseReadPosition.findUnique({
+      where: { caseId_userId: { caseId, userId } },
+      select: { lastReadMessageId: true },
+    });
+
+    ////////////////////////////////////////////////////////////////
+    // Never read → count all non-authored messages
+    ////////////////////////////////////////////////////////////////
+
+    if (!position?.lastReadMessageId) {
+      return prisma.message.count({
+        where: {
+          tenantId,
+          caseId,
+          authorId: { not: userId },
+        },
+      });
+    }
+
+    ////////////////////////////////////////////////////////////////
+    // Resolve timestamp from message
+    ////////////////////////////////////////////////////////////////
+
+    const lastRead = await prisma.message.findUnique({
+      where: { id: position.lastReadMessageId },
+      select: { createdAt: true },
+    });
+
+    if (!lastRead) return 0;
+
+    ////////////////////////////////////////////////////////////////
+    // Count strictly newer messages
+    ////////////////////////////////////////////////////////////////
+
+    return prisma.message.count({
+      where: {
+        tenantId,
+        caseId,
+        authorId: { not: userId },
+        createdAt: { gt: lastRead.createdAt },
+      },
     });
   }
 }

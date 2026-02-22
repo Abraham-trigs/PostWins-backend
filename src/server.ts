@@ -1,5 +1,5 @@
 // apps/backend/src/server.ts
-// Purpose: Application bootstrap + governance scheduler + secure WebSocket support + heartbeat protection + CSWSH mitigation + per-IP WS rate limiting.
+// Purpose: Application bootstrap + governance scheduler + secure WebSocket support + heartbeat + CSWSH + cluster-wide rate limiting + global cap + observability.
 
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -9,6 +9,7 @@ import { prisma } from "./lib/prisma";
 import { registerSocket } from "./modules/message/ws-gateway";
 import { authenticateWsFromCookie } from "./lib/ws-auth";
 import { SYSTEM_CONSTANTS } from "./constants/system.constants";
+import { redisPub } from "./lib/redis";
 
 ////////////////////////////////////////////////////////////////
 // Environment
@@ -26,13 +27,11 @@ const ALLOWED_ORIGINS = (process.env.WS_ALLOWED_ORIGINS || "")
   .filter(Boolean);
 
 ////////////////////////////////////////////////////////////////
-// WS RATE LIMIT (Per IP)
+// CLUSTER-WIDE REDIS RATE LIMIT
 ////////////////////////////////////////////////////////////////
 
-const WS_RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
-const WS_RATE_LIMIT_MAX = 30; // 30 upgrade attempts per minute
-
-const ipConnectionMap = new Map<string, number[]>();
+const WS_RATE_LIMIT_MAX = 60; // 60 connections per minute per IP
+const WS_RATE_LIMIT_WINDOW_SEC = 60;
 
 function getClientIp(req: http.IncomingMessage): string {
   const forwarded = req.headers["x-forwarded-for"];
@@ -42,17 +41,37 @@ function getClientIp(req: http.IncomingMessage): string {
   return req.socket.remoteAddress || "unknown";
 }
 
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const timestamps = ipConnectionMap.get(ip) || [];
+async function isRateLimited(ip: string): Promise<boolean> {
+  const key = `ws:rate:${ip}`;
+  const count = await redisPub.incr(key);
 
-  const recent = timestamps.filter((ts) => now - ts < WS_RATE_LIMIT_WINDOW_MS);
+  if (count === 1) {
+    await redisPub.expire(key, WS_RATE_LIMIT_WINDOW_SEC);
+  }
 
-  recent.push(now);
-  ipConnectionMap.set(ip, recent);
-
-  return recent.length > WS_RATE_LIMIT_MAX;
+  return count > WS_RATE_LIMIT_MAX;
 }
+
+////////////////////////////////////////////////////////////////
+// GLOBAL CONNECTION CAP
+////////////////////////////////////////////////////////////////
+
+const GLOBAL_CONNECTION_CAP = 5000;
+let activeConnections = 0;
+
+////////////////////////////////////////////////////////////////
+// OBSERVABILITY (Basic)
+////////////////////////////////////////////////////////////////
+
+let totalConnections = 0;
+
+function logMetrics() {
+  console.log(
+    `[WS METRICS] active=${activeConnections} total=${totalConnections}`,
+  );
+}
+
+setInterval(logMetrics, 60000); // log every 60s
 
 ////////////////////////////////////////////////////////////////
 // HTTP SERVER
@@ -77,8 +96,15 @@ function heartbeat(this: WSWithHeartbeat) {
 }
 
 wss.on("connection", (ws: WSWithHeartbeat) => {
+  activeConnections++;
+  totalConnections++;
+
   ws.isAlive = true;
   ws.on("pong", heartbeat);
+
+  ws.on("close", () => {
+    activeConnections--;
+  });
 
   ws.on("error", (err) => {
     console.error("WebSocket connection error:", err);
@@ -94,6 +120,7 @@ const interval = setInterval(() => {
     const socket = ws as WSWithHeartbeat;
 
     if (socket.isAlive === false) {
+      activeConnections--;
       return socket.terminate();
     }
 
@@ -109,11 +136,20 @@ const interval = setInterval(() => {
 server.on("upgrade", async (request, socket, head) => {
   try {
     ////////////////////////////////////////////////////////////
-    // Rate Limiting (FIRST)
+    // Global Cap (FIRST)
+    ////////////////////////////////////////////////////////////
+
+    if (activeConnections >= GLOBAL_CONNECTION_CAP) {
+      socket.destroy();
+      return;
+    }
+
+    ////////////////////////////////////////////////////////////
+    // Cluster-wide Rate Limit
     ////////////////////////////////////////////////////////////
 
     const ip = getClientIp(request);
-    if (isRateLimited(ip)) {
+    if (await isRateLimited(ip)) {
       socket.destroy();
       return;
     }
@@ -219,13 +255,7 @@ server.listen(PORT, async () => {
   if (!ENABLE_SCHEDULER || MODE === "MOCK") return;
 
   const lockAcquired = await acquireSchedulerLock();
-
-  if (!lockAcquired) {
-    console.warn(
-      "Lifecycle Scheduler lock not acquired. Another instance is leader.",
-    );
-    return;
-  }
+  if (!lockAcquired) return;
 
   console.log("Lifecycle Reconciliation Scheduler enabled");
 });
