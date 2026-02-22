@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-// ApprovalRequest         
+// model Case         
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -592,7 +592,7 @@ model Case {
   counterfactuals     CounterfactualRecord[]
   grantLinks          GrantCase[]
 
-  @@index([tenantId, createdAt])
+  @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([tenantId, lifecycle, createdAt])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, sdgGoal])

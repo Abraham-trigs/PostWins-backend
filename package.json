@@ -10,6 +10,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start:mock": "cross-env MODE=MOCK node dist/server.js",
     "test": "vitest --run",
+    "generate:core-enums": "ts-node scripts/generate-core-enums.ts",
+    "postinstall": "pnpm run generate:core-enums",
+    "prebuild": "pnpm run generate:core-enums",
     "test:watch": "vitest",
     "check:lifecycle-law": "grep -R \"data: {[^}]*lifecycle\" src && echo \"❌ Direct lifecycle write detected\" && exit 1 || exit 0"
   },
@@ -19,7 +22,9 @@
     "@prisma/client": "^6.19.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "ioredis": "^5.9.3",
     "uuid": "^13.0.0",
+    "ws": "^8.19.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

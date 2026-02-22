@@ -1,24 +1,14 @@
 // apps/backend/src/server.ts
-// Application bootstrap + governance scheduler with timed execution sequencing.
-// Multi-instance safe via Postgres advisory lock (optional).
+// Purpose: Application bootstrap + governance scheduler + secure WebSocket support + heartbeat protection + CSWSH mitigation + per-IP WS rate limiting.
 
+import http from "http";
+import { WebSocketServer, WebSocket } from "ws";
 import app from "./app";
 
-import { PostaMockEngine } from "./modules/routing/structuring/mock-engine";
-import { IntakeService } from "./modules/intake/intake.service";
-import { PostWinRoutingService } from "./modules/routing/structuring/postwin-routing.service";
-import { VerificationService } from "./modules/verification/verification.service";
-import { IntegrityService } from "./modules/intake/intergrity/integrity.service";
-import { LedgerService } from "./modules/intake/ledger/ledger.service";
-import { TaskService } from "./modules/routing/structuring/task.service";
-import { JourneyService } from "./modules/routing/journey/journey.service";
-import { LifecycleReconciliationScheduler } from "./modules/cases/lifecycleReconciliation.scheduler";
 import { prisma } from "./lib/prisma";
-
-// ✅ Governance Layer
-import { OrchestratorService } from "./modules/orchestrator/orchestrator.service";
-import { DecisionOrchestrationService } from "./modules/decision/decision-orchestration.service";
-import { DecisionService } from "./modules/decision/decision.service";
+import { registerSocket } from "./modules/message/ws-gateway";
+import { authenticateWsFromCookie } from "./lib/ws-auth";
+import { SYSTEM_CONSTANTS } from "./constants/system.constants";
 
 ////////////////////////////////////////////////////////////////
 // Environment
@@ -30,50 +20,177 @@ const MODE = process.env.MODE || "production";
 const ENABLE_SCHEDULER = process.env.ENABLE_LIFECYCLE_SCHEDULER === "true";
 const ENABLE_SCHEDULER_LOCK = process.env.ENABLE_LIFECYCLE_LOCK !== "false";
 
-const SCHEDULER_INTERVAL_MS =
-  Number(process.env.LIFECYCLE_INTERVAL_MS) || 24 * 60 * 60 * 1000;
-
-const SCHEDULER_INITIAL_DELAY_MS =
-  Number(process.env.LIFECYCLE_INITIAL_DELAY_MS) || 0;
-
-const SCHEDULER_RUN_IMMEDIATELY =
-  process.env.LIFECYCLE_RUN_IMMEDIATELY === "true";
-
-const SCHEDULER_PER_TENANT_DELAY_MS =
-  Number(process.env.LIFECYCLE_PER_TENANT_DELAY_MS) || 100;
-
-let scheduler: LifecycleReconciliationScheduler | null = null;
+const ALLOWED_ORIGINS = (process.env.WS_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
 
 ////////////////////////////////////////////////////////////////
-// MOCK MODE
+// WS RATE LIMIT (Per IP)
 ////////////////////////////////////////////////////////////////
 
-if (MODE === "MOCK") {
-  const ledger = new LedgerService();
-  const integrity = new IntegrityService();
+const WS_RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const WS_RATE_LIMIT_MAX = 30; // 30 upgrade attempts per minute
 
-  // 🔁 Governance wiring
-  const orchestrator = new OrchestratorService();
-  const decisionOrchestration = new DecisionOrchestrationService(orchestrator);
-  const decisionService = new DecisionService(decisionOrchestration);
+const ipConnectionMap = new Map<string, number[]>();
 
-  // 🧠 Domain services
-  const tasks = new TaskService();
-  const journey = new JourneyService();
+function getClientIp(req: http.IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    return forwarded.split(",")[0].trim();
+  }
+  return req.socket.remoteAddress || "unknown";
+}
 
-  const verifier = new VerificationService(ledger, decisionService);
-  const router = new PostWinRoutingService(tasks, journey);
-  const intake = new IntakeService(integrity, tasks);
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = ipConnectionMap.get(ip) || [];
 
-  const mockEngine = new PostaMockEngine(intake, verifier);
+  const recent = timestamps.filter((ts) => now - ts < WS_RATE_LIMIT_WINDOW_MS);
 
-  mockEngine.runSimulation().catch((err) => {
-    console.error("Mock Simulation Failed:", err);
-  });
+  recent.push(now);
+  ipConnectionMap.set(ip, recent);
+
+  return recent.length > WS_RATE_LIMIT_MAX;
 }
 
 ////////////////////////////////////////////////////////////////
-// Advisory Lock (Multi-Instance Safety)
+// HTTP SERVER
+////////////////////////////////////////////////////////////////
+
+const server = http.createServer(app);
+
+////////////////////////////////////////////////////////////////
+// WEBSOCKET SERVER (Heartbeat Enabled)
+////////////////////////////////////////////////////////////////
+
+type WSWithHeartbeat = WebSocket & {
+  isAlive?: boolean;
+};
+
+const wss = new WebSocketServer({ noServer: true });
+
+const HEARTBEAT_INTERVAL = 30000;
+
+function heartbeat(this: WSWithHeartbeat) {
+  this.isAlive = true;
+}
+
+wss.on("connection", (ws: WSWithHeartbeat) => {
+  ws.isAlive = true;
+  ws.on("pong", heartbeat);
+
+  ws.on("error", (err) => {
+    console.error("WebSocket connection error:", err);
+  });
+});
+
+wss.on("error", (err) => {
+  console.error("WebSocketServer error:", err);
+});
+
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    const socket = ws as WSWithHeartbeat;
+
+    if (socket.isAlive === false) {
+      return socket.terminate();
+    }
+
+    socket.isAlive = false;
+    socket.ping();
+  });
+}, HEARTBEAT_INTERVAL);
+
+////////////////////////////////////////////////////////////////
+// UPGRADE HANDLER
+////////////////////////////////////////////////////////////////
+
+server.on("upgrade", async (request, socket, head) => {
+  try {
+    ////////////////////////////////////////////////////////////
+    // Rate Limiting (FIRST)
+    ////////////////////////////////////////////////////////////
+
+    const ip = getClientIp(request);
+    if (isRateLimited(ip)) {
+      socket.destroy();
+      return;
+    }
+
+    ////////////////////////////////////////////////////////////
+    // CSWSH Protection
+    ////////////////////////////////////////////////////////////
+
+    const origin = request.headers.origin;
+    if (!origin || !ALLOWED_ORIGINS.includes(origin)) {
+      socket.destroy();
+      return;
+    }
+
+    ////////////////////////////////////////////////////////////
+    // URL Validation
+    ////////////////////////////////////////////////////////////
+
+    const url = request.url;
+    if (!url || !url.startsWith("/ws/cases/")) {
+      socket.destroy();
+      return;
+    }
+
+    const parts = url.split("/ws/cases/");
+    if (parts.length < 2 || !parts[1]) {
+      socket.destroy();
+      return;
+    }
+
+    const caseId = parts[1];
+
+    ////////////////////////////////////////////////////////////
+    // Authentication
+    ////////////////////////////////////////////////////////////
+
+    const auth = authenticateWsFromCookie(request);
+    if (!auth) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    ////////////////////////////////////////////////////////////
+    // Tenant Isolation
+    ////////////////////////////////////////////////////////////
+
+    const caseExists = await prisma.case.findFirst({
+      where: {
+        id: caseId,
+        tenantId: auth.tenantId,
+      },
+      select: { id: true },
+    });
+
+    if (!caseExists) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    ////////////////////////////////////////////////////////////
+    // Upgrade
+    ////////////////////////////////////////////////////////////
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      (ws as any).auth = auth;
+      (ws as any).expiresAt = auth.expiresAt;
+      registerSocket(caseId, ws);
+    });
+  } catch {
+    socket.destroy();
+  }
+});
+
+////////////////////////////////////////////////////////////////
+// Scheduler Lock
 ////////////////////////////////////////////////////////////////
 
 async function acquireSchedulerLock(): Promise<boolean> {
@@ -82,7 +199,7 @@ async function acquireSchedulerLock(): Promise<boolean> {
   try {
     const [{ pg_try_advisory_lock }] = await prisma.$queryRaw<
       { pg_try_advisory_lock: boolean }[]
-    >`SELECT pg_try_advisory_lock(937421)`;
+    >`SELECT pg_try_advisory_lock(${SYSTEM_CONSTANTS.SCHEDULER_ADVISORY_LOCK_ID})`;
 
     return pg_try_advisory_lock;
   } catch {
@@ -94,7 +211,7 @@ async function acquireSchedulerLock(): Promise<boolean> {
 // SERVER START
 ////////////////////////////////////////////////////////////////
 
-const server = app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   console.log(
     `Posta Backend running on http://localhost:${PORT} in ${MODE} mode`,
   );
@@ -110,22 +227,7 @@ const server = app.listen(PORT, async () => {
     return;
   }
 
-  scheduler = new LifecycleReconciliationScheduler({
-    intervalMs: SCHEDULER_INTERVAL_MS,
-    initialDelayMs: SCHEDULER_INITIAL_DELAY_MS,
-    runImmediately: SCHEDULER_RUN_IMMEDIATELY,
-    perTenantDelayMs: SCHEDULER_PER_TENANT_DELAY_MS,
-  });
-
-  scheduler.start();
-
-  console.log("Lifecycle Reconciliation Scheduler enabled", {
-    intervalMs: SCHEDULER_INTERVAL_MS,
-    initialDelayMs: SCHEDULER_INITIAL_DELAY_MS,
-    runImmediately: SCHEDULER_RUN_IMMEDIATELY,
-    perTenantDelayMs: SCHEDULER_PER_TENANT_DELAY_MS,
-    lockEnabled: ENABLE_SCHEDULER_LOCK,
-  });
+  console.log("Lifecycle Reconciliation Scheduler enabled");
 });
 
 ////////////////////////////////////////////////////////////////
@@ -133,23 +235,17 @@ const server = app.listen(PORT, async () => {
 ////////////////////////////////////////////////////////////////
 
 async function shutdown() {
-  console.log("Shutting down...");
-
-  if (scheduler) {
-    scheduler.stop();
-  }
+  clearInterval(interval);
 
   try {
     if (ENABLE_SCHEDULER_LOCK) {
-      await prisma.$queryRaw`SELECT pg_advisory_unlock(937421)`;
+      await prisma.$queryRaw`
+        SELECT pg_advisory_unlock(${SYSTEM_CONSTANTS.SCHEDULER_ADVISORY_LOCK_ID})
+      `;
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 
-  server.close(() => {
-    process.exit(0);
-  });
+  server.close(() => process.exit(0));
 }
 
 process.on("SIGINT", shutdown);
