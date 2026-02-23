@@ -7,10 +7,11 @@ import { parseCookies } from "./cookie";
 export type WsAuthContext = {
   userId: string;
   tenantId: string;
+  expiresAt: number; // add this
 };
 
 export function authenticateWsFromCookie(request: any): WsAuthContext | null {
-  const cookies = parseCookies(request.headers.cookie);
+  const cookies = parseCookies(request.headers?.cookie ?? "");
   const token = cookies.session;
 
   if (!token) return null;
@@ -19,12 +20,13 @@ export function authenticateWsFromCookie(request: any): WsAuthContext | null {
     const payload = jwt.verify(token, process.env.JWT_SECRET!) as {
       userId: string;
       tenantId: string;
+      exp: number; // JWT expiration
     };
 
     return {
       userId: payload.userId,
       tenantId: payload.tenantId,
-      expiresAt: decoded.exp,
+      expiresAt: payload.exp,
     };
   } catch {
     return null;

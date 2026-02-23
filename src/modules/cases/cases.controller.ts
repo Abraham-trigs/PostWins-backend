@@ -1,5 +1,5 @@
 // apps/backend/src/modules/cases/cases.controller.ts
-// Purpose: List cases with authoritative lifecycle + latest message signal + stable composite cursor pagination.
+// Purpose: List cases with authoritative lifecycle + latest message signal + stable composite cursor pagination (JWT + middleware derived tenant isolation).
 
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
@@ -13,6 +13,8 @@ import type {
 /* ============================================================
    Design reasoning
    ------------------------------------------------------------
+   - Tenant is derived strictly from req.user (JWT middleware).
+   - Removes client-controlled X-Tenant-Id header (security hardening).
    - Stable composite ordering: createdAt DESC, id DESC.
    - Cursor uses unique id for safety.
    - take = limit + 1 to detect next page.
@@ -27,8 +29,27 @@ export async function listCases(
   req: Request,
   res: Response<ListCasesResponse | { ok: false; error: string }>,
 ): Promise<Response<ListCasesResponse | { ok: false; error: string }>> {
-  const tenantId = String(req.header("X-Tenant-Id") || "").trim();
+  ////////////////////////////////////////////////////////////
+  // Auth (derived from JWT middleware)
+  ////////////////////////////////////////////////////////////
+
+  const auth = (req as any).user;
+
+  if (!auth?.tenantId) {
+    return res.status(401).json({
+      ok: false,
+      error: "Unauthorized",
+    });
+  }
+
+  const tenantId: string = auth.tenantId;
+
+  ////////////////////////////////////////////////////////////
+  // Query normalization
+  ////////////////////////////////////////////////////////////
+
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+
   const limitRaw = Number(req.query.limit ?? DEFAULT_LIMIT);
 
   const limit =
@@ -36,23 +57,16 @@ export async function listCases(
       ? Math.min(limitRaw, MAX_LIMIT)
       : DEFAULT_LIMIT;
 
-  if (!tenantId) {
-    return res.status(400).json({ ok: false, error: "Missing X-Tenant-Id" });
-  }
-
-  if (!isUuid(tenantId)) {
-    return res.status(400).json({
-      ok: false,
-      error: "X-Tenant-Id must be a valid UUID",
-    });
-  }
-
   if (cursor && !isUuid(cursor)) {
     return res.status(400).json({
       ok: false,
       error: "Invalid cursor",
     });
   }
+
+  ////////////////////////////////////////////////////////////
+  // Query (tenant isolated)
+  ////////////////////////////////////////////////////////////
 
   const rows = await prisma.case.findMany({
     where: { tenantId },
@@ -91,8 +105,16 @@ export async function listCases(
     },
   });
 
+  ////////////////////////////////////////////////////////////
+  // Pagination trim
+  ////////////////////////////////////////////////////////////
+
   const hasMore = rows.length > limit;
   const trimmed = hasMore ? rows.slice(0, limit) : rows;
+
+  ////////////////////////////////////////////////////////////
+  // DTO mapping
+  ////////////////////////////////////////////////////////////
 
   const cases: CaseListItem[] = trimmed.map((row) => {
     const routingOutcome: RoutingOutcome =
@@ -126,6 +148,10 @@ export async function listCases(
   const nextCursor =
     hasMore && trimmed.length > 0 ? trimmed[trimmed.length - 1].id : null;
 
+  ////////////////////////////////////////////////////////////
+  // Response
+  ////////////////////////////////////////////////////////////
+
   return res.status(200).json({
     ok: true,
     cases,
@@ -139,7 +165,7 @@ export async function listCases(
 /* ============================================================
    Structure
    ------------------------------------------------------------
-   - Header validation
+   - Auth via req.user (JWT middleware)
    - Cursor + limit normalization
    - Stable composite ordering
    - Explicit DTO mapping
@@ -149,7 +175,8 @@ export async function listCases(
 /* ============================================================
    Scalability insight
    ------------------------------------------------------------
-   Ensure index exists:
+   Ensure composite index exists:
    @@index([tenantId, createdAt, id])
-   Without it, pagination degrades under scale.
+
+   Without it, pagination performance degrades under large tenants.
    ============================================================ */

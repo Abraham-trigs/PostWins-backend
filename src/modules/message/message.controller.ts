@@ -2,33 +2,34 @@
 // Purpose: REST controller for message creation and cursor-based pagination with WebSocket broadcast + origin-only ACK.
 
 import type { Request, Response } from "express";
+import { prisma } from "@/lib/prisma"; // ✅ direct singleton import
 import { MessageService } from "./message.service";
 import { publishMessage, publishAck } from "./ws-gateway";
 
 ////////////////////////////////////////////////////////////////
 // Design reasoning
 ////////////////////////////////////////////////////////////////
-// - tenantId and authorId are derived strictly from auth context.
+// - Prisma is imported as a guaranteed singleton (never optional).
+// - tenantId and authorId are strictly derived from auth context.
 // - Service layer enforces idempotency via clientMutationId.
-// - GET now returns { messages, nextCursor, hasMore } contract.
-// - Response shape is stable for UI merge (data = messages).
-// - Pagination is cursor-based for deterministic ordering.
-// - Limit is clamped defensively to prevent abuse.
+// - GET returns stable pagination contract for infinite scroll.
+// - Cursor-based pagination avoids OFFSET drift at scale.
+// - Defensive limit clamping prevents abuse.
 
 ////////////////////////////////////////////////////////////////
 // Structure
 ////////////////////////////////////////////////////////////////
+// - normalizeLimit()
 // - createMessage()
 // - getMessagesByCase()
-// - Local limit normalization helper
 
 ////////////////////////////////////////////////////////////////
 // Scalability insight
 ////////////////////////////////////////////////////////////////
-// - Cursor-based pagination avoids OFFSET drift at scale.
-// - Safe for multi-instance via Redis WS gateway.
-// - Deterministic idempotent writes.
-// - Contract supports infinite scroll without breaking UI.
+// - Explicit tenant isolation at query boundary.
+// - Safe for multi-instance WS via Redis.
+// - Deterministic writes + idempotent handling.
+// - Cursor-based pagination scales cleanly under high write volume.
 
 const service = new MessageService();
 
@@ -70,9 +71,9 @@ export async function createMessage(req: Request, res: Response) {
     } = req.body ?? {};
 
     const message = await service.createMessage({
-      tenantId: auth.tenantId, // 🔐 enforced
+      tenantId: auth.tenantId,
       caseId,
-      authorId: auth.userId, // 🔐 enforced
+      authorId: auth.userId,
       parentId,
       type,
       body,
@@ -80,16 +81,10 @@ export async function createMessage(req: Request, res: Response) {
       clientMutationId,
     });
 
-    //////////////////////////////////////////////////////////////
     // Broadcast to all participants
-    //////////////////////////////////////////////////////////////
-
     publishMessage(caseId, message);
 
-    //////////////////////////////////////////////////////////////
     // Origin-only ACK
-    //////////////////////////////////////////////////////////////
-
     if (clientMutationId) {
       publishAck(caseId, auth.userId, clientMutationId, message.id);
     }
@@ -130,7 +125,7 @@ export async function getMessagesByCase(req: Request, res: Response) {
     }
 
     //////////////////////////////////////////////////////////////
-    // Validate case ownership (explicit isolation)
+    // Explicit tenant isolation
     //////////////////////////////////////////////////////////////
 
     const caseExists = await prisma.case.findFirst({

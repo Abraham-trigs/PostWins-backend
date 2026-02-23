@@ -1,36 +1,5 @@
-// apps/backend/prisma/seed.ts
-/**caseEntity
- * Purpose:
- * Production-grade structured seed script generating:
- * - Single tenant
- * - Roles & permissions
- * - Organizations + ExecutionBody
- * - Active Grant + allocations + tranches
- * - Foundation helpers for full lifecycle case simulation (Part 2)
- *
- * Design reasoning:
- * This seed mirrors real lifecycle flow instead of flat fixtures.
- * We structure helpers for deterministic, relationally consistent
- * generation across Case → Routing → Execution → Verification →
- * Disbursement → Ledger.
- *
- * Structure:
- * - Imports
- * - Constants
- * - Core helpers
- * - Role + Permission seed
- * - Organization + ExecutionBody seed
- * - Grant + Budget + Tranche seed
- * - Exports seed context
- *
- * Implementation guidance:
- * This file runs via `prisma db seed`.
- * It assumes DATABASE_URL is configured and schema migrated.
- *
- * Scalability insight:
- * Lifecycle simulation logic is isolated so increasing from
- * 50 → 500 cases is a single constant change.
- */
+// prisma/seed.ts
+// Purpose: Production-grade realistic governance seed (single-tenant, lifecycle coherent)
 
 import crypto from "node:crypto";
 import { PrismaClient, Prisma } from "@prisma/client";
@@ -38,640 +7,500 @@ import { faker } from "@faker-js/faker";
 
 const prisma = new PrismaClient();
 
-////////////////////////////////////////////////////////////////
-// CONFIG
-////////////////////////////////////////////////////////////////
+/* ============================================================
+   DETERMINISTIC LEDGER CLOCK
+============================================================ */
 
-const CASE_COUNT = 50;
+let clock = BigInt(Date.now());
 
-////////////////////////////////////////////////////////////////
-// HELPERS
-////////////////////////////////////////////////////////////////
-
-const now = () => new Date();
-
-function uuid() {
-  return crypto.randomUUID();
+function nextTs(): bigint {
+  clock += BigInt(1);
+  return clock;
 }
 
-function randomAmount(min = 50, max = 500) {
-  return new Prisma.Decimal(faker.number.int({ min, max }).toFixed(2));
+function sha256(payload: unknown): string {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(payload))
+    .digest("hex");
 }
 
-function randomCurrency() {
-  return "USD";
-}
+/* ============================================================
+   SAFE RESET (POSTGRES CASCADE TRUNCATE)
+============================================================ */
 
-////////////////////////////////////////////////////////////////
-// TENANT
-////////////////////////////////////////////////////////////////
+async function resetDatabase() {
+  // Order does not matter because CASCADE handles FKs
+  const tables = [
+    "TrancheEvent",
+    "Tranche",
+    "BudgetAllocation",
+    "GrantConstraint",
+    "GrantCase",
+    "Grant",
+    "Disbursement",
+    "CounterfactualRecord",
+    "AppealDecision",
+    "Appeal",
+    "CaseReasonCode",
+    "AuditEntry",
+    "Evidence",
+    "TimelineEntry",
+    "LedgerCommit",
+    "Decision",
+    "ApprovalRequest",
+    "Verification",
+    "VerificationRequiredRole",
+    "VerificationRecord",
+    "ExecutionProgress",
+    "ExecutionMilestone",
+    "Execution",
+    "CaseAssignment",
+    "RoutingReasonCode",
+    "RoutingDecision",
+    "CaseTag",
+    "Tag",
+    "CaseReadPosition",
+    "MessageReceipt",
+    "Message",
+    "Session",
+    "UserRole",
+    "RolePermission",
+    "Role",
+    "Permission",
+    "ExecutionBodyMember",
+    "ExecutionBody",
+    "Organization",
+    "BeneficiaryPII",
+    "Beneficiary",
+    "Case",
+    "User",
+    "Tenant",
+    "PolicyEvaluation",
+  ];
 
-async function seedTenant() {
-  return prisma.tenant.upsert({
-    where: { slug: "dev" },
-    update: {},
-    create: {
-      id: uuid(),
-      slug: "dev",
-      name: "Dev Tenant",
-    },
-  });
-}
-
-////////////////////////////////////////////////////////////////
-// ROLES + PERMISSIONS
-////////////////////////////////////////////////////////////////
-
-const BASE_PERMISSIONS = [
-  "CASE_CREATE",
-  "CASE_ROUTE",
-  "CASE_ACCEPT",
-  "CASE_EXECUTE",
-  "CASE_VERIFY",
-  "CASE_DISBURSE",
-  "GRANT_MANAGE",
-];
-
-async function seedRoles(tenantId: string) {
-  const permissions = await Promise.all(
-    BASE_PERMISSIONS.map((key) =>
-      prisma.permission.upsert({
-        where: { key },
-        update: {},
-        create: {
-          id: uuid(),
-          key,
-          name: key,
-        },
-      }),
-    ),
+  await prisma.$executeRawUnsafe(
+    `TRUNCATE TABLE ${tables.map((t) => `"${t}"`).join(", ")} RESTART IDENTITY CASCADE;`,
   );
-
-  async function createRole(key: string, name: string, permKeys: string[]) {
-    const role = await prisma.role.upsert({
-      where: { tenantId_key: { tenantId, key } },
-      update: {},
-      create: {
-        id: uuid(),
-        tenantId,
-        key,
-        name,
-      },
-    });
-
-    await Promise.all(
-      permissions
-        .filter((p) => permKeys.includes(p.key))
-        .map((perm) =>
-          prisma.rolePermission.upsert({
-            where: {
-              roleId_permissionId: {
-                roleId: role.id,
-                permissionId: perm.id,
-              },
-            },
-            update: {},
-            create: {
-              id: uuid(),
-              roleId: role.id,
-              permissionId: perm.id,
-            },
-          }),
-        ),
-    );
-
-    return role;
-  }
-
-  const admin = await createRole("ADMIN", "Administrator", BASE_PERMISSIONS);
-  const verifier = await createRole("VERIFIER", "Verifier", ["CASE_VERIFY"]);
-  const executor = await createRole("EXECUTOR", "Executor", ["CASE_EXECUTE"]);
-
-  return { admin, verifier, executor };
 }
+/* ============================================================
+   LEDGER HELPER ledgerCommit
+============================================================ */
 
-////////////////////////////////////////////////////////////////
-// USERS
-////////////////////////////////////////////////////////////////
-
-async function seedUsers(
-  tenantId: string,
-  roles: Awaited<ReturnType<typeof seedRoles>>,
+async function ledgerCommit(
+  tx: Prisma.TransactionClient,
+  {
+    tenantId,
+    caseId,
+    eventType,
+    actorUserId,
+    payload,
+    supersedesCommitId,
+  }: {
+    tenantId: string;
+    caseId: string;
+    eventType: any;
+    actorUserId?: string;
+    payload: any;
+    supersedesCommitId?: string;
+  },
 ) {
-  const admin = await prisma.user.upsert({
-    where: {
-      tenantId_email: {
-        tenantId,
-        email: "admin@dev.local",
-      },
-    },
-    update: {},
-    create: {
-      id: uuid(),
-      tenantId,
-      email: "admin@dev.local",
-      name: "Dev Admin",
-      isActive: true,
-    },
-  });
+  const ts = nextTs();
 
-  await prisma.userRole
-    .create({
-      data: {
-        id: uuid(),
-        userId: admin.id,
-        roleId: roles.admin.id,
-      },
-    })
-    .catch(() => {});
-
-  const verifiers = await Promise.all(
-    Array.from({ length: 3 }).map(async () => {
-      const user = await prisma.user.create({
-        data: {
-          id: uuid(),
-          tenantId,
-          email: faker.internet.email(),
-          name: faker.person.fullName(),
-          isActive: true,
-        },
-      });
-
-      await prisma.userRole.create({
-        data: {
-          id: uuid(),
-          userId: user.id,
-          roleId: roles.verifier.id,
-        },
-      });
-
-      return user;
-    }),
-  );
-
-  const executors = await Promise.all(
-    Array.from({ length: 3 }).map(async () => {
-      const user = await prisma.user.create({
-        data: {
-          id: uuid(),
-          tenantId,
-          email: faker.internet.email(),
-          name: faker.person.fullName(),
-          isActive: true,
-        },
-      });
-
-      await prisma.userRole.create({
-        data: {
-          id: uuid(),
-          userId: user.id,
-          roleId: roles.executor.id,
-        },
-      });
-
-      return user;
-    }),
-  );
-
-  return { admin, verifiers, executors };
-}
-
-////////////////////////////////////////////////////////////////
-// ORGANIZATIONS + EXECUTION BODY
-////////////////////////////////////////////////////////////////
-
-async function seedOrganizations(tenantId: string) {
-  const donor = await prisma.organization.create({
-    data: {
-      id: uuid(),
-      tenantId,
-      name: "Global Development Fund",
-    },
-  });
-
-  const implementer = await prisma.organization.create({
-    data: {
-      id: uuid(),
-      tenantId,
-      name: "Community Implementation Org",
-    },
-  });
-
-  const executionBody = await prisma.executionBody.create({
-    data: {
-      id: uuid(),
-      tenantId,
-      orgId: implementer.id,
-      capabilities: { programs: ["education", "health", "housing"] },
-      isFallback: true,
-    },
-  });
-
-  return { donor, implementer, executionBody };
-}
-
-////////////////////////////////////////////////////////////////
-// GRANT + BUDGET + TRANCHES
-////////////////////////////////////////////////////////////////
-
-async function seedGrant(
-  tenantId: string,
-  donorOrgId: string,
-  implementerOrgId: string,
-) {
-  const totalAmount = new Prisma.Decimal(50000);
-
-  const grant = await prisma.grant.create({
-    data: {
-      id: uuid(),
-      tenantId,
-      donorOrgId,
-      implementerOrgId,
-      status: "ACTIVE",
-      currency: "USD",
-      totalAmount,
-      activatedAt: now(),
-    },
-  });
-
-  await prisma.budgetAllocation.createMany({
-    data: [
-      {
-        id: uuid(),
-        grantId: grant.id,
-        category: "Education",
-        amount: new Prisma.Decimal(20000),
-      },
-      {
-        id: uuid(),
-        grantId: grant.id,
-        category: "Health",
-        amount: new Prisma.Decimal(15000),
-      },
-      {
-        id: uuid(),
-        grantId: grant.id,
-        category: "Housing",
-        amount: new Prisma.Decimal(15000),
-      },
-    ],
-  });
-
-  await prisma.tranche.createMany({
-    data: [
-      {
-        id: uuid(),
-        grantId: grant.id,
-        sequence: 1,
-        plannedPercent: new Prisma.Decimal(0.25),
-        status: "RELEASED",
-        releasedAt: now(),
-      },
-      {
-        id: uuid(),
-        grantId: grant.id,
-        sequence: 2,
-        plannedPercent: new Prisma.Decimal(0.25),
-      },
-      {
-        id: uuid(),
-        grantId: grant.id,
-        sequence: 3,
-        plannedPercent: new Prisma.Decimal(0.25),
-      },
-      {
-        id: uuid(),
-        grantId: grant.id,
-        sequence: 4,
-        plannedPercent: new Prisma.Decimal(0.25),
-      },
-    ],
-  });
-
-  return grant;
-}
-
-////////////////////////////////////////////////////////////////
-// EXPORT CONTEXT FOR PART 2
-////////////////////////////////////////////////////////////////
-
-export async function seedBase() {
-  const tenant = await seedTenant();
-  const roles = await seedRoles(tenant.id);
-  const users = await seedUsers(tenant.id, roles);
-  const orgs = await seedOrganizations(tenant.id);
-  const grant = await seedGrant(tenant.id, orgs.donor.id, orgs.implementer.id);
-
-  return {
-    tenant,
-    roles,
-    users,
-    orgs,
-    grant,
+  // Canonical commitment payload
+  const commitmentPayload = {
+    tenantId,
+    caseId,
+    eventType,
+    ts: ts.toString(),
+    actorUserId: actorUserId ?? null,
+    payload,
   };
+
+  const commitmentHash = sha256(commitmentPayload);
+
+  return tx.ledgerCommit.create({
+    data: {
+      tenantId,
+      caseId,
+      eventType,
+      ts,
+      actorKind: actorUserId ? "HUMAN" : "SYSTEM",
+      actorUserId,
+      authorityProof: "seed",
+      commitmentHash,
+      payload,
+      supersedesCommitId,
+    },
+  });
 }
-
-////////////////////////////////////////////////////////////////
-// FULL LIFECYCLE SIMULATION (50 CASES)
-////////////////////////////////////////////////////////////////
-
-async function simulateCases(context: Awaited<ReturnType<typeof seedBase>>) {
-  const { tenant, users, orgs, grant } = context;
-
-  for (let i = 0; i < CASE_COUNT; i++) {
-    await prisma.$transaction(async (tx) => {
-      //////////////////////////////////////////////////////////////////
-      // BENEFICIARY
-      //////////////////////////////////////////////////////////////////
-      const beneficiary = await tx.beneficiary.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          displayName: faker.person.fullName(),
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // CASE INTAKE
-      //////////////////////////////////////////////////////////////////
-      const referenceCode = `CASE-${Date.now()}-${faker.string.alphanumeric(6).toUpperCase()}`;
-
-      const caseEntity = await tx.case.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          authorUserId: users.admin.id,
-          beneficiaryId: beneficiary.id,
-          referenceCode, // ✅ Required invariant
-          mode: "ASSISTED",
-          scope: "INTERNAL",
-          type: "EXECUTION",
-          summary: faker.lorem.sentence(),
-          sdgGoal: "SDG-" + faker.number.int({ min: 1, max: 17 }),
-          status: "INTAKED",
-        },
-      }); //////////////////////////////////////////////////////////////////
-      // GRANT LINK
-      //////////////////////////////////////////////////////////////////
-      await tx.grantCase.create({
-        data: {
-          id: uuid(),
-          grantId: grant.id,
-          caseId: caseEntity.id,
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // ROUTING DECISION
-      //////////////////////////////////////////////////////////////////
-      const routing = await tx.routingDecision.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          routingOutcome: "MATCHED",
-          chosenExecutionBodyId: orgs.executionBody.id,
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // ASSIGNMENT
-      //////////////////////////////////////////////////////////////////
-      await tx.caseAssignment.create({
-        data: {
-          id: uuid(),
-          caseId: caseEntity.id,
-          executionBodyId: orgs.executionBody.id,
-          assignedByUserId: users.admin.id,
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // EXECUTION
-      //////////////////////////////////////////////////////////////////
-      const execution = await tx.execution.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          status: "IN_PROGRESS",
-          startedAt: now(),
-          startedByUserId:
-            users.executors[faker.number.int({ min: 0, max: 2 })].id,
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // MILESTONES
-      //////////////////////////////////////////////////////////////////
-      const milestones = ["Enrollment", "Delivery", "Completion"];
-
-      for (const label of milestones) {
-        await tx.executionMilestone.create({
-          data: {
-            id: uuid(),
-            executionId: execution.id,
-            label,
-            completedAt: now(),
-            completedByUserId:
-              users.executors[faker.number.int({ min: 0, max: 2 })].id,
-          },
-        });
-      }
-
-      //////////////////////////////////////////////////////////////////
-      // COMPLETE EXECUTION
-      //////////////////////////////////////////////////////////////////
-      await tx.execution.update({
-        where: { id: execution.id },
-        data: {
-          status: "COMPLETED",
-          completedAt: now(),
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // VERIFICATION RECORD
-      //////////////////////////////////////////////////////////////////
-      const verificationRecord = await tx.verificationRecord.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          requiredVerifiers: 2,
-          routedAt: now(),
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // VERIFICATIONS
-      //////////////////////////////////////////////////////////////////
-      for (let v = 0; v < 2; v++) {
-        await tx.verification.create({
-          data: {
-            id: uuid(),
-            tenantId: tenant.id,
-            verificationRecordId: verificationRecord.id,
-            verifierUserId: users.verifiers[v].id,
-            status: "APPROVED",
-          },
-        });
-      }
-
-      await tx.verificationRecord.update({
-        where: { id: verificationRecord.id },
-        data: {
-          consensusReached: true,
-          verifiedAt: now(),
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // DECISION SNAPSHOT
-      //////////////////////////////////////////////////////////////////
-      await tx.decision.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          decisionType: "VERIFICATION",
-          actorKind: "HUMAN",
-          actorUserId: users.verifiers[0].id,
-          reason: "Consensus reached",
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // DISBURSEMENT
-      //////////////////////////////////////////////////////////////////
-      const disbursement = await tx.disbursement.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          type: "BENEFICIARY_PAYMENT",
-          status: "COMPLETED",
-          amount: randomAmount(),
-          currency: randomCurrency(),
-          payeeKind: "BENEFICIARY",
-          payeeId: beneficiary.id,
-          actorKind: "HUMAN",
-          actorUserId: users.admin.id,
-          authorityProof: "SEED-AUTH",
-          verificationRecordId: verificationRecord.id,
-          executionId: execution.id,
-          executedAt: now(),
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // LEDGER COMMIT
-      //////////////////////////////////////////////////////////////////
-      await tx.ledgerCommit.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          eventType: "DISBURSEMENT_COMPLETED",
-          ts: BigInt(Date.now() * 1000 + i),
-          actorKind: "HUMAN",
-          actorUserId: users.admin.id,
-          authorityProof: "SEED",
-          commitmentHash: crypto
-            .createHash("sha256")
-            .update(disbursement.id)
-            .digest("hex"),
-          payload: {
-            disbursementId: disbursement.id,
-          },
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // TIMELINE ENTRY
-      //////////////////////////////////////////////////////////////////
-      const timeline = await tx.timelineEntry.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          type: "DELIVERY",
-          body: "Service delivered successfully",
-        },
-      });
-
-      await tx.evidence.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          timelineEntryId: timeline.id,
-          kind: "PHOTO",
-          storageKey: faker.system.fileName(),
-          sha256: crypto.createHash("sha256").update(timeline.id).digest("hex"),
-        },
-      });
-
-      //////////////////////////////////////////////////////////////////
-      // AUDIT ENTRY
-      //////////////////////////////////////////////////////////////////
-      await tx.auditEntry.create({
-        data: {
-          id: uuid(),
-          tenantId: tenant.id,
-          caseId: caseEntity.id,
-          actorLabel: "SYSTEM_SEED",
-          note: "Lifecycle simulated",
-        },
-      });
-    });
-  }
-}
-
-////////////////////////////////////////////////////////////////
-// MAIN
-////////////////////////////////////////////////////////////////
+/* ============================================================
+   MAIN
+============================================================ */
 
 async function main() {
-  console.log("Seeding lifecycle graph...");
+  await resetDatabase();
 
-  const base = await seedBase();
+  await prisma.$transaction(async (tx) => {
+    /* ================= TENANT ================= */
 
-  await simulateCases(base);
+    const tenant = await tx.tenant.create({
+      data: { slug: "ultra-demo", name: "Ultra Governance Tenant" },
+    });
 
-  console.log(`Seeded ${CASE_COUNT} full lifecycle cases.`);
+    /* ================= USERS ================= */
+
+    const admin = await tx.user.create({
+      data: { tenantId: tenant.id, email: "admin@ultra.local" },
+    });
+
+    const operator = await tx.user.create({
+      data: { tenantId: tenant.id, email: "operator@ultra.local" },
+    });
+
+    const verifier = await tx.user.create({
+      data: { tenantId: tenant.id, email: "verifier@ultra.local" },
+    });
+
+    /* ================= ORGS ================= */
+
+    const donor = await tx.organization.create({
+      data: { tenantId: tenant.id, name: "Global Health Fund" },
+    });
+
+    const implementer = await tx.organization.create({
+      data: { tenantId: tenant.id, name: "Health Implementers Ltd" },
+    });
+
+    const executionBody = await tx.executionBody.create({
+      data: {
+        tenantId: tenant.id,
+        orgId: implementer.id,
+        capabilities: { sector: "health" },
+      },
+    });
+
+    await tx.executionBodyMember.create({
+      data: {
+        tenantId: tenant.id,
+        executionBodyId: executionBody.id,
+        userId: operator.id,
+      },
+    });
+
+    /* ============================================================
+       CASE 1 — SUCCESSFUL FLOW resetDatabase
+    ============================================================ */
+
+    const beneficiary1 = await tx.beneficiary.create({
+      data: { tenantId: tenant.id, displayName: faker.person.fullName() },
+    });
+
+    await tx.beneficiaryPII.create({
+      data: { beneficiaryId: beneficiary1.id, phone: faker.phone.number() },
+    });
+
+    const case1 = await tx.case.create({
+      data: {
+        tenantId: tenant.id,
+        authorUserId: admin.id,
+        beneficiaryId: beneficiary1.id,
+        referenceCode: "ULTRA-CASE-001",
+        mode: "AI_AUGMENTED",
+        scope: "INTERNAL",
+        type: "PROGRESS",
+        lifecycle: "ROUTED",
+        status: "ROUTED",
+      },
+    });
+
+    const commitCreated = await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case1.id,
+      eventType: "CASE_CREATED",
+      actorUserId: admin.id,
+      payload: { stage: "created" },
+    });
+
+    /* ROUTING */
+
+    const routing = await tx.routingDecision.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case1.id,
+        routingOutcome: "MATCHED",
+        chosenExecutionBodyId: executionBody.id,
+        decidedByUserId: admin.id,
+      },
+    });
+
+    await tx.counterfactualRecord.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case1.id,
+        routingDecisionId: routing.id,
+        decisionType: "ROUTING",
+        chosen: "HealthImplementers",
+        constraintsApplied: ["sector=health"],
+        alternatives: { fallback: false },
+      },
+    });
+
+    await tx.caseAssignment.create({
+      data: {
+        caseId: case1.id,
+        executionBodyId: executionBody.id,
+        assignedByUserId: admin.id,
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case1.id,
+      eventType: "ROUTED",
+      actorUserId: admin.id,
+      payload: { assigned: true },
+    });
+
+    /* EXECUTION */
+
+    const execution = await tx.execution.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case1.id,
+        status: "IN_PROGRESS",
+        startedByUserId: operator.id,
+        startedAt: new Date(),
+      },
+    });
+
+    await tx.executionProgress.create({
+      data: {
+        executionId: execution.id,
+        label: "Delivery visit",
+      },
+    });
+
+    await tx.execution.update({
+      where: { id: execution.id },
+      data: {
+        status: "COMPLETED",
+        completedAt: new Date(),
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case1.id,
+      eventType: "EXECUTION_COMPLETED",
+      actorUserId: operator.id,
+      payload: { executionId: execution.id },
+    });
+
+    /* VERIFICATION */
+
+    const verificationRecord = await tx.verificationRecord.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case1.id,
+        requiredVerifiers: 1,
+        routedAt: new Date(),
+      },
+    });
+
+    await tx.verification.create({
+      data: {
+        tenantId: tenant.id,
+        verificationRecordId: verificationRecord.id,
+        verifierUserId: verifier.id,
+        status: "APPROVED",
+      },
+    });
+
+    await tx.verificationRecord.update({
+      where: { id: verificationRecord.id },
+      data: {
+        consensusReached: true,
+        verifiedAt: new Date(),
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case1.id,
+      eventType: "VERIFIED",
+      actorUserId: verifier.id,
+      payload: { verificationId: verificationRecord.id },
+    });
+
+    /* DISBURSEMENT SUCCESS */
+
+    await tx.disbursement.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case1.id,
+        type: "PROVIDER_PAYMENT",
+        status: "COMPLETED",
+        amount: new Prisma.Decimal("2500"),
+        currency: "USD",
+        payeeKind: "ORG",
+        payeeId: implementer.id,
+        actorKind: "HUMAN",
+        actorUserId: admin.id,
+        authorityProof: "seed-proof",
+        verificationRecordId: verificationRecord.id,
+        executionId: execution.id,
+        executedAt: new Date(),
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case1.id,
+      eventType: "DISBURSEMENT_COMPLETED",
+      actorUserId: admin.id,
+      payload: { amount: 2500 },
+    });
+
+    /* ============================================================
+       CASE 2 — FAILURE FLOW
+    ============================================================ */
+
+    const beneficiary2 = await tx.beneficiary.create({
+      data: { tenantId: tenant.id, displayName: faker.person.fullName() },
+    });
+
+    const case2 = await tx.case.create({
+      data: {
+        tenantId: tenant.id,
+        authorUserId: admin.id,
+        beneficiaryId: beneficiary2.id,
+        referenceCode: "ULTRA-CASE-002",
+        mode: "ASSISTED",
+        scope: "INTERNAL",
+        type: "REQUEST",
+        lifecycle: "ROUTED",
+        status: "ROUTED",
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case2.id,
+      eventType: "CASE_CREATED",
+      actorUserId: admin.id,
+      payload: { stage: "created" },
+    });
+
+    const execution2 = await tx.execution.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case2.id,
+        status: "ABORTED",
+        startedByUserId: operator.id,
+        startedAt: new Date(),
+        abortedAt: new Date(),
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case2.id,
+      eventType: "EXECUTION_ABORTED",
+      actorUserId: operator.id,
+      payload: { reason: "Delivery blocked" },
+    });
+
+    const failedVerification = await tx.verificationRecord.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case2.id,
+        requiredVerifiers: 1,
+        routedAt: new Date(),
+        consensusReached: false,
+      },
+    });
+
+    await tx.disbursement.create({
+      data: {
+        tenantId: tenant.id,
+        caseId: case2.id,
+        type: "REIMBURSEMENT",
+        status: "FAILED",
+        amount: new Prisma.Decimal("1200"),
+        currency: "USD",
+        payeeKind: "BENEFICIARY",
+        payeeId: beneficiary2.id,
+        actorKind: "HUMAN",
+        actorUserId: admin.id,
+        authorityProof: "seed-proof",
+        verificationRecordId: failedVerification.id,
+        executionId: execution2.id,
+        failedAt: new Date(),
+        failureReason: "Verification incomplete",
+      },
+    });
+
+    await ledgerCommit(tx, {
+      tenantId: tenant.id,
+      caseId: case2.id,
+      eventType: "DISBURSEMENT_FAILED",
+      actorUserId: admin.id,
+      payload: { reason: "Verification incomplete" },
+    });
+
+    /* ================= GRANT ================= */
+
+    const grant = await tx.grant.create({
+      data: {
+        tenantId: tenant.id,
+        donorOrgId: donor.id,
+        implementerOrgId: implementer.id,
+        status: "ACTIVE",
+        totalAmount: new Prisma.Decimal("50000"),
+        activatedAt: new Date(),
+      },
+    });
+
+    await tx.grantCase.create({
+      data: { grantId: grant.id, caseId: case1.id },
+    });
+
+    await tx.budgetAllocation.create({
+      data: {
+        grantId: grant.id,
+        category: "Operations",
+        amount: new Prisma.Decimal("10000"),
+      },
+    });
+
+    const tranche = await tx.tranche.create({
+      data: {
+        grantId: grant.id,
+        sequence: 1,
+        plannedPercent: new Prisma.Decimal("0.500"),
+        status: "RELEASED",
+        releasedAt: new Date(),
+      },
+    });
+
+    await tx.trancheEvent.create({
+      data: {
+        trancheId: tranche.id,
+        type: "RELEASE",
+        payload: { amount: 25000 },
+      },
+    });
+  });
+
+  console.log("Production-grade realistic seed complete.");
 }
 
 main()
-  .then(async () => prisma.$disconnect())
-  .catch(async (e) => {
+  .catch((e) => {
     console.error(e);
-    await prisma.$disconnect();
     process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
   });
-
-////////////////////////////////////////////////////////////////
-// DESIGN SUMMARY
-////////////////////////////////////////////////////////////////
-
-/**
-Design reasoning:
-This seed mirrors real-world state transitions instead of flat fixtures.
-Each case passes through routing, assignment, execution,
-verification, decision snapshot, disbursement, ledger commit,
-timeline, and audit entry — enforcing relational correctness.
-
-Structure:
-- seedBase(): infrastructure (tenant, roles, orgs, grant)
-- simulateCases(): lifecycle graph per case
-- main(): orchestrator
-
-Implementation guidance:
-Run:
-  pnpm prisma db seed
-after migrations.
-Ensure pgcrypto extension enabled.
-
-Scalability insight:
-Increase CASE_COUNT to scale dataset.
-All writes are transactional per case to preserve integrity.
-*/

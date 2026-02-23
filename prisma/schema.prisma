@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-// model Case         
+// model LoginToken         
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -291,6 +291,7 @@ model Tenant {
   grants        Grant[]
   ledgerCommits LedgerCommit[]
   auditEntries  AuditEntry[]
+  sessions      Session[]
 
   // New relations
   executions       Execution[]
@@ -311,6 +312,8 @@ model Tenant {
   evidence             Evidence[]
   appeals              Appeal[]
   counterfactuals      CounterfactualRecord[]
+  messageReceipts      MessageReceipt[]
+  caseReadPositions    CaseReadPosition[]
 
   @@index([createdAt])
 }
@@ -351,6 +354,9 @@ model User {
   decisions           Decision[]
   disbursements       Disbursement[]
   completedMilestones ExecutionMilestone[] @relation("MilestoneCompletedBy")
+  messageReceipts     MessageReceipt[]
+  caseReadPositions   CaseReadPosition[]
+  loginTokens         LoginToken[]
 
   @@unique([tenantId, email])
   @@index([tenantId, email])
@@ -358,15 +364,30 @@ model User {
 }
 
 model Session {
-  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId    String    @db.Uuid
-  createdAt DateTime  @default(now())
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String    @db.Uuid
+  tenantId         String    @db.Uuid
+  refreshTokenHash String    @unique
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model LoginToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @db.Uuid
+  tokenHash String   @unique
   expiresAt DateTime
-  revokedAt DateTime?
+  createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId, createdAt])
   @@index([expiresAt])
 }
 
@@ -440,12 +461,12 @@ model Message {
   isInternal Boolean  @default(false)
   createdAt  DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
-  author User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case            Case             @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  author          User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  messageReceipts MessageReceipt[]
 
   @@unique([tenantId, clientMutationId])
-
   // ⚡ Cursor pagination index
   @@index([tenantId, caseId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([tenantId, caseId, createdAt(sort: Desc)])
@@ -453,10 +474,10 @@ model Message {
 }
 
 model MessageReceipt {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId   String   @db.Uuid
-  messageId  String   @db.Uuid
-  userId     String   @db.Uuid
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String @db.Uuid
+  messageId String @db.Uuid
+  userId    String @db.Uuid
 
   deliveredAt DateTime?
   seenAt      DateTime?
@@ -471,15 +492,15 @@ model MessageReceipt {
 }
 
 model CaseReadPosition {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId  String   @db.Uuid
-  caseId    String   @db.Uuid
-  userId    String   @db.Uuid
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+  caseId   String @db.Uuid
+  userId   String @db.Uuid
 
-  lastReadMessageId String  @db.Uuid
+  lastReadMessageId String   @db.Uuid
   lastReadAt        DateTime
 
-  updatedAt         DateTime @updatedAt
+  updatedAt DateTime @updatedAt
 
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -488,6 +509,7 @@ model CaseReadPosition {
   @@unique([caseId, userId])
   @@index([tenantId, caseId, lastReadAt])
 }
+
 model Role {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String   @db.Uuid
@@ -629,6 +651,7 @@ model Case {
   appeals             Appeal[]
   counterfactuals     CounterfactualRecord[]
   grantLinks          GrantCase[]
+  caseReadPositions   CaseReadPosition[]
 
   @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([tenantId, lifecycle, createdAt])

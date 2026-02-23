@@ -10,13 +10,23 @@ import { registerSocket } from "./modules/message/ws-gateway";
 import { authenticateWsFromCookie } from "./lib/ws-auth";
 import { SYSTEM_CONSTANTS } from "./constants/system.constants";
 import { redisPub } from "./lib/redis";
+import "dotenv/config";
+import dotenv from "dotenv";
 
+dotenv.config({
+  path: require("path").resolve(process.cwd(), "apps/backend/.env"),
+});
 ////////////////////////////////////////////////////////////////
 // Environment
 ////////////////////////////////////////////////////////////////
 
 const PORT = Number(process.env.PORT) || 3001;
-const MODE = process.env.MODE || "production";
+
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+
+const isProduction = NODE_ENV === "production";
+const isDevelopment = NODE_ENV === "development";
+const isTest = NODE_ENV === "test";
 
 const ENABLE_SCHEDULER = process.env.ENABLE_LIFECYCLE_SCHEDULER === "true";
 const ENABLE_SCHEDULER_LOCK = process.env.ENABLE_LIFECYCLE_LOCK !== "false";
@@ -249,11 +259,10 @@ async function acquireSchedulerLock(): Promise<boolean> {
 
 server.listen(PORT, async () => {
   console.log(
-    `Posta Backend running on http://localhost:${PORT} in ${MODE} mode`,
+    `PostWins Backend running on http://localhost:${PORT} in ${NODE_ENV} mode`,
   );
 
-  if (!ENABLE_SCHEDULER || MODE === "MOCK") return;
-
+  if (!ENABLE_SCHEDULER || NODE_ENV !== "production") return;
   const lockAcquired = await acquireSchedulerLock();
   if (!lockAcquired) return;
 

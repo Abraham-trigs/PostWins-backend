@@ -21,6 +21,10 @@ import executionRoutes from "./modules/execution/execution.routes";
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
 import { DomainError } from "@/lib/errors/domain-error";
+import { authMiddleware } from "./middleware/auth.middleware";
+import authRoutes from "./modules/auth/auth.routes";
+import cookieParser from "cookie-parser";
+import "dotenv/config";
 
 const app: Express = express();
 
@@ -53,12 +57,24 @@ app.use(
   }),
 );
 
+////////////////////////////////////////////////////////////////
 // Prevent caching on API routes
+////////////////////////////////////////////////////////////////
+
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
 
+////////////////////////////////////////////////////////////////
+// Enforce JWT auth for all API routes
+////////////////////////////////////////////////////////////////
+
+// Public auth routes
+app.use("/api/auth", authRoutes);
+
+// All other API routes require auth
+app.use("/api", authMiddleware);
 ////////////////////////////////////////////////////////////////
 // Correlation + structured logging middleware
 ////////////////////////////////////////////////////////////////
@@ -97,6 +113,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 app.get("/__ping", (_req: Request, res: Response) => {
   res.status(200).send("pong");
 });
+
+// Enable cookie parsing for auth routes
+app.use(cookieParser());
 
 ////////////////////////////////////////////////////////////////
 // Root route
@@ -166,3 +185,5 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 export default app;
+
+//authMiddleware
