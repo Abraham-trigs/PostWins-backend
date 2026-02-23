@@ -1,5 +1,6 @@
 // apps/backend/src/modules/auth/auth.controller.ts
 // Purpose: Handles magic login request + verification + session issuance (dev-mode magic link)
+// Updated: Access JWT now carries sessionId for DB-backed kill-switch validation.
 
 import { Request, Response } from "express";
 import { prisma } from "@/lib/prisma";
@@ -8,26 +9,10 @@ import jwt from "jsonwebtoken";
 import { rotateSession } from "./refresh.service";
 
 /**
- * Design reasoning:
- * - Multi-tenant safe: requires tenantSlug.
- * - No passwords stored.
- * - Raw tokens never stored in DB (hash-only).
- * - One-time use verification tokens.
- * - Short-lived access token (JWT).
- * - DB-backed refresh token for revocation control.
- *
- * Structure:
- * - requestLogin
- * - verifyLogin
- *
- * Implementation guidance:
- * - Must be mounted BEFORE authMiddleware.
- * - Dev-mode returns raw token instead of sending email.
- *
- * Scalability insight:
- * - Can add rate limiting middleware.
- * - Can move token cleanup to background job.
- * - Can add device metadata to Session model.
+ * Assumptions:
+ * - Session model includes: id, userId, tenantId, refreshTokenHash, expiresAt, revokedAt?
+ * - authMiddleware will validate sessionId against DB.
+ * - JWT_SECRET is defined.
  */
 
 const LOGIN_TOKEN_TTL_MINUTES = 10;
@@ -36,7 +21,7 @@ const REFRESH_TTL_DAYS = 7;
 
 /* ============================================================
    STEP 3 — Request Login
-   ============================================================ */
+============================================================ */
 
 export async function requestLogin(req: Request, res: Response) {
   try {
@@ -60,10 +45,7 @@ export async function requestLogin(req: Request, res: Response) {
     });
 
     if (!tenant) {
-      return res.status(404).json({
-        ok: false,
-        error: "Tenant not found",
-      });
+      return res.status(404).json({ ok: false, error: "Tenant not found" });
     }
 
     const user = await prisma.user.findFirst({
@@ -100,7 +82,6 @@ export async function requestLogin(req: Request, res: Response) {
       },
     });
 
-    // DEV MODE ONLY
     return res.status(200).json({
       ok: true,
       devToken: rawToken,
@@ -115,8 +96,8 @@ export async function requestLogin(req: Request, res: Response) {
 }
 
 /* ============================================================
-   STEP 5 — Verify Login + Issue Session
-   ============================================================ */
+   STEP 5 — Verify Login + Issue Session (Kill-Switch Enabled)
+============================================================ */
 
 export async function verifyLogin(req: Request, res: Response) {
   try {
@@ -144,9 +125,7 @@ export async function verifyLogin(req: Request, res: Response) {
     }
 
     if (loginToken.expiresAt < new Date()) {
-      await prisma.loginToken.delete({
-        where: { id: loginToken.id },
-      });
+      await prisma.loginToken.delete({ where: { id: loginToken.id } });
 
       return res.status(401).json({
         ok: false,
@@ -156,12 +135,10 @@ export async function verifyLogin(req: Request, res: Response) {
 
     const user = loginToken.user;
 
-    // One-time use token
-    await prisma.loginToken.delete({
-      where: { id: loginToken.id },
-    });
+    // One-time token usage
+    await prisma.loginToken.delete({ where: { id: loginToken.id } });
 
-    // Create refresh token
+    // Generate refresh token
     const refreshRaw = crypto.randomUUID();
 
     const refreshHash = crypto
@@ -171,7 +148,8 @@ export async function verifyLogin(req: Request, res: Response) {
 
     const refreshExpiresAt = new Date(Date.now() + REFRESH_TTL_DAYS * 86400000);
 
-    await prisma.session.create({
+    // IMPORTANT: capture session record
+    const sessionRecord = await prisma.session.create({
       data: {
         userId: user.id,
         tenantId: user.tenantId,
@@ -180,11 +158,12 @@ export async function verifyLogin(req: Request, res: Response) {
       },
     });
 
-    // Create access JWT
+    // 🔐 Embed sessionId inside JWT (Gold Standard Kill Switch)
     const accessToken = jwt.sign(
       {
         userId: user.id,
         tenantId: user.tenantId,
+        sessionId: sessionRecord.id,
       },
       process.env.JWT_SECRET!,
       { expiresIn: ACCESS_TTL },
@@ -215,9 +194,9 @@ export async function verifyLogin(req: Request, res: Response) {
   }
 }
 
-// ===============================================================================
-// REFRESH SESSION
-// ===============================================================================
+/* ============================================================
+   REFRESH SESSION
+============================================================ */
 
 export async function refreshSession(req: Request, res: Response) {
   try {
@@ -230,6 +209,7 @@ export async function refreshSession(req: Request, res: Response) {
       });
     }
 
+    // rotateSession must now return sessionId
     const { newAccess, newRefreshRaw } = await rotateSession(refreshToken);
 
     const isProd = process.env.NODE_ENV === "production";
@@ -257,9 +237,9 @@ export async function refreshSession(req: Request, res: Response) {
   }
 }
 
-// ==============================================================================================
-// LOGOUT - For logout, we can simply delete the session associated with the refresh token. This will invalidate both the refresh token and any access tokens (since they check for an active session). The client should also clear the cookies on their end.
-// ==============================================================================================
+/* ============================================================
+   LOGOUT (Kill Switch)
+============================================================ */
 
 export async function logout(req: Request, res: Response) {
   try {
@@ -271,14 +251,15 @@ export async function logout(req: Request, res: Response) {
         .update(refreshToken)
         .digest("hex");
 
-      await prisma.session.deleteMany({
+      // Non-destructive option: update revokedAt instead of delete
+      await prisma.session.updateMany({
         where: { refreshTokenHash: refreshHash },
+        data: { revokedAt: new Date() },
       });
     }
 
     const isProd = process.env.NODE_ENV === "production";
 
-    // Clear cookies
     res.cookie("session", "", {
       httpOnly: true,
       secure: isProd,
@@ -305,12 +286,8 @@ export async function logout(req: Request, res: Response) {
 }
 
 /* ============================================================
-AUTH GUARD
+   AUTH GUARD SUPPORT
 ============================================================ */
-
-// This is protected automatically by authMiddleware.
-// If the request reaches this handler, the session is
-// valid and user info is attached to req.user.
 
 export function getSession(req: Request, res: Response) {
   const user = (req as any).user;
@@ -322,8 +299,9 @@ export function getSession(req: Request, res: Response) {
 }
 
 /* ============================================================
-GET CURRENT USER IDENTITY 
+   GET CURRENT USER IDENTITY
 ============================================================ */
+
 export async function getCurrentUser(req: Request, res: Response) {
   const auth = (req as any).user;
 
@@ -335,9 +313,7 @@ export async function getCurrentUser(req: Request, res: Response) {
     where: { id: auth.userId },
     include: {
       roles: {
-        include: {
-          role: true,
-        },
+        include: { role: true },
       },
       tenant: true,
     },

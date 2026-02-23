@@ -9,6 +9,7 @@ import {
 } from "./auth.controller";
 import { refreshSession } from "./auth.controller";
 import { Router, type Router as ExpressRouter } from "express";
+import { proposeVerifierProvision } from "./provision-verifier.controller";
 
 /**
  * Design reasoning:
@@ -27,20 +28,25 @@ import { Router, type Router as ExpressRouter } from "express";
  * - Easy to extend with rate limiting middleware.
  * - Can attach IP throttling here.
  */
+
 const router: ExpressRouter = Router();
 
-// POST /api/auth/request-login
+// 1. Authentication initiation
 router.post("/request-login", requestLogin);
 
-// POST /api/auth/verify
+// 2. Authentication verification
 router.post("/verify", verifyLogin);
 
-// POST /api/auth/refresh
+// 3. Session refresh
 router.post("/refresh", refreshSession);
 
-//POST /api/auth/logout
+// 4. Session termination
 router.post("/logout", logout);
 
+// 5. Identity introspection
 router.get("/me", getCurrentUser);
+
+// 6. Governance-triggered identity provisioning
+router.post("/provision-verifier", proposeVerifierProvision);
 
 export default router;

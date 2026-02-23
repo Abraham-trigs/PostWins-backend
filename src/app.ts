@@ -1,4 +1,5 @@
-// src/app.ts — Express application bootstrap with request correlation and structured logging
+// src/app.ts
+// Purpose: Express bootstrap with request correlation, structured logging, and kill-switch compatible auth flow
 
 import express, {
   type Express,
@@ -9,36 +10,74 @@ import express, {
 
 import cors from "cors";
 import { randomUUID } from "crypto";
+import cookieParser from "cookie-parser";
+import "dotenv/config";
 
 import intakeRoutes from "./modules/intake/intake.routes";
 import timelineRoutes from "./modules/timeline/timeline.route";
 import verificationRouter from "./modules/verification/verification.routes";
+import { verificationProvisionRoutes } from "./modules/verification/verificationProvision.routes";
 import { casesRouter } from "./modules/cases/cases.routes";
 import decisionQueryRoutes from "./modules/decision/decision.query.routes";
 import healthRoutes from "./modules/health/health.controller";
 import executionRoutes from "./modules/execution/execution.routes";
+import authRoutes from "./modules/auth/auth.routes";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
 import { DomainError } from "@/lib/errors/domain-error";
 import { authMiddleware } from "./middleware/auth.middleware";
-import authRoutes from "./modules/auth/auth.routes";
-import cookieParser from "cookie-parser";
-import "dotenv/config";
 
 const app: Express = express();
 
-// Disable ETag to prevent unintended 304 caching on dynamic tenant data
+/**
+ * Assumptions:  verificationRouter
+ * - authMiddleware performs DB-backed session validation (kill-switch).
+ * - JWT contains sessionId.
+ * - Session revocation must be observable in logs.
+ */
+
+/**
+ * Design reasoning:
+ * - cookieParser must execute BEFORE authMiddleware.
+ * - Request correlation must wrap entire lifecycle.
+ * - Public routes must be mounted before auth guard.
+ * - All /api protected routes pass through kill-switch validation.
+ *
+ * Structure:
+ * 1. Core middleware
+ * 2. CORS
+ * 3. Correlation + logging
+ * 4. Cache control
+ * 5. Public routes
+ * 6. Auth guard
+ * 7. Protected routes
+ * 8. Error handling
+ *
+ * Implementation guidance:
+ * - Never mount protected routes above authMiddleware.
+ * - Keep authRoutes public for login/refresh.
+ * - Ensure infra logs revoked-session attempts.
+ *
+ * Scalability insight:
+ * - Can insert Redis session caching before DB lookup.
+ * - Can rate-limit auth routes.
+ * - Can attach device/IP fingerprint middleware pre-auth.
+ */
+
 app.set("etag", false);
 
 ////////////////////////////////////////////////////////////////
-// Core middleware
+// 1. Core middleware (Parsing & Cookies)
 ////////////////////////////////////////////////////////////////
 
 app.use(express.json({ limit: "1mb" }));
 
+// REQUIRED for kill-switch (authMiddleware reads cookies)
+app.use(cookieParser());
+
 ////////////////////////////////////////////////////////////////
-// CORS (must be before routes)
+// 2. CORS
 ////////////////////////////////////////////////////////////////
 
 const allowedOrigin = process.env.CORS_ORIGIN ?? "http://localhost:3000";
@@ -58,25 +97,7 @@ app.use(
 );
 
 ////////////////////////////////////////////////////////////////
-// Prevent caching on API routes
-////////////////////////////////////////////////////////////////
-
-app.use("/api", (_req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
-  next();
-});
-
-////////////////////////////////////////////////////////////////
-// Enforce JWT auth for all API routes
-////////////////////////////////////////////////////////////////
-
-// Public auth routes
-app.use("/api/auth", authRoutes);
-
-// All other API routes require auth
-app.use("/api", authMiddleware);
-////////////////////////////////////////////////////////////////
-// Correlation + structured logging middleware
+// 3. Correlation + structured logging (must wrap everything)
 ////////////////////////////////////////////////////////////////
 
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -107,60 +128,66 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 ////////////////////////////////////////////////////////////////
-// Debug ping
+// 4. Disable caching on API routes
+////////////////////////////////////////////////////////////////
+
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+
+////////////////////////////////////////////////////////////////
+// 5. Public Routes
 ////////////////////////////////////////////////////////////////
 
 app.get("/__ping", (_req: Request, res: Response) => {
   res.status(200).send("pong");
 });
 
-// Enable cookie parsing for auth routes
-app.use(cookieParser());
+// Auth must stay PUBLIC (login, verify, refresh)
+app.use("/api/auth", authRoutes);
 
-////////////////////////////////////////////////////////////////
-// Root route
-////////////////////////////////////////////////////////////////
+app.use("/api/health", healthRoutes);
 
 app.get("/", (_req: Request, res: Response) => {
   res.status(200).json({
     ok: true,
     service: "posta-backend",
     health: "/api/health",
-    routes: [
-      "/api/intake",
-      "/api/cases",
-      "/api/verification",
-      "/api/timeline",
-      "/api/cases/:id/decisions",
-      "/api/health",
-      "/api/health/ledger",
-    ],
   });
 });
 
 ////////////////////////////////////////////////////////////////
-// Domain routes
+// 6. Auth Guard (Kill-Switch Enforced)
 ////////////////////////////////////////////////////////////////
 
-app.use("/api", healthRoutes);
+// Every route below this line requires:
+// - Valid JWT
+// - Valid DB session
+// - Not revoked
+// - Not expired
+
+app.use("/api", authMiddleware);
+
+////////////////////////////////////////////////////////////////
+// 7. Protected Domain Routes
+////////////////////////////////////////////////////////////////
+
 app.use("/api/intake", intakeRoutes);
 app.use("/api/cases", casesRouter);
 app.use("/api/timeline", timelineRoutes);
 app.use("/api/verification", verificationRouter);
+app.use("/api", verificationProvisionRoutes);
 app.use("/api", decisionQueryRoutes);
 app.use("/api/execution", executionRoutes);
 
 ////////////////////////////////////////////////////////////////
-// 404 fallback
+// 8. Error Handling
 ////////////////////////////////////////////////////////////////
 
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ ok: false, error: "Route not found" });
 });
-
-////////////////////////////////////////////////////////////////
-// Global error handler (must be last)
-////////////////////////////////////////////////////////////////
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof DomainError) {
@@ -185,5 +212,3 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 export default app;
-
-//authMiddleware
