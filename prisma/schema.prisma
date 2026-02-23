@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-// model session         
+// model session  ledger      
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -212,6 +212,7 @@ enum LedgerEventType {
   VERIFICATION_REJECTED
   VERIFICATION_DISPUTED
   VERIFICATION_TIMED_OUT
+  VERIFIER_PROVISIONED
 
   APPEAL_OPENED
   APPEAL_RESOLVED
