@@ -1,7 +1,12 @@
 // apps/backend/src/modules/auth/auth.routes.ts
 // Purpose: Public authentication routes (mounted before authMiddleware)
 
-import { requestLogin, verifyLogin, logout } from "./auth.controller";
+import {
+  requestLogin,
+  verifyLogin,
+  logout,
+  getCurrentUser,
+} from "./auth.controller";
 import { refreshSession } from "./auth.controller";
 import { Router, type Router as ExpressRouter } from "express";
 
@@ -35,5 +40,7 @@ router.post("/refresh", refreshSession);
 
 //POST /api/auth/logout
 router.post("/logout", logout);
+
+router.get("/me", getCurrentUser);
 
 export default router;

@@ -1,52 +1,59 @@
-apps/backend/src/modules/auth/README.md
-
-# Auth Module
-
-## Purpose
+Auth Module
+Purpose
 
 This module implements tenant-scoped, passwordless authentication using:
 
-- One-time login tokens (magic link flow, dev-mode enabled)
-- Short-lived JWT access tokens
-- Rotating refresh tokens
-- Database-backed session revocation
+One-time login tokens (magic link flow, dev-mode enabled)
+
+Short-lived JWT access tokens
+
+Rotating refresh tokens
+
+Database-backed session revocation
+
+Concurrency-safe refresh handling (frontend mutex)
 
 It is designed for multi-tenant, governance-grade systems where identity must be:
 
-- Tenant-isolated
-- Revocable
-- Auditable
-- Server-validated
+Tenant-isolated
 
----
+Revocable
 
-## Architecture Overview
+Auditable
+
+Server-validated
+
+Concurrency-safe
+
+Architecture Overview
 
 Authentication is fully internal. No external auth provider is used.
 
 Flow:
 
-1. `POST /api/auth/request-login`
-2. `POST /api/auth/verify`
-3. `POST /api/auth/refresh`
-4. `POST /api/auth/logout`
+POST /api/auth/request-login
 
-All other `/api/*` routes are protected by `authMiddleware`.
+POST /api/auth/verify
 
-Auth routes are mounted **before** middleware in `app.ts`.
+GET /api/auth/me
 
----
+POST /api/auth/refresh
 
-## Login Flow (Dev Mode)
+POST /api/auth/logout
 
-### 1. Request Login
+All other /api/\* routes are protected by authMiddleware.
 
-`POST /api/auth/request-login`
+Auth routes are mounted before authMiddleware in app.ts.
 
-```json
+Login Flow (Dev Mode)
+
+1. Request Login
+
+POST /api/auth/request-login
+
 {
-  "email": "admin@ultra.local",
-  "tenantSlug": "ultra-demo"
+"email": "admin@ultra.local",
+"tenantSlug": "ultra-demo"
 }
 
 Server:
@@ -59,23 +66,25 @@ Generates short-lived login token (10 minutes)
 
 Stores hashed token in LoginToken
 
-Returns { ok: true, devToken }
+Returns:
 
-In production, devToken will be replaced with email delivery.
+{ "ok": true, "devToken": "raw-token" }
+
+In production, devToken must be replaced with email delivery.
 
 2. Verify Login
 
 POST /api/auth/verify
 
 {
-  "token": "raw-token-from-request-login"
+"token": "raw-token-from-request-login"
 }
 
 Server:
 
 Hashes token
 
-Validates token exists and not expired
+Validates token exists and is not expired
 
 Deletes login token (one-time use)
 
@@ -83,65 +92,120 @@ Creates Session record
 
 Issues cookies:
 
-session (JWT access token)
+session → JWT access token
 
-refresh (raw refresh token)
+refresh → raw refresh token
 
 Returns:
 
 { "ok": true }
 Session Model
-
-Access token:
+Access Token
 
 JWT
 
-15 minutes
+15 minute TTL
 
-Stored in session cookie
+Stored in session HttpOnly cookie
 
 Verified by authMiddleware
 
-Refresh token:
+Contains:
+
+userId
+
+tenantId
+
+exp
+
+Refresh Token
 
 Random UUID
 
 Hashed before DB storage
 
-Stored in refresh cookie
+Stored in refresh HttpOnly cookie
 
-Rotated on /refresh
+Rotated on every /refresh
 
 Valid for 7 days
 
-Session row stored in:
-
+Session Table
 Session {
-  userId
-  tenantId
-  refreshTokenHash
-  expiresAt
+id
+userId
+tenantId
+refreshTokenHash
+expiresAt
+revokedAt?
 }
 
-Deleting session row immediately revokes access.
+Deleting the session row immediately revokes access.
+
+Identity Hydration
+GET /api/auth/me
+
+Returns current authenticated identity:
+
+{
+"ok": true,
+"user": {
+"userId": "...",
+"tenantId": "...",
+"roles": [...]
+}
+}
+
+Used by:
+
+Server layout guards
+
+Client auth store hydration
+
+RBAC enforcement layer
 
 Refresh Flow
-
 POST /api/auth/refresh
+
+Server:
 
 Reads refresh cookie
 
-Calls rotateSession()
+Hashes token
 
-Issues new session + refresh cookies
+Looks up session
 
-Rotates DB hash
+Rotates refresh token
 
-Used for silent session renewal.
+Issues new access + refresh cookies
+
+Updates DB hash
+
+Returns:
+
+{ "ok": true }
+Concurrency Safety (Frontend Mutex)
+
+The frontend transport layer implements a single-flight refresh mutex.
+
+If multiple requests receive 401 simultaneously:
+
+Only one refresh request is sent
+
+Other requests wait for the same Promise
+
+All retry safely after refresh
+
+Prevents refresh storms
+
+Prevents rotation race conditions
+
+This guarantees refresh rotation integrity under load.
 
 Logout Flow
-
 POST /api/auth/logout
+
+Server:
 
 Hashes refresh token
 
@@ -153,23 +217,26 @@ After logout:
 
 All protected routes return 401
 
-Middleware Enforcement
+Refresh no longer works
 
-authMiddleware:
+Session fully revoked
+
+Middleware Enforcement
+authMiddleware
 
 Reads session cookie
 
-Verifies JWT
+Verifies JWT signature + expiry
 
 Attaches:
 
 req.user = {
-  userId,
-  tenantId,
-  expiresAt
+userId,
+tenantId,
+expiresAt
 }
 
-All /api/* routes require this.
+All /api/\* routes require this.
 
 Auth routes are excluded by mounting order.
 
@@ -180,14 +247,21 @@ Security Properties
 ✔ Hash-only storage for refresh tokens
 ✔ One-time login tokens
 ✔ Rotating refresh tokens
+✔ Concurrency-safe refresh
 ✔ Immediate revocation
-✔ Tenant isolation enforced in JWT payload
+✔ Tenant isolation in JWT payload
 ✔ HttpOnly cookies
 ✔ SameSite protection
+✔ Server-side route guarding
 
 Required Environment Variables
 JWT_SECRET=super-secure-random-string
 CORS_ORIGIN=http://localhost:3000
+
+Frontend:
+
+NEXT_PUBLIC_BACKEND_ORIGIN=http://localhost:3001
+NEXT_PUBLIC_APP_ORIGIN=http://localhost:3000
 Production Upgrade Checklist
 
 Before production:
@@ -196,20 +270,24 @@ Replace devToken return with email delivery
 
 Add rate limiting to request-login
 
-Add background cleanup for expired LoginToken rows
-
 Add IP throttling
 
-Add session expiry pruning job
+Add background cleanup for expired LoginToken rows
 
-Enable secure cookies behind HTTPS
+Add session pruning job
+
+Enable secure: true cookies behind HTTPS
+
+Monitor refresh failure rates
+
+Add device/session fingerprinting (optional hardening)
 
 Folder Structure
 auth/
-  auth.controller.ts
-  auth.routes.ts
-  refresh.service.ts
-  README.md
+auth.controller.ts
+auth.routes.ts
+refresh.service.ts
+README.md
 Status
 
 Authentication lifecycle is fully implemented and verified via:
@@ -218,13 +296,16 @@ Login
 
 Verify
 
+Identity hydration
+
 Access protected routes
 
-Refresh
+Refresh rotation
+
+Mutex concurrency protection
 
 Logout
 
 Revocation test
 
-Module is operational.
-```
+Module is stable and production-extendable.

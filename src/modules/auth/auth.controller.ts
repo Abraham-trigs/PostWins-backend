@@ -303,3 +303,59 @@ export async function logout(req: Request, res: Response) {
     });
   }
 }
+
+/* ============================================================
+AUTH GUARD
+============================================================ */
+
+// This is protected automatically by authMiddleware.
+// If the request reaches this handler, the session is
+// valid and user info is attached to req.user.
+
+export function getSession(req: Request, res: Response) {
+  const user = (req as any).user;
+
+  return res.status(200).json({
+    ok: true,
+    user,
+  });
+}
+
+/* ============================================================
+GET CURRENT USER IDENTITY 
+============================================================ */
+export async function getCurrentUser(req: Request, res: Response) {
+  const auth = (req as any).user;
+
+  if (!auth) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: auth.userId },
+    include: {
+      roles: {
+        include: {
+          role: true,
+        },
+      },
+      tenant: true,
+    },
+  });
+
+  if (!user || !user.isActive) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  return res.json({
+    ok: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenantId: user.tenantId,
+      tenantSlug: user.tenant.slug,
+      roles: user.roles.map((r) => r.role.key),
+    },
+  });
+}
