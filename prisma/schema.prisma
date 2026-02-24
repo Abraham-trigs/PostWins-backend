@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-// model session  ledger      
+// model Tenant    
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -315,6 +315,7 @@ model Tenant {
   counterfactuals      CounterfactualRecord[]
   messageReceipts      MessageReceipt[]
   caseReadPositions    CaseReadPosition[]
+  inviteTokens         InviteToken[]
 
   @@index([createdAt])
 }
@@ -381,15 +382,15 @@ model Session {
 }
 
 model InviteToken {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId   String   @db.Uuid
-  email      String
-  roleKey    String
-  tokenHash  String   @unique
-  expiresAt  DateTime
-  createdAt  DateTime @default(now())
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String   @db.Uuid
+  email     String
+  roleKey   String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
-  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, email])
   @@index([expiresAt])

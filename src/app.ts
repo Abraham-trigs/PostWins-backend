@@ -16,12 +16,13 @@ import "dotenv/config";
 import intakeRoutes from "./modules/intake/intake.routes";
 import timelineRoutes from "./modules/timeline/timeline.route";
 import verificationRouter from "./modules/verification/verification.routes";
-import { verificationProvisionRoutes } from "./modules/verification/verificationProvision.routes";
+import verificationProvisionRoutes from "./modules/verification/verificationProvision.routes";
 import { casesRouter } from "./modules/cases/cases.routes";
 import decisionQueryRoutes from "./modules/decision/decision.query.routes";
 import healthRoutes from "./modules/health/health.controller";
 import executionRoutes from "./modules/execution/execution.routes";
 import authRoutes from "./modules/auth/auth.routes";
+import { getCurrentUser } from "./modules/auth/auth.controller";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
@@ -168,6 +169,7 @@ app.get("/", (_req: Request, res: Response) => {
 // - Not expired
 
 app.use("/api", authMiddleware);
+app.get("/api/auth/me", getCurrentUser);
 
 ////////////////////////////////////////////////////////////////
 // 7. Protected Domain Routes

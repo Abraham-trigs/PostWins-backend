@@ -44,7 +44,7 @@ router.post("/refresh", refreshSession);
 router.post("/logout", logout);
 
 // 5. Identity introspection
-router.get("/me", getCurrentUser);
+// router.get("/me", getCurrentUser);
 
 // 6. Governance-triggered identity provisioning
 router.post("/provision-verifier", proposeVerifierProvision);
