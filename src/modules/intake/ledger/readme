@@ -1,0 +1,485 @@
+Ledger Module
+
+The sovereign authority layer of Posta.
+
+This module is not logging.
+
+It is not analytics.
+
+It is not projection.
+
+It is constitutional memory.
+
+Everything else in the system is derived state.
+
+The ledger is the source of institutional truth.
+
+Core Guarantees
+
+The ledger guarantees:
+
+Cryptographic immutability
+
+Deterministic ordering
+
+Structural supersession rules
+
+Authority hierarchy enforcement
+
+Replay-safe payload evolution
+
+Cross-tenant isolation
+
+Canonical append-only history
+
+If the database is corrupted, but the ledger remains intact, authority can be reconstructed.
+
+If projections drift, the ledger resolves truth.
+
+Architectural Position
+
+All domain modules commit through:
+
+commitLedgerEvent()
+
+They must NOT call LedgerService directly.
+
+The wrapper enforces:
+
+Zod boundary validation
+
+Structured actor schema
+
+Transaction compatibility
+
+Stable import surface
+
+Centralized evolution
+
+The LedgerService is constitutional core.
+The wrapper is the only gateway.
+
+1. Authority Envelope (Versioned Payloads)
+
+File:
+authorityEnvelope.ts
+
+Ledger payloads must be wrapped in an authority envelope.
+
+Example:
+
+{
+envelopeVersion: 1,
+domain: "CASE_LIFECYCLE",
+event: "TRANSITION",
+data: {...}
+}
+
+Why?
+
+Because eventType (enum) classifies.
+Envelope version governs schema evolution.
+
+This enables:
+
+Multi-year durability
+
+Backward-compatible replay
+
+Payload shape evolution without DB migration
+
+Future versions must be additive and backward compatible.
+
+Never write raw payload directly again.
+
+2. Authority Hierarchy Policy
+
+File:
+authorityHierarchy.policy.ts
+
+Defines derived authority levels:
+
+SYSTEM_AUTOMATED
+
+HUMAN_VERIFIER
+
+HUMAN_ADMIN
+
+EXECUTIVE_OVERRIDE
+
+Supersession rules:
+
+Lower authority cannot supersede higher.
+
+SYSTEM cannot supersede HUMAN.
+
+Equal authority requires escalation.
+
+Authority derivation is currently convention-based:
+
+Prefix rules:
+
+EXEC: → executive override
+
+ADMIN: → admin
+
+default → verifier
+
+No schema changes required.
+
+Authority enforcement happens inside commit() before append.
+
+This is structural governance, not business logic.
+
+3. Canonical Commit Wrapper
+
+File:
+commitLedgerEvent.ts
+
+This is the only acceptable entry point for domain modules.
+
+Responsibilities:
+
+Validate input
+
+Enforce structured actor schema
+
+Normalize optional fields
+
+Delegate to LedgerService
+
+Support transaction boundary
+
+Design rule:
+
+No domain module imports LedgerService directly.
+
+This allows:
+
+Future tracing hooks
+
+Metrics injection
+
+Governance instrumentation
+
+Drift prevention
+
+4. LedgerService (Constitutional Core)
+
+File:
+ledger.service.ts
+
+This is the immutable authority engine.
+
+It provides:
+
+RSA key management
+
+Canonical hashing
+
+Deterministic serialization
+
+Logical clock sequencing
+
+Supersession validation
+
+Signature generation
+
+Append-only persistence
+
+Cryptographic Model
+
+Each commit generates:
+
+Canonical structured object
+
+Deterministic JSON canonicalization
+
+SHA-256 hash
+
+RSA signature over hash
+
+Stored fields:
+
+commitmentHash
+
+signature
+
+logical timestamp (ts)
+
+authorityProof
+
+requestId
+
+Immutability is cryptographically enforced.
+
+Any mutation invalidates hash.
+
+Logical Clock
+
+Uses global Postgres sequence:
+
+SELECT nextval('ledger_global_seq')
+
+This guarantees:
+
+Total ordering
+
+Cross-case determinism
+
+Replay stability
+
+No reliance on system clock
+
+Time is logical, not temporal.
+
+Supersession Enforcement
+
+If supersedesCommitId is provided:
+
+The service validates:
+
+Target exists
+
+Same tenant
+
+Not already superseded
+
+Authority hierarchy valid
+
+This prevents:
+
+Cross-tenant override
+
+Double supersession
+
+Privilege escalation
+
+Governance corruption
+
+Canonicalization
+
+The canonicalize() method:
+
+Sorts object keys
+
+Recursively serializes
+
+Produces stable string
+
+Two identical logical payloads always produce identical hash.
+
+No randomness.
+No field order drift.
+
+5. Ledger Metrics
+
+File:
+ledgerMetrics.service.ts
+
+Read-only telemetry per tenant.
+
+Exposes:
+
+Total commits
+
+Lifecycle transition count
+
+Verification events
+
+Repair events
+
+Supersession count
+
+24h activity
+
+Last commit timestamp
+
+This is governance density telemetry.
+
+It does NOT:
+
+Infer lifecycle
+
+Change state
+
+Mutate ledger
+
+Repair authority
+
+When commit volume grows large:
+
+Introduce materialized aggregates.
+
+6. Ledger Health
+
+LedgerService exposes:
+
+getStatus()
+
+Returns:
+
+ok
+
+latestCommitTs
+
+Health endpoints must never expose:
+
+private key
+
+signature material
+
+authority internals
+
+Health is observability only.
+
+Operational Directories
+
+Ledger stores keys in:
+
+data/keys/private.pem
+data/keys/public.pem
+
+If missing:
+
+Keys are generated automatically.
+
+Private key never leaves server boundary.
+
+Public key can be exported for external verification if needed.
+
+Governance Principles
+
+Ledger is append-only.
+
+Never:
+
+Update existing commit
+
+Delete commit
+
+Modify hash
+
+Modify signature
+
+Supersession creates a new commit referencing prior one.
+
+History is immutable.
+
+Authority evolves through explicit supersession.
+
+Determinism
+
+Given identical input:
+
+tenantId
+
+caseId
+
+eventType
+
+actor
+
+authorityProof
+
+payload
+
+Ledger produces identical commitmentHash.
+
+This enables:
+
+Replay validation
+
+External auditing
+
+Deterministic reconstruction
+
+Transaction Discipline
+
+Ledger commit must occur inside the same transaction that mutates domain state.
+
+Never:
+
+Commit before mutation
+
+Commit outside transaction boundary
+
+Wrap commit in nested transaction
+
+Ledger causality must align with state mutation.
+
+Otherwise replay breaks.
+
+What This Module Is Not
+
+It is not:
+
+Business rule engine
+
+Lifecycle resolver
+
+Authorization middleware
+
+Role-based access system
+
+Analytics engine
+
+It is constitutional authority memory.
+
+Failure Philosophy
+
+If commit validation fails:
+
+Throw explicit error.
+
+Do not auto-correct.
+
+Authority failure is fatal.
+
+Ledger integrity must never degrade silently.
+
+Scaling Considerations
+
+When commit volume per tenant grows large:
+
+Partition by tenant
+
+Add materialized metrics table
+
+Introduce read replicas
+
+Archive old commits to cold storage (append-only)
+
+Never prune active ledger.
+
+Institutional memory must remain intact.
+
+Security Considerations
+
+Protect private.pem with file permissions.
+
+Never expose signature validation endpoint without strict authentication.
+
+Monitor supersession frequency.
+
+Alert on unusual authority escalation patterns.
+
+Authority abuse often reveals itself in override density.
+
+Mental Model
+
+Ledger is constitutional law.
+
+Domain services are legislators.
+Controllers are clerks.
+Projections are newspapers.
+
+Only the constitution is immutable.
+
+If a projection lies, the ledger corrects it.
+If a service misbehaves, the ledger records it.
+If authority escalates improperly, the ledger blocks it.
+
+Truth flows from here.
+
+Ready for the next module boundary.

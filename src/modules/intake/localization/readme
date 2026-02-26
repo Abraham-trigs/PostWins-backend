@@ -1,0 +1,358 @@
+Intake Module
+
+The intake module is the constitutional entry boundary of Posta.
+
+It is where:
+
+External input becomes structured truth.
+
+Authority begins.
+
+Culture is interpreted.
+
+Ledger causality is initiated.
+
+Intake is not “input handling.”
+
+It is transformation from external ambiguity into internal governance.
+
+Domain Responsibilities
+
+This module owns:
+
+Ledger authority infrastructure
+
+Localization and cultural normalization
+
+Structured envelope construction
+
+Authority validation boundary
+
+It does NOT:
+
+Decide policy
+
+Mutate lifecycle
+
+Execute business logic
+
+Perform routing
+
+Enforce capabilities
+
+It prepares truth.
+Other modules act on it.
+
+1. Ledger Infrastructure (Constitutional Authority)
+
+The ledger system lives inside intake because:
+
+Authority begins at ingestion.
+
+If intake is corrupted, governance collapses.
+
+The ledger enforces:
+
+Cryptographic immutability
+
+Authority hierarchy validation
+
+Supersession rules
+
+Deterministic ordering
+
+Replay-safe payload evolution
+
+All domain modules commit through:
+
+commitLedgerEvent()
+
+Never bypass it.
+
+LedgerService is sovereign core.
+Everything else is projection.
+
+2. Authority Envelope (Versioned Payload Layer)
+
+File:
+authorityEnvelope.ts
+
+All payloads must be wrapped in:
+
+{
+envelopeVersion: 1,
+domain: "...",
+event: "...",
+data: {...}
+}
+
+This ensures:
+
+Schema evolution without DB migration
+
+Replay durability
+
+Versioned institutional memory
+
+Backward compatibility across years
+
+eventType classifies.
+envelopeVersion governs payload structure.
+
+Never write raw payload directly again.
+
+3. Authority Hierarchy
+
+Authority is derived, not stored.
+
+Levels:
+
+SYSTEM_AUTOMATED
+
+HUMAN_VERIFIER
+
+HUMAN_ADMIN
+
+EXECUTIVE_OVERRIDE
+
+Supersession rules prevent:
+
+Privilege downgrade override
+
+SYSTEM overriding HUMAN
+
+Equal authority silent takeover
+
+This prevents governance corruption under concurrency.
+
+AuthorityProof conventions enable elevation without schema change.
+
+4. Localization Service
+
+File:
+localization.service.ts
+
+This is epistemic intake normalization.
+
+It performs:
+
+Language detection
+
+Dialect identification
+
+Cultural tone neutralization
+
+Translation necessity flagging
+
+It transforms human context into structured interpretation.
+
+It does NOT:
+
+Change meaning
+
+Infer intent
+
+Alter policy outcome
+
+It prepares message for neutral processing.
+
+Cultural Detection
+
+detectCulture():
+
+Returns:
+
+detectedLanguage
+
+confidence
+
+regionalDialect
+
+requiresTranslation
+
+Current logic is simple and demonstrative.
+
+Production recommendation:
+
+Google Cloud Translation API
+
+FastText offline models
+
+Deterministic local language models
+
+Detection must remain:
+
+Stateless.
+Deterministic.
+Privacy-aware.
+
+Cultural Neutralization
+
+neutralizeAndTranslate():
+
+Transforms regional idioms into neutral professional tone.
+
+Example:
+
+"I no get kobo"
+→ "I am currently without funds"
+
+This is not censorship.
+
+It is structural tone stabilization.
+
+Why?
+
+Because downstream systems require:
+
+Intent clarity
+
+Tone neutrality
+
+Non-adversarial language
+
+Governance-safe semantics
+
+Cultural respect means understanding.
+Neutralization means structural fairness.
+
+Design Philosophy
+
+Intake is epistemic boundary.
+
+Outside world is messy:
+
+Mixed dialects
+
+Emotional tone
+
+Ambiguous language
+
+Regional slang
+
+Adversarial attempts
+
+Inside system must be:
+
+Deterministic
+
+Structured
+
+Authority-safe
+
+Replay-stable
+
+Localization + Ledger together enforce that boundary.
+
+Failure Philosophy
+
+Localization must never:
+
+Throw fatal errors
+
+Block governance
+
+Leak cultural data
+
+Ledger must:
+
+Fail loudly
+
+Protect authority
+
+Never degrade silently
+
+Intake is split deliberately:
+
+Cultural processing is soft.
+Authority processing is hard.
+
+Security Considerations
+
+Localization must not:
+
+Execute scripts
+
+Evaluate embedded HTML
+
+Trust language markers blindly
+
+Ledger must not:
+
+Accept malformed authorityProof
+
+Allow cross-tenant supersession
+
+Allow SYSTEM override escalation
+
+Intake must assume hostile input.
+
+Scalability Considerations
+
+For localization at scale:
+
+Introduce LRU caching for language detection
+
+Introduce async translation queue
+
+Add rate limiting per device
+
+Add observability for dialect frequency
+
+For ledger scale:
+
+Partition by tenant
+
+Archive old commits
+
+Materialize metrics
+
+Add read replicas
+
+What Intake Is Not
+
+It is not:
+
+AI decision engine
+
+Fraud detector
+
+Workflow executor
+
+Business logic layer
+
+It is boundary enforcement.
+
+Determinism
+
+Given same input:
+
+message
+
+device context
+
+authority data
+
+Intake must produce identical structured output.
+
+No randomness.
+No hidden mutation.
+No time-dependent inference.
+
+Replay must be possible.
+
+Mental Model
+
+Intake is the gate of the republic.
+
+Every external voice enters here.
+Every authoritative action begins here.
+Every institutional memory commit originates here.
+
+Localization interprets speech.
+Ledger records truth.
+
+One softens.
+One hardens.
+
+Together they protect institutional integrity.

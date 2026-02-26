@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-// model Tenant    
+//  model Evidence
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -29,6 +29,16 @@ enum DisbursementType {
   BENEFICIARY_PAYMENT
   VENDOR_PAYMENT
   REIMBURSEMENT
+}
+
+enum TaskId {
+  START
+  ENROLL
+  ATTEND
+  MODULE_1
+  MODULE_2
+  REVIEW
+  COMPLETE
 }
 
 enum StakeholderRole {
@@ -72,12 +82,12 @@ enum DisbursementStatus {
   FAILED
 }
 
-enum TaskId {
-  START
-  ENROLL
-  ATTEND
-  MODULE_1
-  MODULE_2
+enum StorageProvider {
+  AWS_S3
+  AZURE_BLOB
+  GCP_STORAGE
+  MINIO
+  LOCAL_FS
 }
 
 enum ExecutionStatus {
@@ -133,6 +143,47 @@ model CaseTag {
   @@unique([caseId, tagId])
   @@index([tagId])
   @@index([caseId])
+}
+
+model TaskDefinition {
+  id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String @db.Uuid
+
+  key      String // e.g. "MODULE_1"
+  label    String
+  order    Int
+  isActive Boolean @default(true)
+  cases    Case[]
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  caseTasks CaseTask[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId, order])
+}
+
+model CaseTask {
+  id               String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId         String @db.Uuid
+  caseId           String @db.Uuid
+  taskDefinitionId String @db.Uuid
+
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case           Case           @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  taskDefinition TaskDefinition @relation(fields: [taskDefinitionId], references: [id], onDelete: Cascade)
+
+  evidences Evidence[] // ✅ Back-relation added
+
+  @@unique([caseId, taskDefinitionId])
+  @@index([caseId])
+  @@index([tenantId])
 }
 
 /// ⚠️ NON-AUTHORITATIVE STATUS
@@ -279,11 +330,14 @@ enum TrancheStatus {
 ////////////////////////////////////////////////////////////////
 
 model Tenant {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  slug      String   @unique
-  name      String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug                 String                @unique
+  name                 String
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  taskDefinitions      TaskDefinition[]
+  caseTasks            CaseTask[]
+  evidenceDownloadLogs EvidenceDownloadLog[]
 
   // Primary relations
   users         User[]
@@ -336,6 +390,8 @@ model User {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   roles                    UserRole[]
+  uploadedEvidence         Evidence[]
+  evidenceDownloadLogs     EvidenceDownloadLog[]
   executionBodyMemberships ExecutionBodyMember[]
   sessions                 Session[]
   authoredCases            Case[]                @relation("CaseAuthor")
@@ -482,6 +538,7 @@ model Message {
   case            Case             @relation(fields: [caseId], references: [id], onDelete: Cascade)
   author          User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
   messageReceipts MessageReceipt[]
+  evidence Evidence[]
 
   @@unique([tenantId, clientMutationId])
   // ⚡ Cursor pagination index
@@ -632,18 +689,25 @@ model Case {
   scope AccessScope
   type  CaseType
 
-  tags CaseTag[]
+  tags      CaseTag[]
+  caseTasks CaseTask[]
+  evidence  Evidence[]
 
   lifecycle CaseLifecycle @default(INTAKE)
   status    CaseStatus    @default(INTAKED)
 
   execution Execution?
 
+  //to be delete 
+  currentTask TaskId @default(START)
+
   sdgGoal     String?
   summary     String?
   reasonCodes CaseReasonCode[]
 
-  currentTask TaskId @default(START)
+  // Dynamic workflow pointer (replaces TaskId enum)
+  currentTaskDefinitionId String?         @db.Uuid
+  currentTaskDefinition   TaskDefinition? @relation(fields: [currentTaskDefinitionId], references: [id], onDelete: SetNull)
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -653,7 +717,6 @@ model Case {
   author      User         @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
   beneficiary Beneficiary? @relation("CaseBeneficiary", fields: [beneficiaryId], references: [id], onDelete: SetNull)
 
-  // 🔧 Added missing opposite relations
   approvalRequests ApprovalRequest[]
   decisions        Decision[]
   disbursement     Disbursement?
@@ -676,6 +739,7 @@ model Case {
   @@index([tenantId, sdgGoal])
   @@index([authorUserId, createdAt])
   @@index([beneficiaryId, createdAt])
+  @@index([tenantId, currentTaskDefinitionId])
 }
 
 ////////////////////////////////////////////////////////////////
@@ -826,6 +890,7 @@ model VerificationRecord {
   createdAt  DateTime  @default(now())
 
   receivedVerifications Verification[]
+  evidence              Evidence[]
   requiredRoles         VerificationRequiredRole[]
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -884,6 +949,8 @@ model ApprovalRequest {
   policyKey String
   effect    Json
   reason    String
+
+  evidence Evidence[]
 
   resolvedAt       DateTime?
   resolvedByUserId String?   @db.Uuid
@@ -982,6 +1049,7 @@ model LedgerCommit {
 
 /// Unified activity stream entry for a Case.
 /// Supports system events, delivery notes, visits, and follow-ups.
+
 model TimelineEntry {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
@@ -1002,23 +1070,89 @@ model TimelineEntry {
 
 /// Immutable evidence attachment.
 /// Hash preserved even if storage object is later removed.
+
+enum EvidenceDownloadPurpose {
+  VIEW
+  EXPORT
+}
+
+model EvidenceDownloadLog {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String  @db.Uuid
+  evidenceId String  @db.Uuid
+  userId     String? @db.Uuid
+
+  purpose EvidenceDownloadPurpose @default(VIEW)
+
+  ipAddress String?
+  userAgent String?
+  requestId String?
+
+  riskScore Int     @default(0)
+  flagged   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  evidence Evidence @relation(fields: [evidenceId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([evidenceId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
 model Evidence {
-  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenantId        String @db.Uuid
-  timelineEntryId String @db.Uuid
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId String  @db.Uuid
+  caseId   String? @db.Uuid
 
-  kind       EvidenceKind
-  storageKey String
-  sha256     String
-  mimeType   String?
-  byteSize   Int?
-  createdAt  DateTime     @default(now())
+  // Polymorphic Domain Targets (Exclusive Arc)
+  timelineEntryId      String? @db.Uuid
+  caseTaskId           String? @db.Uuid
+  verificationRecordId String? @db.Uuid
+  approvalRequestId    String? @db.Uuid
 
-  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  timelineEntry TimelineEntry @relation(fields: [timelineEntryId], references: [id], onDelete: Cascade)
+  // 🔥 Message Attachment (NEW)
+  messageId String? @db.Uuid
 
-  @@index([timelineEntryId])
-  @@index([sha256])
+  // Storage Layer
+  storageProvider StorageProvider @default(AWS_S3)
+  storageKey      String
+  sha256          String
+  mimeType        String?
+  byteSize        Int?
+
+  downloadLogs EvidenceDownloadLog[]
+
+  // NGO / Grant Audit Metadata
+  title            String?
+  originalFilename String?
+  description      String?
+  uploadedById     String? @db.Uuid
+  isVerified       Boolean @default(false)
+
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  kind      EvidenceKind
+
+  // Relations
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  case               Case?               @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  timelineEntry      TimelineEntry?      @relation(fields: [timelineEntryId], references: [id], onDelete: Cascade)
+  caseTask           CaseTask?           @relation(fields: [caseTaskId], references: [id], onDelete: Cascade)
+  verificationRecord VerificationRecord? @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
+  approvalRequest    ApprovalRequest?    @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  uploadedBy         User?               @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  // 🔥 Message relation (NEW)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sha256])
+  @@index([tenantId])
+  @@index([tenantId, caseId])
+  @@index([messageId])
 }
 
 ////////////////////////////////////////////////////////////////

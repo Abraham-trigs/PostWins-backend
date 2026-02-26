@@ -33,7 +33,13 @@ const TRANSITIONS: Record<TaskId, Partial<Record<TaskEvent, TaskId>>> = {
     COMPLETE_MODULE_2: TaskId.MODULE_2,
   },
 
-  [TaskId.MODULE_2]: {}, // terminal
+  [TaskId.MODULE_2]: {},
+
+  // ✅ Required for enum completeness
+  [TaskId.REVIEW]: {},
+
+  // ✅ Required for enum completeness
+  [TaskId.COMPLETE]: {},
 };
 
 export class TaskProgressionService {

@@ -7,7 +7,7 @@ import { assertUuid } from "@/utils/uuid";
 import { decodeCursor, encodeCursor } from "./cursor";
 
 ////////////////////////////////////////////////////////////////
-// Validation Schemas
+// Validation Schemas  findMany
 ////////////////////////////////////////////////////////////////
 
 export const NavigationContextSchema = z.object({
@@ -23,16 +23,45 @@ export const NavigationContextSchema = z.object({
   label: z.string().optional(),
 });
 
-export const CreateMessageSchema = z.object({
-  tenantId: z.string().uuid(),
-  caseId: z.string().uuid(),
-  authorId: z.string().uuid(),
-  parentId: z.string().uuid().optional(),
-  type: z.nativeEnum(MessageType),
-  body: z.string().trim().min(1).max(5000),
-  navigationContext: NavigationContextSchema.optional(),
-  clientMutationId: z.string().uuid().optional(),
+////////////////////////////////////////////////////////////////
+// Evidence Attachment Schema (Atomic Support)
+////////////////////////////////////////////////////////////////
+
+const EvidenceAttachmentSchema = z.object({
+  kind: z.enum(["image", "video", "document", "audio"]),
+  storageKey: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+  mimeType: z.string().optional(),
+  byteSize: z.number().int().positive().optional(),
 });
+
+////////////////////////////////////////////////////////////////
+// Create Message Schema (Updated)
+////////////////////////////////////////////////////////////////
+
+export const CreateMessageSchema = z
+  .object({
+    tenantId: z.string().uuid(),
+    caseId: z.string().uuid(),
+    authorId: z.string().uuid(),
+    parentId: z.string().uuid().optional(),
+    type: z.nativeEnum(MessageType),
+
+    body: z.string().trim().max(5000).optional(),
+
+    navigationContext: NavigationContextSchema.optional(),
+    clientMutationId: z.string().uuid().optional(),
+
+    evidence: z.array(EvidenceAttachmentSchema).optional(),
+  })
+  .refine(
+    (data) => {
+      const hasBody = !!data.body && data.body.trim().length > 0;
+      const hasEvidence = !!data.evidence && data.evidence.length > 0;
+      return hasBody || hasEvidence;
+    },
+    { message: "Message must contain body or evidence" },
+  );
 
 export type CreateMessageInput = z.infer<typeof CreateMessageSchema>;
 
@@ -42,7 +71,7 @@ export type CreateMessageInput = z.infer<typeof CreateMessageSchema>;
 
 export class MessageService {
   ////////////////////////////////////////////////////////////////
-  // Create Message (Idempotent + Race Safe)
+  // Create Message (Idempotent + Race Safe + Atomic Evidence)
   ////////////////////////////////////////////////////////////////
 
   async createMessage(input: unknown) {
@@ -57,6 +86,7 @@ export class MessageService {
       body,
       navigationContext,
       clientMutationId,
+      evidence,
     } = parsed;
 
     return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -100,39 +130,47 @@ export class MessageService {
       }
 
       ////////////////////////////////////////////////////////////////
-      // Create (race-safe)
+      // Create message
       ////////////////////////////////////////////////////////////////
 
-      try {
-        return await tx.message.create({
-          data: {
+      const createdMessage = await tx.message.create({
+        data: {
+          tenantId,
+          caseId,
+          authorId,
+          parentId: parentId ?? null,
+          type,
+          body: body ?? null,
+          clientMutationId: clientMutationId ?? null,
+          navigationContext:
+            (navigationContext as Prisma.InputJsonValue) ?? null,
+        },
+      });
+
+      ////////////////////////////////////////////////////////////////
+      // Atomic Evidence Attachment
+      ////////////////////////////////////////////////////////////////
+
+      if (evidence && evidence.length > 0) {
+        await tx.evidence.createMany({
+          data: evidence.map((e) => ({
             tenantId,
-            caseId,
-            authorId,
-            parentId: parentId ?? null,
-            type,
-            body,
-            clientMutationId: clientMutationId ?? null,
-            navigationContext:
-              (navigationContext as Prisma.InputJsonValue) ?? null,
-          },
+            timelineEntryId: createdMessage.id,
+            kind: e.kind as any,
+            storageKey: e.storageKey,
+            sha256: e.sha256,
+            mimeType: e.mimeType ?? null,
+            byteSize: e.byteSize ?? null,
+          })),
         });
-      } catch (err: any) {
-        if (clientMutationId && err.code === "P2002") {
-          const existing = await tx.message.findFirst({
-            where: { tenantId, clientMutationId },
-          });
-
-          if (existing) return existing;
-        }
-
-        throw err;
       }
+
+      return createdMessage;
     });
   }
 
   ////////////////////////////////////////////////////////////////
-  // Cursor-Based Pagination (limit+1)
+  // Cursor-Based Pagination (unchanged)
   ////////////////////////////////////////////////////////////////
 
   async getMessagesByCase(
@@ -150,7 +188,6 @@ export class MessageService {
 
     if (cursor) {
       const decoded = decodeCursor(cursor);
-
       cursorPayload = {
         createdAt: new Date(decoded.createdAt),
         id: decoded.id,
@@ -173,6 +210,19 @@ export class MessageService {
       },
       include: {
         author: { select: { id: true, name: true } },
+
+        evidence: {
+          select: {
+            id: true,
+            kind: true,
+            storageKey: true,
+            sha256: true,
+            mimeType: true,
+            byteSize: true,
+            createdAt: true,
+          },
+        },
+
         _count: { select: { replies: true } },
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
@@ -180,7 +230,6 @@ export class MessageService {
     });
 
     const hasMore = messages.length > limit;
-
     if (hasMore) messages.pop();
 
     const nextCursor =
@@ -199,7 +248,7 @@ export class MessageService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Unread Count (MessageId → createdAt resolution)
+  // Unread Count (unchanged)
   ////////////////////////////////////////////////////////////////
 
   async getUnreadCount(tenantId: string, caseId: string, userId: string) {
@@ -212,10 +261,6 @@ export class MessageService {
       select: { lastReadMessageId: true },
     });
 
-    ////////////////////////////////////////////////////////////////
-    // Never read → count all non-authored messages
-    ////////////////////////////////////////////////////////////////
-
     if (!position?.lastReadMessageId) {
       return prisma.message.count({
         where: {
@@ -226,20 +271,12 @@ export class MessageService {
       });
     }
 
-    ////////////////////////////////////////////////////////////////
-    // Resolve timestamp from message
-    ////////////////////////////////////////////////////////////////
-
     const lastRead = await prisma.message.findUnique({
       where: { id: position.lastReadMessageId },
       select: { createdAt: true },
     });
 
     if (!lastRead) return 0;
-
-    ////////////////////////////////////////////////////////////////
-    // Count strictly newer messages
-    ////////////////////////////////////////////////////////////////
 
     return prisma.message.count({
       where: {

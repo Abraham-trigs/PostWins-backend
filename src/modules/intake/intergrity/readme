@@ -1,0 +1,414 @@
+Integrity Module
+
+Multi-layered behavioral integrity enforcement for PostWins.
+
+This module protects the system against:
+
+Duplicate claims
+
+Device abuse
+
+Identity anomalies
+
+Prompt injection attempts
+
+High-severity behavioral violations
+
+Replay attacks (idempotency)
+
+It is not a moderation tool.
+
+It is a system integrity firewall.
+
+Core Principle
+
+Integrity must be layered, stateful, and replay-safe.
+
+A single check is fragile.
+A layered audit is resilient.
+
+This module enforces:
+
+Behavioral controls
+
+Identity pattern analysis
+
+Cooldown enforcement
+
+Violation escalation
+
+Permanent blacklist
+
+Idempotency persistence
+
+Responsibilities
+
+This service owns:
+
+Full integrity audit (Section F & M policies)
+
+Device-to-beneficiary anomaly detection
+
+Cooldown-based rate defense
+
+Adversarial input detection
+
+Violation counting
+
+Permanent blacklist enforcement
+
+File-backed idempotency storage
+
+It does NOT:
+
+Mutate domain state
+
+Approve/reject cases
+
+Perform ledger writes
+
+Enforce business lifecycle rules
+
+It returns flags.
+
+The caller decides enforcement.
+
+Integrity Layers
+
+1. Blacklist Enforcement (Section M.5)
+
+If a device is blacklisted:
+
+Immediate HIGH severity flag.
+
+No further processing.
+
+Blacklist is persisted to disk and survives restarts.
+
+This is a permanent ban list.
+
+2. Cooldown Check (Section M.4)
+
+Devices may not send messages within 30 seconds.
+
+If violated:
+
+LOW severity flag.
+
+Prevents automated flooding without blocking legitimate retry.
+
+3. Duplicate Detection (Section F)
+
+Raw message is normalized and hashed in-memory.
+
+Duplicate submission returns:
+
+HIGH severity DUPLICATE_CLAIM
+
+Protects against replay abuse.
+
+Current behavior:
+In-memory only (resets on restart).
+
+4. Ghost Beneficiary Detection (Section M.1)
+
+A single device linking to more than 3 beneficiaries triggers:
+
+HIGH severity IDENTITY_MISMATCH
+
+This prevents:
+
+Device farming
+
+Identity cycling
+
+Cross-claim abuse
+
+Registry is persisted to disk.
+
+5. Adversarial Input Shield (Section M.2)
+
+Detects patterns like:
+
+“ignore previous instructions”
+
+“system override”
+
+<script>
+
+Returns HIGH severity SUSPICIOUS_TONE.
+
+This protects:
+
+AI prompt boundaries
+
+Execution instructions
+
+Embedded injection attempts
+
+Pattern list is extensible.
+
+6. Violation Escalation
+
+Every HIGH severity flag increments violation counter.
+
+If count >= 5:
+
+Device is permanently blacklisted.
+
+Blacklist persisted immediately.
+
+Escalation is automatic.
+
+No human approval required.
+
+Idempotency Persistence
+
+This module also acts as the backing store for idempotency middleware.
+
+Stored in:
+
+data/idempotency.json
+
+Structure:
+
+{
+  keys: {
+    "idempotency-key": {
+      requestHash,
+      response,
+      recordedAt
+    }
+  }
+}
+
+Capabilities:
+
+get(key)
+
+save(key, requestHash, response)
+
+Allows:
+
+Safe retries
+
+Crash recovery
+
+Horizontal restart resilience
+
+Replay prevention
+
+If persistence fails:
+
+System degrades to best-effort.
+
+Integrity must never crash request pipeline.
+
+Persistence Model
+
+File-backed JSON storage:
+
+device_registry.json
+
+blacklist.json
+
+data/idempotency.json
+
+Using:
+
+process.cwd() to ensure compatibility across dev and dist builds.
+
+Why file-based?
+
+Because this module operates as:
+
+Edge-layer guard.
+
+It must function:
+
+Even if DB unavailable
+
+Before Prisma boots
+
+In minimal infrastructure mode
+
+Important Constraints
+
+This module is not horizontally scalable as-is.
+
+State lives in:
+
+Memory
+
+Local disk
+
+In multi-instance deployments:
+
+Replace file persistence with:
+
+Redis
+
+Distributed cache
+
+Durable KV store
+
+Database-backed integrity store
+
+Without that, integrity becomes node-local.
+
+Failure Philosophy
+
+If persistence fails:
+
+Do not throw
+
+Do not block UX
+
+Log error
+
+Continue best-effort enforcement
+
+Integrity must degrade safely.
+
+Blocking legitimate traffic due to file I/O error is worse than soft enforcement.
+
+Security Boundaries
+
+This module must never:
+
+Trust client-provided deviceId blindly (validate upstream)
+
+Expose blacklist content
+
+Expose registry structure
+
+Expose violation counts
+
+Leak persistence paths
+
+It is defensive infrastructure.
+
+Not public API.
+
+Configuration Constants
+COOLDOWN_MS = 30000
+MAX_VIOLATIONS = 5
+
+These are policy thresholds.
+
+If changed:
+
+Re-evaluate:
+
+False positive rate
+
+Abuse tolerance
+
+Operational load
+
+Performance Characteristics
+
+Duplicate check: O(1) in-memory
+
+Cooldown: O(1)
+
+Ghost detection: O(n) per device (small n)
+
+Idempotency lookup: O(1) JSON object
+
+File write: synchronous (blocking)
+
+For high throughput:
+
+Move idempotency to async storage
+
+Replace fs.writeFileSync with append or transactional write
+
+Introduce distributed locking
+
+Attack Surfaces Considered
+
+Replay spam
+
+Rapid message flooding
+
+Multi-beneficiary abuse
+
+Prompt injection attempts
+
+Token replay across restarts
+
+Idempotency key collision
+
+What This Module Is Not
+
+It is not:
+
+Fraud detection ML
+
+Financial risk engine
+
+Ledger reconciliation
+
+Access control
+
+Authorization layer
+
+It is behavioral integrity guardrail.
+
+Determinism
+
+Given same:
+
+deviceId
+
+message
+
+beneficiary mapping
+
+violation history
+
+This module must produce same flags.
+
+No randomness.
+No external state.
+No hidden mutation outside defined maps.
+
+Production Hardening Recommendations
+
+For enterprise scale:
+
+Move blacklist to DB or Redis.
+
+Move idempotency to Redis with TTL.
+
+Introduce atomic compare-and-set for idempotency.
+
+Add distributed rate limiting.
+
+Introduce structured violation logs.
+
+Add observability counters.
+
+File storage is acceptable for early stage or controlled environment.
+
+Not for distributed production clusters.
+
+Mental Model
+
+This module is the immune system.
+
+It does not make decisions.
+It raises inflammation signals.
+
+If too weak:
+Abuse spreads.
+
+If too aggressive:
+Healthy traffic suffers.
+
+Balance is governance.
+
+Ready for the next domain boundary.
+
+DEVELOPER MODE

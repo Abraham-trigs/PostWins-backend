@@ -17,6 +17,8 @@
     "check:lifecycle-law": "grep -R \"data: {[^}]*lifecycle\" src && echo \"❌ Direct lifecycle write detected\" && exit 1 || exit 0"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.998.0",
+    "@aws-sdk/s3-request-presigner": "^3.998.0",
     "@faker-js/faker": "^10.3.0",
     "@posta/core": "workspace:*",
     "@prisma/client": "^6.19.2",

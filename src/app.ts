@@ -22,7 +22,9 @@ import decisionQueryRoutes from "./modules/decision/decision.query.routes";
 import healthRoutes from "./modules/health/health.controller";
 import executionRoutes from "./modules/execution/execution.routes";
 import authRoutes from "./modules/auth/auth.routes";
+import { evidenceRoutes } from "./modules/evidence";
 import { getCurrentUser } from "./modules/auth/auth.controller";
+import messageRoutes from "./modules/message/message.routes";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
@@ -182,6 +184,8 @@ app.use("/api/verification", verificationRouter);
 app.use("/api", verificationProvisionRoutes);
 app.use("/api", decisionQueryRoutes);
 app.use("/api/execution", executionRoutes);
+app.use("/api/messages", messageRoutes);
+app.use("/api/evidence", evidenceRoutes);
 
 ////////////////////////////////////////////////////////////////
 // 8. Error Handling

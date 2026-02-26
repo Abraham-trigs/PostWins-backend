@@ -1,0 +1,372 @@
+Explainability Module
+
+Epistemic governance layer.
+Role-scoped truth projection.
+Redaction boundary between domain reality and observable reality.
+
+This module does not control authorization.
+
+It controls what truth is allowed to be seen.
+
+Core Principle
+
+Not all truths are observable.
+Observability is role-scoped.
+Redaction must be deterministic and structural.
+
+This is not RBAC.
+
+This is epistemic control.
+
+Domain Responsibility
+
+This module owns:
+
+Explainability roles (epistemic tiers)
+
+Redaction policies (structural visibility)
+
+Decision redaction
+
+Ledger commit redaction
+
+Routing decision redaction
+
+Counterfactual visibility control
+
+Disbursement explainability redaction
+
+It does not:
+
+Authorize requests
+
+Fetch from database
+
+Serialize dates
+
+Transform Prisma entities
+
+Infer lifecycle
+
+Mutate data
+
+It transforms read models into observable truth.
+
+Epistemic Roles (Not Auth Roles)
+type ExplainabilityRole =
+| "INTERNAL"
+| "AUDITOR"
+| "PARTNER"
+| "PUBLIC";
+
+These define who may observe which dimensions of truth.
+
+They are not permission roles.
+
+They define epistemic scope.
+
+An INTERNAL actor sees everything.
+A PUBLIC actor sees narrative-level summaries.
+
+This separation protects:
+
+Privacy
+
+Governance integrity
+
+Legal defensibility
+
+Operational clarity
+
+Policy Engine
+
+EXPLAINABILITY_POLICY
+
+Centralized, declarative visibility matrix.
+
+Each role defines visibility over:
+
+Decision fields
+
+Ledger fields
+
+Routing fields
+
+Counterfactuals
+
+No scattered if (role === …) logic.
+
+All redaction derives from policy.
+
+This prevents:
+
+Drift between modules
+
+Accidental visibility expansion
+
+Shadow access rules
+
+Redaction Architecture
+
+Redaction operates on read-model DTOs only.
+
+Never Prisma entities.
+
+Never DB models.
+
+Why?
+
+Because explainability must be decoupled from persistence.
+
+If your schema changes,
+explainability policy must not collapse.
+
+Decision Redaction
+
+redactDecision()
+
+Controls visibility of:
+
+actorUserId
+
+intentContext
+
+reason
+
+Authoritative and temporal metadata always preserved.
+
+Reason may remain visible even when actor identity is hidden.
+
+This allows:
+
+Governance transparency
+
+Identity protection
+
+Context-limited review
+
+Ledger Redaction
+
+redactLedgerCommit()
+
+Ledger is immutable truth.
+
+But not all fields are globally observable.
+
+Visibility gates:
+
+actorUserId
+
+intentContext
+
+payload
+
+authorityProof
+
+signature
+
+Commitment hash and supersession always remain visible.
+
+Why?
+
+Because audit integrity must remain reconstructible
+even if contextual metadata is hidden.
+
+Routing Redaction
+
+redactRoutingDecision()
+
+Routing outcome remains visible.
+
+Identity of decider may not.
+
+Counterfactual visibility is explicitly gated.
+
+Counterfactuals are powerful.
+
+They reveal policy reasoning.
+
+That is not always externally visible.
+
+Counterfactual Control
+
+Two functions:
+
+allowCounterfactuals()
+
+redactCounterfactual()
+
+Counterfactuals must be explicitly allowed.
+
+If not allowed → return undefined.
+
+Never partially redact.
+
+Binary exposure prevents inference leakage.
+
+Disbursement Explainability
+
+redactDisbursementExplanation()
+
+Domain-level redaction.
+
+Important:
+
+Dates remain Date objects.
+No transport conversion.
+No serialization.
+
+Role tiers:
+
+INTERNAL / AUDITOR
+→ Full visibility
+
+PARTNER
+→ Hide payee, authority, failure
+
+PUBLIC
+→ Only structural summary
+
+PUBLIC must see:
+
+status
+
+summary
+
+amount
+
+timeline
+
+narrative explainability
+
+But never:
+
+payee identity
+
+authority proof
+
+failure internals
+
+Financial systems require tiered transparency.
+
+Separation of Layers
+
+This module sits between:
+
+Loader → Domain DTO → Redaction → Mapper → Transport DTO
+
+Redaction must:
+
+Not mutate
+
+Not serialize
+
+Not depend on Prisma
+
+Not introduce transport formatting
+
+Serialization belongs in mapper.
+Authorization belongs in middleware.
+Explainability belongs here.
+
+Invariants
+
+Redaction must be pure.
+
+Redaction must not mutate input.
+
+Policy must be centralized.
+
+Redaction must never import Prisma.
+
+Ledger structural integrity must remain reconstructible.
+
+Counterfactual visibility must be explicit.
+
+Dates must not be stringified here.
+
+Break these and explainability becomes inconsistent.
+
+Failure Modes Considered
+
+Schema evolution
+→ Redaction unaffected (DTO-level only)
+
+Policy expansion
+→ Single-file update
+
+New role added
+→ Compiler forces policy mapping
+
+Prisma field change
+→ No coupling to persistence
+
+Accidental identity leak
+→ Prevented via centralized policy
+
+Scalability Characteristics
+
+Current complexity:
+
+O(n) over read-model arrays
+
+Zero database operations
+
+Pure structural mapping
+
+Future safe expansions:
+
+Add new explainability tier
+
+Add new visibility dimensions
+
+Add per-field masking logic
+
+Introduce structured visibility analytics
+
+Redaction remains cheap and deterministic.
+
+Why Redaction Is Structural (Not Conditional Strings)
+
+Because removing fields entirely:
+
+Prevents partial inference
+
+Simplifies API contracts
+
+Avoids “empty but present” leakage
+
+Keeps observability binary and explicit
+
+Undefined fields are safer than null placeholders.
+
+Observability Philosophy
+
+Internal sees causality.
+Auditor sees reasoning without identity.
+Partner sees operational outcome.
+Public sees narrative truth.
+
+Explainability is not data dumping.
+
+It is controlled epistemology.
+
+Mental Model
+
+The ledger contains objective history.
+
+The database contains projections.
+
+The explainability layer determines:
+
+Which version of truth a given observer is allowed to perceive.
+
+It is a constitutional filter between fact and perception.
+
+If auditors replay your ledger,
+they should see the same causality INTERNAL sees.
+
+If the public reads your API,
+they should see narrative integrity without operational leakage.
+
+That is the balance this module enforces.

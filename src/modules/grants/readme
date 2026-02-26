@@ -1,0 +1,352 @@
+Grants – Tranche Governance Module
+
+Financial authority mutation layer for grant disbursement tranches.
+
+This module does not “edit payments.”
+
+It records irreversible financial intent while preserving immutable authority history.
+
+If this module deletes, overwrites, or mutates authority casually, your financial audit trail collapses.
+
+Core Principle
+
+History is immutable.
+Authority is superseded, never erased.
+Financial correction is additive, not destructive.
+
+Reversal is not deletion.
+
+Compensation is not overwrite.
+
+Everything is explicit.
+
+Domain Responsibilities
+
+This module owns:
+
+Tranche reversal (authoritative supersession)
+
+Tranche compensation (financial counter-entry)
+
+Immutable decision recording
+
+Explicit execution mutation (status change)
+
+Tranche event audit stream
+
+It does not:
+
+Execute fund transfers
+
+Modify case lifecycle directly
+
+Bypass DecisionService
+
+Delete tranche records
+
+Retroactively rewrite history
+
+Financial Model
+
+A tranche represents a planned or released portion of a grant.
+
+Status values include:
+
+RELEASED
+
+REVERSED
+
+(others not shown here)
+
+Financial integrity requires:
+
+Released tranches may be reversed
+
+Reversed tranches may be compensated
+
+History must remain replayable
+
+Authority Architecture
+
+All authoritative actions pass through:
+
+DecisionService.applyDecision(...)
+
+TrancheService never writes authority directly.
+
+Why?
+
+Because authority must:
+
+Be immutable
+
+Be supersedable
+
+Be ledger-bound
+
+Be replayable
+
+DecisionService is the constitutional boundary.
+
+Reversing a Tranche
+
+reverseTranche()
+
+Preconditions:
+
+Tranche exists
+
+Status is RELEASED
+
+An authoritative DecisionType.TRANCHE exists
+
+Prior decision is not superseded
+
+Flow:
+
+Locate prior authoritative decision
+
+Apply new decision that supersedes prior
+
+Explicitly mutate tranche status → REVERSED
+
+Record tranche event
+
+The previous authority is not deleted.
+
+It is superseded.
+
+That distinction protects audit integrity.
+
+Why Supersede Instead of Delete?
+
+Deleting authority:
+
+Breaks replay determinism
+
+Breaks audit continuity
+
+Breaks explainability
+
+Creates silent financial gaps
+
+Superseding authority:
+
+Preserves history
+
+Marks evolution of intent
+
+Enables deterministic reconstruction
+
+Financial systems must evolve forward, not backward.
+
+Compensating a Reversed Tranche
+
+compensateReversedTranche()
+
+Compensation does not modify the reversed tranche.
+
+It creates a new tranche:
+
+plannedAmount.neg()
+
+plannedPercent.neg()
+
+sequence offset (+1000)
+
+status RELEASED
+
+Negative value is intentional.
+
+This encodes financial correction structurally.
+
+Not narratively.
+
+Why Create a New Tranche Instead of Editing?
+
+Because financial correctness requires:
+
+Additive correction
+
+Clear compensating entry
+
+Balance-preserving modeling
+
+Deterministic ledger replay
+
+Editing a reversed tranche would:
+
+Destroy original financial intent
+
+Obscure compensation semantics
+
+Corrupt explainability
+
+This design mirrors accounting systems:
+
+Credits and debits.
+Not edits and deletes.
+
+Transaction Guarantees
+
+All operations wrapped in:
+
+prisma.$transaction(...)
+
+Guarantees:
+
+Authority mutation
+
+Status mutation
+
+Tranche event creation
+
+are atomic.
+
+If DecisionService fails → tranche status not mutated.
+
+If tranche update fails → authority not applied.
+
+No partial financial mutation.
+
+Execution Effect
+
+Effect used:
+
+effect: { kind: "EXECUTION_VERIFIED" }
+
+This is currently static.
+
+Future evolution:
+
+Expand DecisionEffect union.
+
+Do not duplicate tranche logic.
+
+Authority semantics belong in DecisionEffect domain.
+
+Invariants
+
+Only RELEASED tranche may be reversed.
+
+Only REVERSED tranche may be compensated.
+
+Reversal must supersede prior authoritative decision.
+
+Compensation must create negative-value tranche.
+
+No deletion of tranche records.
+
+No bypassing DecisionService.
+
+All operations transactional.
+
+Break these and financial drift becomes invisible.
+
+Audit Trail Layers
+
+This module produces three audit layers:
+
+Decision record (authority layer)
+
+Tranche status mutation (projection layer)
+
+TrancheEvent (domain event stream)
+
+All three together produce explainable financial causality.
+
+Remove one and clarity degrades.
+
+Concurrency Considerations
+
+Potential race condition:
+
+Two reversal attempts simultaneously.
+
+Mitigation required:
+
+Add unique partial constraint on (trancheId, status=REVERSED)
+
+Or use SELECT FOR UPDATE on tranche row
+
+Or check status inside transaction
+
+Financial mutation must not double-execute.
+
+Scalability Characteristics
+
+Current behavior:
+
+Single-row tranche lookup
+
+Single decision supersession
+
+Single compensating tranche insert
+
+O(1) transaction complexity
+
+Future scaling options:
+
+Index decision.intentContext JSON path
+
+Partition trancheEvent by grantId
+
+Add deterministic compensating sequence scheme
+
+Design remains horizontally safe.
+
+Observability Expectations
+
+Each reversal must record:
+
+Actor identity
+
+Superseded decision ID
+
+Reason
+
+Timestamp
+
+Each compensation must record:
+
+Compensating tranche ID
+
+Reversed tranche ID
+
+Financial delta
+
+Reason
+
+Financial systems must be reconstructible from immutable facts.
+
+Mental Model
+
+Think of this module as a financial correction engine.
+
+A released tranche is an executed financial intent.
+
+If that intent is wrong:
+
+You do not erase it.
+You record a superseding authority.
+You explicitly reverse its status.
+You create a compensating financial entry.
+
+History remains intact.
+Correction is explicit.
+Ledger remains replayable.
+
+If auditors replay this system five years from now,
+they must see:
+
+Original release
+→ Reversal authority
+→ Compensating tranche
+
+Nothing missing.
+Nothing overwritten.
+Nothing ambiguous.
+
+That is the standard.
+
+Ready for the next domain boundary.

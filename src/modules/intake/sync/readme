@@ -1,0 +1,312 @@
+structurally wrong for your architecture.
+
+Right now, this code is bypassing your constitutional boundary.
+
+You built:
+
+commitLedgerEvent() as the canonical entry point
+
+Structured actor enforcement
+
+Authority hierarchy validation
+
+Deterministic hashing
+
+Global logical clock (ledger_global_seq)
+
+Supersession rules
+
+And then here you do this:
+
+this.ledgerService.appendEntry({
+ts: Date.now(),
+postWinId: pw.id,
+action: "INTAKE",
+actorId: "OFFLINE_SYNC_ENGINE",
+previousState: "LOCAL_STORAGE",
+newState: "SYNCED",
+});
+
+That payload does not match your ledger schema.
+
+It bypasses:
+
+Envelope versioning
+
+ActorKind enforcement
+
+AuthorityProof
+
+EventType enum
+
+Tenant scoping
+
+Case scoping
+
+Logical clock sequencing
+
+Request ID capture
+
+Supersession validation
+
+This is not a small deviation. It’s a constitutional violation.
+
+What This Should Be
+
+Sync is not “just logging”.
+
+Sync is:
+
+A factual transition from offline device state to authoritative ledger state.
+
+That is a lifecycle event.
+
+And lifecycle events must go through:
+
+commitLedgerEvent()
+with structured actor + envelope.
+
+Conceptual Correction
+
+Offline sync engine is not a random actor.
+
+It is:
+
+ActorKind.SYSTEM
+
+And it must provide:
+
+authorityProof
+
+Something like:
+
+SYSTEM:OFFLINE_SYNC_ENGINE
+
+Not a loose string.
+
+Correct Shape (Aligned With Your Ledger)
+
+This should look more like:
+
+await commitLedgerEvent(
+{
+tenantId: pw.tenantId,
+caseId: pw.caseId,
+eventType: LedgerEventType.CASE_CREATED,
+actor: {
+kind: ActorKind.SYSTEM,
+authorityProof: "SYSTEM:OFFLINE_SYNC_ENGINE",
+},
+payload: buildAuthorityEnvelopeV1({
+domain: "SYNC",
+event: "OFFLINE_INTAKE_SYNCED",
+data: {
+postWinId: pw.id,
+previousState: "LOCAL_STORAGE",
+newState: "SYNCED",
+},
+}),
+},
+tx,
+);
+
+Notice what changed:
+
+No manual timestamp
+
+No ad-hoc action string
+
+Proper enum event type
+
+Structured actor
+
+Versioned envelope
+
+Tenant + case scoping
+
+Ledger controls time. Not the caller.
+
+Why ts: Date.now() Is Dangerous
+
+Your ledger uses:
+
+nextval('ledger_global_seq')
+
+That is a logical clock.
+
+Logical clocks guarantee:
+
+Total ordering
+
+Replay determinism
+
+No clock drift
+
+No distributed skew
+
+Using Date.now() reintroduces:
+
+Time skew between devices
+
+Replay non-determinism
+
+Hash divergence risk
+
+In governance systems, logical clocks beat wall clocks.
+
+Deeper Architectural Problem
+
+Right now this service:
+
+Assumes LedgerService is a generic logger
+
+Treats ledger like an append-only audit table
+
+Bypasses envelope versioning
+
+Doesn't scope to tenant
+
+Your ledger is not a logger.
+
+It is sovereign authority.
+
+Everything that enters it must be constitutionally shaped.
+
+Another Subtle Issue: Transaction Boundary
+
+You're looping and committing one by one.
+
+That means:
+
+Partial sync possible
+
+First 3 commits succeed
+
+4th fails
+
+System now inconsistent
+
+Offline sync should be atomic per batch.
+
+Either:
+
+Wrap in transaction
+
+Or process one PostWin per transaction intentionally
+
+But that decision must be explicit.
+
+Right now it's accidental.
+
+Scalability Observation
+
+If incomingPostWins is large:
+
+You are doing N serial writes.
+
+Better approach:
+
+Wrap entire batch in single transaction
+
+Or chunk in deterministic batches
+
+Or use queue-based orchestration
+
+But the ledger must remain ordered and atomic.
+
+Conceptual Clarification
+
+What is sync?
+
+It is not:
+
+“Move data from A to B.”
+
+It is:
+
+“Declare that previously local facts are now institutionally recognized.”
+
+That’s authority elevation.
+
+Which means:
+
+It belongs in the ledger — but only through constitutional entry.
+
+If You Keep This Pattern
+
+You risk:
+
+Ledger API drift
+
+Inconsistent payload shapes
+
+Hash divergence
+
+Replay breakage
+
+Authority bypass
+
+Tenant leakage
+
+All slow-moving but catastrophic governance erosion.
+
+Correct Mental Model
+
+Your architecture already says:
+
+Domain modules never call LedgerService directly.
+
+They call:
+
+commitLedgerEvent().
+
+This file violates that rule.
+
+It should be rewritten to depend on:
+
+commitLedgerEvent
+
+buildAuthorityEnvelopeV1
+
+ActorKind
+
+LedgerEventType
+
+And nothing else.
+
+LedgerService is infrastructure.
+Domain code should never see it directly.
+
+Philosophical Moment
+
+Offline systems are epistemic fragments.
+
+Ledger is unified institutional memory.
+
+Sync is the ritual where fragments become truth.
+
+Rituals require ceremony.
+
+Ceremony in software means:
+
+Strict shape
+
+Authority structure
+
+Versioned envelopes
+
+Deterministic clocks
+
+Otherwise you are not syncing truth.
+
+You are copying bytes.
+
+If you want, we can:
+
+Refactor this service correctly
+
+Introduce a SYNC domain event type
+
+Add idempotency safeguards for repeated device sync
+
+Or design offline → ledger reconciliation with conflict detection

@@ -1,0 +1,418 @@
+Execution Module
+
+Operational delivery engine.
+Milestone-weighted progress system.
+Ledger-bound completion authority.
+Atomic bridge into verification.
+
+This module does not “track work.”
+
+It defines when work becomes truth.
+
+Core Principle
+
+Execution progress is derived.
+Execution completion is constitutional.
+Verification must begin atomically.
+
+Execution is not a UI stage.
+It is a lifecycle boundary backed by ledger causality.
+
+Domain Responsibilities
+
+This module owns:
+
+Execution creation
+
+Milestone-based weighted progress
+
+Execution completion authority
+
+Evidence enforcement before completion
+
+Ledger-bound EXECUTION\_\* events
+
+Automatic verification initialization
+
+Deterministic progress read model
+
+Non-authoritative progress notes
+
+It does not:
+
+Mutate CaseLifecycle directly
+
+Authorize disbursement
+
+Decide verification outcome
+
+Store derived percent fields
+
+Trust client-supplied progress claims
+
+Execution State Model
+
+ExecutionStatus:
+
+IN_PROGRESS
+
+COMPLETED
+
+ABORTED
+
+Completion is not cosmetic.
+
+It triggers governance.
+
+Starting Execution
+
+startExecution()
+
+Transaction-bound.
+
+Guarantees:
+
+Case exists and not archived
+
+Tenant isolation
+
+Idempotent creation (one execution per case)
+
+Milestones seeded atomically
+
+Ledger event: EXECUTION_STARTED
+
+Milestones are seeded intentionally.
+
+Execution progress is milestone-truth driven.
+
+Milestone System
+
+Each milestone has:
+
+weight
+
+completedAt
+
+completedByUserId
+
+Progress is derived from:
+
+sum(completed.weight) / sum(all.weight)
+
+Never store percentage directly.
+
+Why?
+
+Because stored aggregates drift under:
+
+retries
+
+concurrent updates
+
+partial failures
+
+schema evolution
+
+Truth must be reconstructible.
+
+Completing a Milestone
+
+CompleteMilestoneService.complete()
+
+Transaction guarantees:
+
+Milestone exists
+
+Tenant boundary enforced
+
+Idempotency respected
+
+Execution is IN_PROGRESS
+
+Milestone updated
+
+Ledger event: EXECUTION_PROGRESS_RECORDED
+
+Recalculate weighted progress
+
+If 100% → execution auto-completes
+
+Ledger event: EXECUTION_COMPLETED
+
+Execution completion emerges from milestone truth.
+
+It is not manually toggled.
+
+Execution Completion
+
+Two possible completion paths:
+
+Automatic (100% milestone weight)
+
+Explicit via completeExecution()
+
+Both paths:
+
+Enforce invariants
+
+Append ledger event
+
+Remain atomic
+
+Constitutional Completion Boundary
+
+completeExecution()
+
+This is a lifecycle-grade boundary.
+
+Preconditions:
+
+Execution exists
+
+Not already COMPLETED (idempotent)
+
+Not ABORTED
+
+Evidence must exist
+
+Evidence validation enforced via:
+
+assertExecutionEvidenceSatisfied()
+
+If no evidence → invariant violation.
+
+No silent completion.
+
+Evidence Policy
+
+assertExecutionEvidenceSatisfied()
+
+Transaction-safe count query.
+
+Completion requires:
+
+≥ 1 evidence attached to timeline entries of case.
+
+This invariant ensures:
+
+Work is documented
+
+Completion is auditable
+
+Governance does not drift
+
+Evidence is a lifecycle gate, not a UI hint.
+
+Atomic Bridge to Verification
+
+After EXECUTION_COMPLETED:
+
+initializeVerification() runs inside the same transaction.
+
+Guarantees:
+
+No execution completes without verification initialized
+
+No orphan verification records
+
+Ledger event: VERIFICATION_STARTED
+
+Idempotent behavior
+
+This protects lifecycle determinism.
+
+Execution → Verification is atomic.
+
+Derived Progress Model
+
+ExecutionProgressService.getProgress()
+
+Pure read model.
+
+Derives:
+
+totalWeight
+
+completedWeight
+
+percent (rounded)
+
+derivedStatus
+
+milestone presentation
+
+DerivedStatus is computed.
+
+Database execution.status should match.
+
+UI must trust derived truth, not stored guess.
+
+Non-Authoritative Progress Events
+
+recordExecutionProgress()
+
+Used for:
+
+CHECKPOINT
+
+NOTE
+
+BLOCKED
+
+RESUMED
+
+EVIDENCE_ATTACHED
+
+These do not mutate execution status.
+
+They are operational annotations.
+
+They exist for observability, not governance.
+
+Ledger Events Emitted
+
+EXECUTION_STARTED
+
+EXECUTION_PROGRESS_RECORDED
+
+EXECUTION_COMPLETED
+
+All inside same transaction as state mutation.
+
+Ledger is canonical.
+
+Execution table is projection.
+
+Invariants (Non-Negotiable)
+
+Execution cannot complete without evidence.
+
+ABORTED execution cannot be completed.
+
+Progress percentage must be derived.
+
+Tenant boundary enforced on every read/write.
+
+Milestone completion must be idempotent.
+
+Ledger event must exist for every authoritative state change.
+
+Verification must initialize atomically after completion.
+
+Break these and lifecycle replay becomes inconsistent.
+
+Concurrency Protections
+
+Transaction boundary protects:
+
+Double milestone completion
+
+Duplicate execution creation
+
+Partial completion without ledger
+
+Race conditions in weighted progress
+
+Idempotency keys protect:
+
+Replay-safe milestone completion
+
+Traceable authority proofs
+
+Duplicate ledger write prevention
+
+Execution remains deterministic under load.
+
+Failure Modes Considered
+
+Duplicate milestone completion
+→ Idempotent return
+
+Concurrent milestone completion
+→ Transaction isolation protects
+
+Execution crash mid-completion
+→ Transaction rollback
+
+Completion without evidence
+→ InvariantViolationError
+
+Verification initialization failure
+→ Entire transaction rolls back
+
+Ledger failure
+→ No execution completion occurs
+
+Scalability Characteristics
+
+Current complexity:
+
+Progress derivation: O(n milestones)
+
+Completion recalculation: O(n milestones)
+
+Evidence check: O(1) count query
+
+Future optimization options:
+
+Aggregated progress column (validated)
+
+Aggregate SQL query instead of in-memory reduce
+
+Partial index on (caseId, tenantId)
+
+SELECT FOR UPDATE on milestone row if contention increases
+
+Do not prematurely optimize.
+
+Correctness > micro-efficiency.
+
+Why Percent Is Not Stored
+
+Storing derived percent:
+
+Introduces reconciliation drift
+
+Requires repair jobs
+
+Breaks replay determinism
+
+Complicates audit
+
+Derived state keeps system honest.
+
+Ledger + milestones reconstruct everything.
+
+Observability Expectations
+
+Every authoritative transition must produce:
+
+Ledger event
+
+Authority proof
+
+Actor identity
+
+Progress labels are optional.
+Lifecycle transitions are not.
+
+Mental Model
+
+Execution is a delivery contract.
+
+Milestones are atomic commitments.
+Completion is constitutional.
+Verification is automatic.
+
+This module ensures:
+
+Work is measurable.
+Completion is defensible.
+Governance remains replay-safe.
+
+If someone audits this system five years from now,
+they must be able to replay execution from immutable events
+and derive the same truth.
+
+That is the bar.

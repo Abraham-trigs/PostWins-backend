@@ -1,0 +1,271 @@
+(Focused on analytics + ledger-based latency)
+
+Routing Analytics Module
+
+Ledger-grounded latency measurement for public accountability.
+
+This module does not infer workflow state.
+
+It measures factual time between immutable events.
+
+If this module guesses instead of measures, your transparency becomes fiction.
+
+Core Principle
+
+Metrics must be ledger-derived.
+Latency must be event-based.
+No inferred workflow shortcuts.
+
+Public analytics must be defensible under replay.
+
+Domain Responsibility
+
+This module owns:
+
+Ledger-based latency computation
+
+Event-bound time measurement
+
+Public-facing response speed analytics
+
+It does not:
+
+Infer lifecycle transitions
+
+Query case tables
+
+Inspect execution state columns
+
+Derive workflow state
+
+Mutate ledger
+
+Mutate cases
+
+It reads immutable history and computes duration.
+
+Latency Definition
+
+Latency is defined as:
+
+EXECUTION_COMPLETED.ts - CASE_CREATED.ts
+
+These are:
+
+Factual ledger events
+
+Immutable
+
+Replay-safe
+
+Timestamped at commit
+
+This prevents:
+
+Drift from projection tables
+
+Manual lifecycle overrides
+
+Analytics corruption
+
+Why Ledger Instead of Tables?
+
+Because:
+
+Tables reflect projection state.
+Ledger reflects historical fact.
+
+Tables can be repaired.
+Ledger cannot be rewritten.
+
+If analytics depend on projection:
+
+You measure what the system thinks happened.
+
+If analytics depend on ledger:
+
+You measure what actually happened.
+
+For public trust, that distinction matters.
+
+Implementation Characteristics
+
+calculateLatency(postWinId)
+
+Flow:
+
+Fetch audit trail from LedgerService
+
+Find CASE_CREATED event
+
+Find EXECUTION_COMPLETED event
+
+Normalize timestamp (number | bigint)
+
+Compute delta in milliseconds
+
+No inference.
+No fallback logic.
+No lifecycle assumptions.
+
+If either event missing → return 0.
+
+Zero means: insufficient factual boundary.
+
+Invariants
+
+LedgerService must return ordered audit trail.
+
+Timestamps must represent canonical commit time.
+
+Event types must be immutable enum values.
+
+Latency calculation must remain pure.
+
+No database writes.
+
+No derived state mutation.
+
+Break these and analytics become misleading.
+
+Edge Case Handling
+
+Missing CASE_CREATED
+→ return 0
+
+Missing EXECUTION_COMPLETED
+→ return 0
+
+Bigint timestamp
+→ normalized safely
+
+This prevents:
+
+Runtime crashes
+
+Partial data leakage
+
+Inconsistent analytics output
+
+Public metrics must degrade safely.
+
+Time Units
+
+Returned value: milliseconds.
+
+Conversion responsibility belongs to:
+
+API mapper
+
+Frontend
+
+Reporting layer
+
+Do not embed presentation formatting here.
+
+Analytics layer computes fact.
+Presentation layer formats narrative.
+
+Failure Modes Considered
+
+Ledger trail empty
+→ return 0
+
+Unexpected timestamp type
+→ safe normalization
+
+Event ordering unexpected
+→ find() ensures first match
+
+Multiple execution completions
+→ first match used (authoritative earliest boundary)
+
+If multiple completions possible,
+clarify which event represents final authority.
+
+Scalability Considerations
+
+Current complexity:
+
+O(n) over audit trail
+
+If ledger grows large:
+
+Options:
+
+Add indexed query for specific event types
+
+Add ledgerService.getFirstEventOfType()
+
+Pre-aggregate analytics view
+
+Maintain analytics snapshot table
+
+But never compromise:
+
+Ledger must remain the source of truth.
+
+Why No Workflow Inference?
+
+Because analytics must not depend on:
+
+Lifecycle enums
+
+Projection tables
+
+Milestone counts
+
+Verification state
+
+Decision outcomes
+
+Analytics must measure what happened,
+not what the system believes happened.
+
+Inference corrupts public transparency.
+
+Observability Philosophy
+
+Public response speed is a governance signal.
+
+It should answer:
+
+“How long did this case take from intake to execution completion?”
+
+Not:
+
+“How long did our UI think it was active?”
+
+Ledger timestamps are constitutional.
+
+Security Considerations
+
+This module must not:
+
+Expose raw audit trail
+
+Leak actor identities
+
+Leak authority proofs
+
+Leak payload content
+
+Latency is a derived metric.
+
+Return duration, not internal state.
+
+Mental Model
+
+If someone challenges your public performance report,
+you must be able to:
+
+Replay the ledger.
+Extract CASE_CREATED.
+Extract EXECUTION_COMPLETED.
+Subtract timestamps.
+Produce identical result.
+
+If you cannot do that,
+your analytics are storytelling.
+
+This module ensures they are mathematics.

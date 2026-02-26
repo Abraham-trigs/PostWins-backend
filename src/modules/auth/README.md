@@ -1,311 +1,389 @@
 Auth Module
-Purpose
 
-This module implements tenant-scoped, passwordless authentication using:
+Governance-bound identity creation, magic-link authentication, session rotation, and kill-switch enforcement for multi-tenant Posta.
 
-One-time login tokens (magic link flow, dev-mode enabled)
+This module is not “just login.”
 
-Short-lived JWT access tokens
+It is the gatekeeper of tenant isolation, session integrity, and governance-controlled identity provisioning.
 
-Rotating refresh tokens
+If this module fails, the entire trust boundary fails.
 
-Database-backed session revocation
+What This Module Owns
 
-Concurrency-safe refresh handling (frontend mutex)
+Invite-based identity creation (single authorized entry point)
 
-It is designed for multi-tenant, governance-grade systems where identity must be:
+Dev-mode magic login flow
 
-Tenant-isolated
+Login token verification
 
-Revocable
+Session issuance with DB-backed kill-switch
 
-Auditable
+Refresh token rotation
 
-Server-validated
+Logout with session revocation
 
-Concurrency-safe
+Governance-triggered verifier provisioning
 
-Architecture Overview
+Identity introspection (current user)
 
-Authentication is fully internal. No external auth provider is used.
+It does not:
 
-Flow:
+Define authorization policy (RBAC rules live elsewhere)
 
-POST /api/auth/request-login
+Enforce domain-level permissions
 
-POST /api/auth/verify
+Evaluate case logic
 
-GET /api/auth/me
+Handle OAuth/social providers (yet)
 
-POST /api/auth/refresh
+Core Philosophy
 
-POST /api/auth/logout
+Authentication is cheap.
+Identity governance is not.
 
-All other /api/\* routes are protected by authMiddleware.
+This module separates:
 
-Auth routes are mounted before authMiddleware in app.ts.
+Identity provisioning (invite + governance)
 
-Login Flow (Dev Mode)
+Session lifecycle management
 
-1. Request Login
+Access token validation via DB-backed session
 
-POST /api/auth/request-login
+The result: revocable, tenant-scoped, auditable identity.
 
-{
-"email": "admin@ultra.local",
-"tenantSlug": "ultra-demo"
-}
+Identity Creation (Invite-Only)
 
-Server:
+File: accept-invite.controller.ts
 
-Validates tenant
+This is the only code path allowed to create users.
 
-Validates active user
+That constraint is intentional.
 
-Generates short-lived login token (10 minutes)
+Invariants
 
-Stores hashed token in LoginToken
+Invite token must exist
 
-Returns:
+Token must be unexpired
 
-{ "ok": true, "devToken": "raw-token" }
+Token is hashed in DB (raw token never stored)
 
-In production, devToken must be replaced with email delivery.
+Role must exist within tenant
 
-2. Verify Login
+User creation is atomic
 
-POST /api/auth/verify
+Invite is deleted after use
 
-{
-"token": "raw-token-from-request-login"
-}
+Session issued only after identity finalized
 
-Server:
+Transactional Guarantees
 
-Hashes token
+The flow runs inside a single Prisma transaction:
 
-Validates token exists and is not expired
+Validate role still exists
 
-Deletes login token (one-time use)
+Check if user already exists (race condition defense)
 
-Creates Session record
+Create user if needed
 
-Issues cookies:
+Ensure role attached (idempotent)
 
-session → JWT access token
+Delete invite (single-use)
 
-refresh → raw refresh token
+Create session
 
-Returns:
+Issue access + refresh tokens
 
-{ "ok": true }
-Session Model
-Access Token
+No partial identity can exist.
 
-JWT
+If any step fails → nothing persists.
 
-15 minute TTL
+That is governance-grade provisioning.
 
-Stored in session HttpOnly cookie
+Magic Login (Dev Mode)
 
-Verified by authMiddleware
+File: auth.controller.ts
 
-Contains:
+This flow is intentionally simple but secure:
+
+Step 1 — Request Login
+
+Validates tenant slug
+
+Validates user existence + active status
+
+Creates one-time login token
+
+Stores hashed token
+
+Expires in 10 minutes
+
+Raw token is returned in dev mode.
+
+In production, this becomes:
+
+Email delivery
+
+Secure link flow
+
+Potential device binding
+
+Step 2 — Verify Login
+
+Hashes provided token
+
+Ensures token exists
+
+Ensures token not expired
+
+Deletes token (one-time usage)
+
+Creates DB session
+
+Issues JWT with sessionId embedded
+
+Embedding sessionId is the critical design decision.
+
+Session Model: DB-Backed Kill Switch
+
+Access tokens are not standalone truth.
+
+Each access JWT includes:
 
 userId
 
 tenantId
 
-exp
+sessionId
 
-Refresh Token
+Your auth middleware must:
 
-Random UUID
+Verify JWT signature
 
-Hashed before DB storage
+Look up session by sessionId
 
-Stored in refresh HttpOnly cookie
+Ensure session exists
 
-Rotated on every /refresh
+Ensure not revoked
 
-Valid for 7 days
+Ensure not expired
 
-Session Table
-Session {
-id
-userId
-tenantId
-refreshTokenHash
+That is the kill switch.
+
+Delete or revoke the session → access token instantly invalid.
+
+Stateless JWT systems cannot do this.
+
+This module intentionally chooses revocability over purity.
+
+Refresh Token Rotation
+
+File: refresh.service.ts
+
+Design guarantees:
+
+Refresh token is hashed in DB
+
+Raw refresh never stored
+
+Each refresh rotates token hash
+
+Session expiry extended atomically
+
+Access JWT reissued with same sessionId
+
+Rotation prevents replay attacks.
+
+If a refresh token leaks:
+
+It becomes invalid immediately after use.
+
+Kill-switch logic also checks:
+
+revokedAt
+
 expiresAt
-revokedAt?
-}
 
-Deleting the session row immediately revokes access.
+This is session lifecycle discipline, not just token issuance.
 
-Identity Hydration
-GET /api/auth/me
+Logout (Kill Switch Activation)
 
-Returns current authenticated identity:
-
-{
-"ok": true,
-"user": {
-"userId": "...",
-"tenantId": "...",
-"roles": [...]
-}
-}
-
-Used by:
-
-Server layout guards
-
-Client auth store hydration
-
-RBAC enforcement layer
-
-Refresh Flow
-POST /api/auth/refresh
-
-Server:
-
-Reads refresh cookie
-
-Hashes token
-
-Looks up session
-
-Rotates refresh token
-
-Issues new access + refresh cookies
-
-Updates DB hash
-
-Returns:
-
-{ "ok": true }
-Concurrency Safety (Frontend Mutex)
-
-The frontend transport layer implements a single-flight refresh mutex.
-
-If multiple requests receive 401 simultaneously:
-
-Only one refresh request is sent
-
-Other requests wait for the same Promise
-
-All retry safely after refresh
-
-Prevents refresh storms
-
-Prevents rotation race conditions
-
-This guarantees refresh rotation integrity under load.
-
-Logout Flow
-POST /api/auth/logout
-
-Server:
+Logout:
 
 Hashes refresh token
 
-Deletes matching session row
+Sets revokedAt timestamp
 
 Clears cookies
 
-After logout:
+Revocation is non-destructive.
 
-All protected routes return 401
+Why?
 
-Refresh no longer works
+Because forensic audits require session history.
 
-Session fully revoked
+Deletion destroys evidence.
+Revocation preserves it.
 
-Middleware Enforcement
-authMiddleware
+Governance-Triggered Provisioning
 
-Reads session cookie
+File: provision-verifier.controller.ts
 
-Verifies JWT signature + expiry
+Identity creation is not always direct.
 
-Attaches:
+Sometimes it must be:
 
-req.user = {
-userId,
-tenantId,
-expiresAt
-}
+Proposed
 
-All /api/\* routes require this.
+Reviewed
 
-Auth routes are excluded by mounting order.
+Approved
 
-Security Properties
+This endpoint submits a governance proposal via ApprovalGateService.
 
-✔ No password storage
-✔ Hash-only storage for login tokens
-✔ Hash-only storage for refresh tokens
-✔ One-time login tokens
-✔ Rotating refresh tokens
-✔ Concurrency-safe refresh
-✔ Immediate revocation
-✔ Tenant isolation in JWT payload
-✔ HttpOnly cookies
-✔ SameSite protection
-✔ Server-side route guarding
+Policy key:
+PROVISION_VERIFIER
 
-Required Environment Variables
-JWT_SECRET=super-secure-random-string
-CORS_ORIGIN=http://localhost:3000
+Effect payload:
 
-Frontend:
+email
 
-NEXT_PUBLIC_BACKEND_ORIGIN=http://localhost:3001
-NEXT_PUBLIC_APP_ORIGIN=http://localhost:3000
-Production Upgrade Checklist
+roleKey
 
-Before production:
+Auth module does not execute provisioning here.
+It triggers a governance workflow.
 
-Replace devToken return with email delivery
+That separation prevents privilege escalation via direct API access.
 
-Add rate limiting to request-login
+Tenant Isolation
 
-Add IP throttling
+Every identity is scoped by:
 
-Add background cleanup for expired LoginToken rows
+tenantId (database)
 
-Add session pruning job
+tenantSlug (login initiation)
 
-Enable secure: true cookies behind HTTPS
+session tenantId (JWT claim)
 
-Monitor refresh failure rates
+There is no cross-tenant identity resolution.
 
-Add device/session fingerprinting (optional hardening)
+If a user exists in Tenant A, that identity is meaningless in Tenant B.
 
-Folder Structure
-auth/
-auth.controller.ts
-auth.routes.ts
-refresh.service.ts
-README.md
-Status
+Multi-tenant correctness is structural, not conditional.
 
-Authentication lifecycle is fully implemented and verified via:
+Security Posture
 
-Login
+Token hashing:
 
-Verify
+Invite tokens hashed
 
-Identity hydration
+Login tokens hashed
 
-Access protected routes
+Refresh tokens hashed
 
-Refresh rotation
+Access token:
 
-Mutex concurrency protection
+Signed with JWT_SECRET
 
-Logout
+Short TTL (15m)
 
-Revocation test
+Refresh token:
 
-Module is stable and production-extendable.
+Long TTL (7 days)
+
+Rotated on each use
+
+Stored hashed
+
+Cookies:
+
+httpOnly
+
+sameSite=lax
+
+secure enabled in production
+
+path="/"
+
+Session validation:
+
+DB-backed
+
+Revocation supported
+
+Expiry enforced
+
+Failure Modes Considered
+
+Invite reused → impossible (deleted in transaction)
+
+Race condition double user creation → prevented via transactional check
+
+Stolen refresh token → rotated on use
+
+Stale access token → invalid if session revoked
+
+Expired login token → deleted immediately
+
+Tenant mismatch → prevented at login initiation
+
+Scalability Characteristics
+
+Horizontal scaling safe because:
+
+Sessions live in DB
+
+JWT verification is stateless except for session lookup
+
+Refresh rotation is O(1)
+
+Login tokens short-lived
+
+Future extensions:
+
+Device fingerprinting
+
+IP binding
+
+Suspicious rotation logging
+
+Rate limiting on request-login
+
+Multi-factor authentication
+
+WebAuthn
+
+Audit pipeline integration
+
+Invariants (Non-Negotiable)
+
+Users are created only through invite or governed flow.
+
+Tokens are never stored raw.
+
+Sessions are revocable.
+
+Refresh tokens are rotated.
+
+Tenant boundaries are absolute.
+
+Break these and you degrade from “enterprise system” to “side project.”
+
+Mental Model
+
+Think of this module as a controlled airlock.
+
+People do not just “enter the system.”
+
+They:
+
+Receive authorization to approach.
+
+Pass identity validation.
+
+Receive a time-bound access badge.
+
+Have that badge tied to a central registry.
+
+Can have it revoked instantly.
+
+That is identity done with institutional seriousness.

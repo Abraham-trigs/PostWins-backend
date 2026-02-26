@@ -1,0 +1,278 @@
+Follow-Up Module
+
+Deterministic retry orchestration for human-dependent workflows.
+
+This module does not “send reminder emails.”
+
+It governs temporal accountability.
+
+If this module behaves unpredictably, your system quietly loses trust — not through crashes, but through silence.
+
+Core Principle
+
+Time is a domain constraint.
+Retries must be bounded.
+Follow-up must be deterministic.
+
+Reminders are not UX sugar.
+
+They are enforcement of incomplete obligations.
+
+Configuration Surface
+export const followupConfig = {
+checkIntervalHours: 24,
+maxAttempts: 3,
+retryDelayHours: 48,
+timezone: "Africa/Accra",
+email: {
+provider: "sendgrid",
+apiKey: process.env.SENDGRID_API_KEY ?? "",
+from: process.env.FOLLOWUP_FROM ?? "noreply@postwins.com",
+},
+} as const;
+
+This config encodes policy, not infrastructure.
+
+Each field carries architectural meaning.
+
+Temporal Governance
+checkIntervalHours
+
+How often the system scans for pending obligations.
+
+This should align with:
+
+Worker scheduler frequency
+
+Cron cadence
+
+Job queue polling interval
+
+Mismatch creates phantom delays.
+
+If worker runs hourly but interval is 24h, you are computing wastefully.
+
+If worker runs daily but interval is 1h, you are lying to yourself.
+
+maxAttempts
+
+Bounded retry policy.
+
+Prevents:
+
+Infinite notification loops
+
+Silent spam escalation
+
+Governance erosion
+
+After max attempts, escalation should occur — not silence.
+
+Escalation is a domain decision, not an email decision.
+
+retryDelayHours
+
+Backoff policy.
+
+This defines when the next attempt becomes eligible.
+
+It must not depend on worker timing alone.
+
+The next attempt time must be stored in the database.
+
+Never infer next eligibility purely from attempt count.
+
+Time-based systems must be stateful.
+
+timezone
+
+Critical.
+
+Scheduling based on UTC alone causes:
+
+Off-hour notifications
+
+Compliance violations
+
+Cultural friction
+
+Time is political.
+
+If this system operates in Ghana, “Africa/Accra” is correct.
+
+Never default to server timezone.
+
+Never trust container timezone.
+
+Always make timezone explicit.
+
+Email Provider Boundary
+email: {
+provider: "sendgrid",
+apiKey: process.env.SENDGRID_API_KEY ?? "",
+from: process.env.FOLLOWUP_FROM ?? "noreply@postwins.com",
+}
+
+This is infrastructure configuration.
+
+It must remain outside domain logic.
+
+Domain code should call:
+
+sendFollowupNotification(...)
+
+Not:
+
+sendgrid.send(...)
+
+Provider coupling belongs in an adapter layer.
+
+The domain should not care whether the message is sent via:
+
+SendGrid
+
+SES
+
+SMTP
+
+Internal queue
+
+WhatsApp
+
+SMS
+
+Infrastructure changes.
+Governance remains.
+
+Required Structural Guarantees (Implied)
+
+Even though not shown here, a production follow-up system must persist:
+
+target entity ID
+
+attempt count
+
+lastAttemptAt
+
+nextEligibleAt
+
+status (PENDING | COMPLETED | EXHAUSTED)
+
+tenantId
+
+Without these:
+
+You cannot guarantee retry determinism.
+
+Determinism Requirements
+
+A follow-up engine must be:
+
+Idempotent
+
+Retry-safe
+
+Multi-worker safe
+
+Tenant isolated
+
+Clock drift tolerant
+
+Never rely on in-memory counters.
+
+Never rely on job scheduler memory.
+
+All attempt state must live in the database.
+
+Concurrency Considerations
+
+If multiple workers scan concurrently:
+
+Use row-level locking
+
+Or atomic update where nextEligibleAt <= now
+
+Or SELECT … FOR UPDATE SKIP LOCKED
+
+Without locking, you risk double-sends.
+
+Double-sends destroy trust faster than missed sends.
+
+Failure Modes to Design For
+
+Email provider timeout
+→ Do not increment attempt unless send confirmed
+
+Worker crash mid-send
+→ Must not mark as completed prematurely
+
+Timezone misalignment
+→ Schedule drift across DST changes
+
+API key missing
+→ Fail fast at startup, not silently
+
+maxAttempts reached
+→ Must transition to EXHAUSTED state explicitly
+
+Observability Expectations
+
+Every attempt should produce:
+
+structured log
+
+correlation ID
+
+tenantId
+
+attempt number
+
+success/failure outcome
+
+provider response metadata (if safe)
+
+Silence is not observability.
+
+Scalability Considerations
+
+For large tenant counts:
+
+Partition follow-up table by tenant
+
+Index nextEligibleAt
+
+Avoid full-table scans
+
+Batch process eligible rows
+
+Time-based systems scale with indexing discipline.
+
+Security Considerations
+
+API keys must never leak into logs
+
+from address must be controlled
+
+Follow-up content must not leak internal IDs
+
+Tenant isolation must be enforced before send
+
+Reminder systems are subtle data exfiltration vectors.
+
+Mental Model
+
+Think of this module as a clock-driven compliance engine.
+
+It asks:
+
+Who owes the system a response?
+Have we reminded them?
+Have we done so fairly?
+Have we stopped after reasonable effort?
+
+The difference between a chaotic SaaS and a trusted one
+often lies in how it handles unfinished obligations.
+
+Time is a first-class domain constraint.
+
+Treat it that way.

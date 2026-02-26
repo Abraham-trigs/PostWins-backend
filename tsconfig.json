@@ -24,8 +24,8 @@
     }
   },
 
-  // ✅ Include everything under src
-  "include": ["src/**/*.ts"],
+  // ✅ Include TS and declaration files
+  "include": ["src/**/*.ts", "src/**/*.d.ts"],
 
   // ✅ Exclude only build artifacts + node_modules
   "exclude": ["node_modules", "dist"]

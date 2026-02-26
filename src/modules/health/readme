@@ -1,0 +1,286 @@
+Health Module
+
+Observability boundary for service liveness and ledger integrity.
+
+This module does not “prove the system works.”
+
+It proves the system is alive — and whether its constitutional core (the ledger) is trustworthy.
+
+Health endpoints are not features.
+
+They are survival primitives.
+
+Core Principle
+
+Health checks must never crash.
+Observability must degrade deterministically.
+Internal state must never leak.
+
+If your health endpoint throws, your monitoring lies.
+
+Responsibilities
+
+This module owns:
+
+Base service liveness endpoint
+
+Ledger integrity endpoint
+
+Graceful degradation under internal failure
+
+Controlled status code mapping
+
+Stack-trace suppression
+
+It does not:
+
+Expose internal diagnostics
+
+Validate business invariants
+
+Replace structured monitoring
+
+Reveal sensitive infrastructure details
+
+Service Health Endpoint
+
+GET /health
+
+Returns:
+
+status string
+
+runtime mode
+
+process uptime
+
+timestamp
+
+This is a liveness check.
+
+It answers:
+
+“Is the process running?”
+
+It does not answer:
+
+“Is the system correct?”
+
+Ledger Health Endpoint
+
+GET /health/ledger
+
+Delegates to:
+
+ledgerService.getStatus()
+
+Maps result:
+
+ok → HTTP 200
+
+not ok → HTTP 503
+
+If unexpected failure occurs:
+
+Returns:
+
+status: "CORRUPTED"
+
+ok: false
+
+safe error message
+
+timestamp
+
+Never leaks stack traces.
+
+Never propagates raw errors.
+
+Health endpoints are attack surfaces.
+
+They must be intentionally boring.
+
+Why Ledger Health Is Isolated
+
+Ledger is constitutional infrastructure.
+
+If the ledger is corrupted:
+
+Lifecycle replay fails
+
+Financial causality fails
+
+Governance integrity fails
+
+Separating ledger health prevents:
+
+Masking systemic corruption
+
+Misclassifying service as healthy
+
+Cascading monitoring confusion
+
+Service may be alive.
+Ledger may not be trustworthy.
+
+Those are different states.
+
+Status Code Semantics
+
+200 → healthy
+503 → degraded or corrupted
+
+503 is intentional.
+
+It signals readiness failure without implying application crash.
+
+Monitoring systems rely on status codes, not narrative JSON.
+
+Invariants
+
+Health endpoints must never throw.
+
+Health endpoints must never leak stack traces.
+
+Ledger health must be isolated from base liveness.
+
+Health endpoints must remain side-effect free.
+
+No database mutation.
+
+No ledger mutation.
+
+No decision mutation.
+
+Break these and observability becomes unreliable.
+
+Graceful Degradation Strategy
+
+Worst-case scenario:
+
+Ledger service throws
+
+Database connection fails
+
+Internal error occurs
+
+Response must still return:
+
+Structured JSON
+
+503 status
+
+Timestamp
+
+Health checks are first responders.
+
+They must not panic.
+
+Deployment Guidance
+
+Mount once in app.ts:
+
+app.use("/api", healthRoutes);
+
+Remove inline handlers.
+
+Avoid duplicate /health endpoints.
+
+Observability must be centralized.
+
+Scalability Considerations
+
+Future expansion may include:
+
+Database connectivity check
+
+Redis availability
+
+Queue health
+
+External provider reachability
+
+Additive only.
+
+Do not pollute base liveness route.
+
+Consider adding:
+
+/health/readiness
+
+/health/dependencies
+
+/health/version
+
+But keep /health minimal.
+
+Failure Modes Considered
+
+Ledger service timeout
+→ 503 with safe payload
+
+Unexpected exception
+→ 503 with deterministic response
+
+Partial infrastructure outage
+→ Service health remains 200, ledger 503
+
+Monitoring misinterpretation
+→ Clear HTTP mapping prevents ambiguity
+
+Observability Philosophy
+
+Liveness answers:
+
+“Is the process alive?”
+
+Readiness answers:
+
+“Is the system ready?”
+
+Integrity answers:
+
+“Is the constitutional core trustworthy?”
+
+This module currently covers liveness and ledger integrity.
+
+Do not conflate them.
+
+Security Considerations
+
+Health endpoints:
+
+Should not expose environment variables
+
+Should not reveal database URLs
+
+Should not reveal stack traces
+
+Should not reveal internal IDs
+
+Should not reveal ledger hashes
+
+Health endpoints are public by default in many infrastructures.
+
+Assume they are externally reachable.
+
+Mental Model
+
+If your system is a constitutional state:
+
+The ledger is its constitution.
+The health module is its pulse monitor.
+
+The pulse monitor must:
+
+Stay calm
+
+Report honestly
+
+Never panic
+
+Never gossip
+
+When something fails, it should say:
+
+“I am degraded.”
