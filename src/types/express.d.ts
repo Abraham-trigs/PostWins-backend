@@ -1,4 +1,6 @@
-import "express";
+// apps/backend/src/types/express.d.ts
+
+export {};
 
 declare global {
   namespace Express {

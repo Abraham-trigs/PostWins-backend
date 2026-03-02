@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  model Evidence
+//  model TaskDefinition 
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -149,17 +149,16 @@ model TaskDefinition {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
 
-  key      String // e.g. "MODULE_1"
+  key      String
   label    String
   order    Int
   isActive Boolean @default(true)
-  cases    Case[]
 
   createdAt DateTime @default(now())
 
-  // Relations
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  caseTasks CaseTask[]
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  caseTasks    CaseTask[]
+  currentCases Case[]     @relation("CaseCurrentTask")
 
   @@unique([tenantId, key])
   @@index([tenantId, order])
@@ -538,7 +537,7 @@ model Message {
   case            Case             @relation(fields: [caseId], references: [id], onDelete: Cascade)
   author          User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
   messageReceipts MessageReceipt[]
-  evidence Evidence[]
+  evidence        Evidence[]
 
   @@unique([tenantId, clientMutationId])
   // ⚡ Cursor pagination index
@@ -644,10 +643,10 @@ model Beneficiary {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  tenant Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  pii    BeneficiaryPII?
-
-  cases Case[] @relation("CaseBeneficiary")
+  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pii     BeneficiaryPII?
+  profile BeneficiaryProfile?
+  cases   Case[]              @relation("CaseBeneficiary")
 
   @@index([tenantId, createdAt])
 }
@@ -669,6 +668,68 @@ model BeneficiaryPII {
   @@index([nationalId])
 }
 
+model BeneficiaryProfile {
+  id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId String @unique @db.Uuid
+
+  // Demographics
+  gender              String?
+  nationality         String?
+  residencyStatus     String?
+  region              String?
+  district            String?
+  isMinor             Boolean? @default(false)
+  legalCapacityStatus String?
+
+  // Education (SDG 4 Core)
+  currentInstitution     String?
+  institutionType        String?
+  programOfStudy         String?
+  studentIdNumber        String?
+  currentAcademicLevel   String?
+  currentCGPA            Decimal?  @db.Decimal(4, 2)
+  maxCGPA                Decimal?  @default(4.00) @db.Decimal(4, 2)
+  expectedGraduationDate DateTime?
+  enrollmentStatus       String?
+
+  // Socioeconomic Context
+  householdSize         Int?
+  employmentStatus      String?
+  incomeRange           String?
+  annualHouseholdIncome Decimal? @db.Decimal(12, 2)
+  vulnerabilityType     String?
+  disabilityStatus      Boolean? @default(false)
+  statementOfNeed       String?  @db.Text
+
+  // Guardian
+  guardianName         String?
+  guardianRelationship String?
+  guardianPhone        String?
+  guardianNationalId   String?
+
+  // Disbursement Readiness
+  payeeType         String?
+  accountName       String?
+  accountNumber     String?
+  bankName          String?
+  mobileMoneyNumber String?
+  mobileNetwork     String? // Added for MoMo API integration
+  bankable          Boolean? @default(false)
+
+  // Compliance
+  consentToDataStorage  Boolean? @default(false)
+  consentToVerification Boolean? @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([vulnerabilityType])
+  @@index([region])
+  @@index([institutionType])
+}
+
 ////////////////////////////////////////////////////////////////
 // CASE DOMAIN
 ////////////////////////////////////////////////////////////////
@@ -683,7 +744,7 @@ model Case {
   tenantId      String  @db.Uuid
   authorUserId  String  @db.Uuid
   beneficiaryId String? @db.Uuid
-  referenceCode String  @unique
+  referenceCode String
 
   mode  OperationalMode
   scope AccessScope
@@ -693,21 +754,18 @@ model Case {
   caseTasks CaseTask[]
   evidence  Evidence[]
 
+  // Dynamic workflow pointer (replaces TaskId enum)
+  currentTaskDefinitionId String?         @db.Uuid
+  currentTaskDefinition   TaskDefinition? @relation("CaseCurrentTask", fields: [currentTaskDefinitionId], references: [id], onDelete: SetNull)
+
   lifecycle CaseLifecycle @default(INTAKE)
   status    CaseStatus    @default(INTAKED)
 
   execution Execution?
 
-  //to be delete 
-  currentTask TaskId @default(START)
-
   sdgGoal     String?
   summary     String?
   reasonCodes CaseReasonCode[]
-
-  // Dynamic workflow pointer (replaces TaskId enum)
-  currentTaskDefinitionId String?         @db.Uuid
-  currentTaskDefinition   TaskDefinition? @relation(fields: [currentTaskDefinitionId], references: [id], onDelete: SetNull)
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -733,6 +791,7 @@ model Case {
   grantLinks          GrantCase[]
   caseReadPositions   CaseReadPosition[]
 
+  @@unique([tenantId, referenceCode])
   @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([tenantId, lifecycle, createdAt])
   @@index([tenantId, status, createdAt])
@@ -740,6 +799,7 @@ model Case {
   @@index([authorUserId, createdAt])
   @@index([beneficiaryId, createdAt])
   @@index([tenantId, currentTaskDefinitionId])
+  @@index([tenantId, lifecycle, status])
 }
 
 ////////////////////////////////////////////////////////////////
@@ -777,6 +837,7 @@ model Execution {
 
 /// Execution checkpoints / progress entries.
 /// Append-only operational trail.
+
 model ExecutionProgress {
   id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   executionId String @db.Uuid
@@ -848,6 +909,7 @@ model CaseAssignment {
 
 /// Snapshot of routing decision.
 /// Does NOT represent lifecycle progression.
+
 model RoutingDecision {
   id       String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String @db.Uuid
@@ -930,7 +992,7 @@ model Verification {
   verificationRecord VerificationRecord @relation(fields: [verificationRecordId], references: [id], onDelete: Cascade)
   verifier           User               @relation(fields: [verifierUserId], references: [id], onDelete: Restrict)
 
-  @@unique([verificationRecordId, verifierUserId])
+  @@unique([tenantId, verificationRecordId, verifierUserId])
   @@index([verifierUserId, createdAt])
 }
 
@@ -1001,6 +1063,7 @@ model Decision {
 
 /// Append-only cryptographic commit log.
 /// Multi-tenant exactly-once guarantee enforced.
+
 model LedgerCommit {
   id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId String  @db.Uuid
@@ -1036,7 +1099,8 @@ model LedgerCommit {
   case   Case?  @relation(fields: [caseId], references: [id], onDelete: Cascade)
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  @@unique([ts])
+  @@unique([tenantId, ts])
+  @@index([tenantId, caseId, ts])
   @@index([tenantId, ts])
   @@index([caseId, ts])
   @@index([eventType, ts])
