@@ -1,101 +1,115 @@
-import { PostWin, PostaContext, AuditRecord } from "@posta/core";
-import { TaskId } from "@prisma/client";
+// apps/backend/src/modules/intake/intake.service.ts
+// Purpose: Canonical Intake Service aligned strictly to Prisma Case schema (no PostWin coupling).
+
+import { OperationalMode, AccessScope, CaseType } from "@prisma/client";
 import { IntegrityService } from "./intergrity/integrity.service";
 import { TaskService } from "../routing/structuring/task.service";
 
+////////////////////////////////////////////////////////////////
+// Types (Schema-aligned, backend-only)
+////////////////////////////////////////////////////////////////
+
 /**
- * Phase 1.5 — Explicit Intake Metadata
- * -----------------------------------
- * These are resolved during intake and MUST be persisted downstream.
+ * Explicit intake metadata that maps 1:1 to Prisma enums.
+ * These must be persisted by the controller when creating Case.
  */
 export type IntakeMetadata = {
-  mode: "MOCK" | "ASSISTED" | "AI_AUGMENTED";
-  scope: "PUBLIC" | "PARTNER" | "INTERNAL";
-  intent: "PROGRESS" | "REQUEST" | "EXECUTION";
+  mode: OperationalMode;
+  scope: AccessScope;
+  intent: CaseType;
 };
 
 /**
- * Interface to extend PostaContext with literacy metadata (advisory only)
+ * Result returned from intake processing.
+ * This is NOT a persisted entity — controller owns persistence.
  */
-export interface EnrichedContext extends PostaContext {
+export type IntakeResult = IntakeMetadata & {
+  description: string;
   literacyLevel: "LOW" | "STANDARD";
-}
+};
 
 /**
- * Guardrail — fail fast if intake metadata is incomplete.
+ * Advisory context detection (not persisted unless explicitly stored).
+ */
+export type DetectedContext = {
+  role: "AUTHOR" | "BENEFICIARY" | "VERIFIER" | "NGO_PARTNER";
+  isImplicit: boolean;
+  literacyLevel: "LOW" | "STANDARD";
+};
+
+////////////////////////////////////////////////////////////////
+// Guards
+////////////////////////////////////////////////////////////////
+
+/**
+ * Ensures intake metadata is fully resolved before controller persistence.
  */
 function assertIntakeMetadata(
   meta: Partial<IntakeMetadata>,
 ): asserts meta is IntakeMetadata {
   if (!meta.mode || !meta.scope || !meta.intent) {
-    throw new Error(
-      "Intake metadata must be fully resolved before persistence",
-    );
+    throw new Error("INTAKE_METADATA_INCOMPLETE");
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Service
+////////////////////////////////////////////////////////////////
 
 export class IntakeService {
   constructor(
     private integrityService: IntegrityService,
-    private taskService: TaskService, // Phase 2: dynamic task orchestration
+    private taskService: TaskService, // Reserved for future deterministic orchestration
   ) {}
 
   /**
-   * ✅ Canonical public entrypoint for intake
-   * Used by controllers + mock engine + future offline sync.
+   * Canonical intake entrypoint.
+   * - Validates metadata resolution
+   * - Runs integrity guard
+   * - Returns schema-aligned data only
    */
   public async handleIntake(
     message: string,
     deviceId: string,
-  ): Promise<Partial<PostWin> & IntakeMetadata> {
-    const ctx = await this.detectContext(message);
+  ): Promise<IntakeResult> {
+    // Normalize early to avoid drift
+    const normalizedMessage = this.sanitizeDescription(message);
 
-    // Phase 1.5 — resolve intake metadata once
+    const ctx = await this.detectContext(normalizedMessage);
+
     const intakeMeta: Partial<IntakeMetadata> = {
-      mode: "AI_AUGMENTED",
-      scope: ctx.role === "NGO_PARTNER" ? "PARTNER" : "PUBLIC",
-      intent: "REQUEST",
+      mode: OperationalMode.ASSISTED,
+      scope:
+        ctx.role === "NGO_PARTNER" ? AccessScope.PARTNER : AccessScope.PUBLIC,
+      intent: CaseType.REQUEST,
     };
 
     assertIntakeMetadata(intakeMeta);
 
-    // Performs integrity audit + returns partial fields
-    const partial = await this.processInternalOrchestration(message, deviceId);
-
-    const audit: AuditRecord = {
-      timestamp: Date.now(),
-      action: "INTAKE_RECEIVED",
-      actor: deviceId,
-      note: `role=${ctx.role}, literacy=${ctx.literacyLevel}, intent=${intakeMeta.intent}`,
-    };
+    await this.performIntegrityGate(normalizedMessage, deviceId);
 
     return {
-      ...partial,
-
-      // ✅ Phase 1.5 — explicit intake metadata (to be persisted by caller)
       mode: intakeMeta.mode,
       scope: intakeMeta.scope,
       intent: intakeMeta.intent,
-
-      // Stable downstream expectations
-      auditTrail: [...(partial.auditTrail ?? []), audit],
-
-      // Context snapshot (advisory only, non-authoritative)
-      context: ctx as unknown as PostaContext,
-
-      // Deterministic task assignment
-      taskId: TaskId.START,
+      description: normalizedMessage,
+      literacyLevel: ctx.literacyLevel,
     };
   }
 
+  ////////////////////////////////////////////////////////////////
+  // Context Detection (advisory only)
+  ////////////////////////////////////////////////////////////////
+
   /**
-   * Section A & N: Implicit Context & Literacy Detection
-   * (No persistence responsibility)
+   * Infers role + literacy heuristically.
+   * Never trusted as authoritative identity.
    */
-  public async detectContext(message: string): Promise<EnrichedContext> {
+  public async detectContext(message: string): Promise<DetectedContext> {
     const msg = message.toLowerCase();
 
-    let role: PostaContext["role"] = "BENEFICIARY";
+    let role: DetectedContext["role"] = "BENEFICIARY";
+
     if (
       msg.includes("partner") ||
       msg.includes("organization") ||
@@ -117,41 +131,49 @@ export class IntakeService {
     };
   }
 
-  public sanitizeDescription(message: string): string {
-    return message.trim().replace(/\s+/g, " ");
-  }
+  ////////////////////////////////////////////////////////////////
+  // Integrity Guard
+  ////////////////////////////////////////////////////////////////
 
-  async processInternalOrchestration(
+  /**
+   * Blocks intake if HIGH severity anomaly detected.
+   * Throws domain error code.
+   */
+  private async performIntegrityGate(
     message: string,
     deviceId: string,
-  ): Promise<Partial<PostWin>> {
-    const tempPostWin = { beneficiaryId: "pending" } as PostWin;
-
+  ): Promise<void> {
     const flags = await this.integrityService.performFullAudit(
-      tempPostWin,
+      {
+        beneficiaryId: "temp",
+      } as any, // placeholder domain object for audit context
       message,
       deviceId,
     );
 
     if (flags.some((f) => f.severity === "HIGH")) {
-      throw new Error(
-        "Intake blocked by Integrity Guardrails: High severity anomaly detected.",
-      );
+      throw new Error("INTAKE_BLOCKED_HIGH_SEVERITY_ANOMALY");
     }
-
-    return {
-      description: this.sanitizeDescription(message),
-
-      // Phase 2: replace with schema-backed Verification / Ledger initialization
-      verificationStatus: flags.length > 0 ? "FLAGGED" : "PENDING",
-
-      // Phase 2: routing derived from first ledger commit
-      routingStatus: "UNASSIGNED",
-    };
   }
 
+  ////////////////////////////////////////////////////////////////
+  // Utilities
+  ////////////////////////////////////////////////////////////////
+
   /**
-   * Resolve GhanaPost Digital Address → GPS coordinates
+   * Ensures consistent formatting before persistence.
+   */
+  public sanitizeDescription(message: string): string {
+    return message.trim().replace(/\s+/g, " ");
+  }
+
+  ////////////////////////////////////////////////////////////////
+  // GhanaPost Resolver (External Boundary)
+  ////////////////////////////////////////////////////////////////
+
+  /**
+   * Resolves GhanaPost digital address to coordinates.
+   * Throws domain-safe error codes only.
    */
   public async resolveGhanaPostAddress(digitalAddress: string): Promise<{
     digitalAddress: string;
@@ -167,7 +189,7 @@ export class IntakeService {
     const apiUrl = process.env.GHANAPOST_API_URL;
 
     if (!apiKey || !apiUrl) {
-      throw new Error("CONFIG_MISSING");
+      throw new Error("GHANAPOST_CONFIG_MISSING");
     }
 
     const url = `${apiUrl}?digitalAddress=${encodeURIComponent(
@@ -182,20 +204,26 @@ export class IntakeService {
     });
 
     if (!res.ok) {
-      throw new Error("NOT_FOUND");
+      throw new Error("GHANAPOST_NOT_FOUND");
     }
 
-    const data = (await res.json()) as any;
-    const record = data?.Table?.[0];
+    const data: unknown = await res.json();
+
+    if (typeof data !== "object" || data === null || !("Table" in data)) {
+      throw new Error("GHANAPOST_NOT_FOUND");
+    }
+
+    const record = (data as any)?.Table?.[0];
+
     if (!record) {
-      throw new Error("NOT_FOUND");
+      throw new Error("GHANAPOST_NOT_FOUND");
     }
 
     const lat = Number(record.Latitude);
     const lng = Number(record.Longitude);
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      throw new Error("NOT_FOUND");
+      throw new Error("GHANAPOST_NOT_FOUND");
     }
 
     const delta = 0.0005;
@@ -211,3 +239,47 @@ export class IntakeService {
     };
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Example usage (internal test)
+// const service = new IntakeService(
+//   new IntegrityService(),
+//   new TaskService(),
+// );
+// await service.handleIntake(
+//   "Support needed for school fees.",
+//   "device-123",
+// );
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// The service is strictly aligned to Prisma Case schema and avoids legacy PostWin coupling.
+// IntakeResult is a transient object — controller owns persistence.
+// Domain metadata is derived once and enforced via guard.
+// Integrity enforcement is isolated from HTTP concerns for clean layering.
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// - IntakeMetadata: schema-aligned enums
+// - IntakeResult: controller-facing return type
+// - detectContext(): advisory inference
+// - performIntegrityGate(): blocking guard
+// - resolveGhanaPostAddress(): external boundary
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// - Controller must persist Case using returned mode/scope/intent.
+// - Map domain errors (e.g. INTAKE_BLOCKED_HIGH_SEVERITY_ANOMALY) to HTTP.
+// - Never persist literacyLevel unless explicitly added to schema.
+// - Keep Case as single source of truth; avoid frontend entity leakage.
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// This boundary cleanly separates intake processing from persistence.
+// Future AI_AUGMENTED mode can be injected without modifying controller logic.
+// Mapping Case → PostWin for frontend should live in a dedicated projection layer.
+////////////////////////////////////////////////////////////////

@@ -141,6 +141,17 @@ export class PostaMockEngine {
     ////////////////////////////////////////////////////////////////
     // 6️⃣ Create Case (INTAKE)
     ////////////////////////////////////////////////////////////////
+    const startTask = await prisma.taskDefinition.findFirst({
+      where: {
+        tenantId: tenant.id,
+        key: "START",
+      },
+      select: { id: true },
+    });
+
+    if (!startTask) {
+      throw new Error("START task definition not found");
+    }
 
     const createdCase = await prisma.case.create({
       data: {
@@ -152,7 +163,7 @@ export class PostaMockEngine {
         scope: intakeResult.scope,
         type: intakeResult.intent,
         lifecycle: CaseLifecycle.INTAKE,
-        currentTask: TaskId.START,
+        currentTaskDefinitionId: startTask.id,
         summary: "School enrollment support",
       },
     });

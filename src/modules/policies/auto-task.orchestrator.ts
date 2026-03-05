@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma";
 import { autoTaskAdvance } from "./auto-task.policy";
+import { TaskId } from "@prisma/client";
 import { AUTO_TASK_ADVANCE } from "./ids";
 import { PolicyEvaluationService } from "./policy-evaluation.service";
 import { ApprovalGateService } from "../approvals/approval-gate.service";
@@ -12,7 +13,7 @@ export class AutoTaskOrchestrator {
   async evaluateAndApply(params: {
     tenantId: string;
     caseId: string;
-    apply: boolean; // retained for interface compatibility; not authoritative
+    apply: boolean;
   }) {
     const { tenantId, caseId } = params;
 
@@ -21,7 +22,11 @@ export class AutoTaskOrchestrator {
         where: { id: caseId, tenantId },
         select: {
           lifecycle: true,
-          currentTask: true,
+          currentTaskDefinition: {
+            select: {
+              key: true,
+            },
+          },
         },
       }),
       prisma.decision.count({
@@ -46,9 +51,12 @@ export class AutoTaskOrchestrator {
     const hasRoutingDecision = routingDecisionCount > 0;
     const hasDeliveryRecorded = deliveryCount > 0;
 
+    const currentTask: TaskId =
+      (caseRow.currentTaskDefinition?.key as TaskId) ?? TaskId.START;
+
     const result = autoTaskAdvance({
       lifecycle: caseRow.lifecycle,
-      currentTask: caseRow.currentTask,
+      currentTask,
       hasRoutingDecision,
       hasDeliveryRecorded,
     });
@@ -61,16 +69,12 @@ export class AutoTaskOrchestrator {
       result,
       context: {
         lifecycle: caseRow.lifecycle,
-        currentTask: caseRow.currentTask,
+        currentTask,
         hasRoutingDecision,
         hasDeliveryRecorded,
       },
     });
 
-    /**
-     * 🔐 Task advancement is an authoritative state transition.
-     * Policy decides WHAT. Gate decides WHETHER.
-     */
     if (result.kind === "ADVANCE_TASK") {
       await this.approvalGate.propose({
         tenantId,
@@ -79,7 +83,7 @@ export class AutoTaskOrchestrator {
         effect: {
           kind: "ADVANCE_TASK",
           payload: {
-            from: caseRow.currentTask,
+            from: currentTask,
             to: result.to,
           },
         },

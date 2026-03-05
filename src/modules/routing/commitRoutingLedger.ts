@@ -79,7 +79,14 @@ export async function commitRoutingLedger(
         data: {
           executionBodyId: routingResult.executionBodyId,
           intentCode,
+
+          // authoritative routing outcome
           routingOutcome: routingResult.outcome,
+
+          // explanation for why the router chose this body
+          routingReason: routingResult.reason,
+
+          // deterministic rule identifier used by the engine
           rule: routingResult.reason,
         },
       }),

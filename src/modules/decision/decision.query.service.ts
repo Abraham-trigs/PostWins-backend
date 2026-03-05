@@ -1,5 +1,5 @@
 // apps/backend/src/modules/decision/decision.query.service.ts
-// Decision explainability + ledger-backed lifecycle integrity validation.
+// Purpose: Decision explainability + ledger-backed lifecycle integrity validation (schema-aligned + type-safe)
 
 import { prisma } from "../../lib/prisma";
 import {
@@ -12,47 +12,51 @@ import { DecisionExplanation } from "./decision.types";
 import { deriveLifecycleFromLedger } from "../cases/deriveLifecycleFromLedger";
 
 /**
- * Phase 6 — Read Model Governance Layer
- *
- * Purpose:
- * - Explain authoritative decisions
- * - Replay ledger to deterministically derive lifecycle
- * - Detect projection drift without mutating state
- *
- * Constraints:
- * - Read-only
- * - Deterministic
- * - No inference
- * - No transactional side effects
- *
- * This service is an integrity boundary.
+ * ============================================================
+ * Assumptions
+ * ------------------------------------------------------------
+ * - Prisma schema exactly matches provided schema.prisma
+ * - Decision.supersededAt is nullable (Date | null)
+ * - Decision.intentContext is Json | null
+ * - deriveLifecycleFromLedger() is deterministic and pure
+ * - Service is READ ONLY
+ * ============================================================
  */
 
 export class DecisionQueryService {
-  /* -------------------------------------------------------------------------- */
-  /* Internal Mapper — Explicit projection to stable DTO                       */
-  /* -------------------------------------------------------------------------- */
+  ////////////////////////////////////////////////////////////////
+  // Mapper (strict DTO projection)
+  ////////////////////////////////////////////////////////////////
 
   private toDecisionExplanation(decision: Decision): DecisionExplanation {
     return {
       decisionId: decision.id,
       decisionType: decision.decisionType,
+
       authoritative: decision.supersededAt === null,
-      supersededAt: decision.supersededAt ?? undefined,
+
+      // FIX: must return null not undefined
+      supersededAt: decision.supersededAt ?? null,
+
       actorKind: decision.actorKind,
+
       actorUserId: decision.actorUserId ?? undefined,
+
       decidedAt: decision.decidedAt,
+
       reason: decision.reason ?? undefined,
+
+      // FIX: ensure Record<string, unknown> | null | undefined
       intentContext:
         decision.intentContext !== null
-          ? (decision.intentContext as unknown)
+          ? (decision.intentContext as Record<string, unknown>)
           : undefined,
     };
   }
 
-  /* -------------------------------------------------------------------------- */
-  /* Q1 — Authoritative Decision                                                */
-  /* -------------------------------------------------------------------------- */
+  ////////////////////////////////////////////////////////////////
+  // Q1 — Authoritative Decision
+  ////////////////////////////////////////////////////////////////
 
   async getAuthoritativeDecision(params: {
     tenantId: string;
@@ -72,9 +76,9 @@ export class DecisionQueryService {
     return decision ? this.toDecisionExplanation(decision) : null;
   }
 
-  /* -------------------------------------------------------------------------- */
-  /* Q2 — Decision Chain (Supersession History)                                 */
-  /* -------------------------------------------------------------------------- */
+  ////////////////////////////////////////////////////////////////
+  // Q2 — Decision Chain
+  ////////////////////////////////////////////////////////////////
 
   async getDecisionChain(params: {
     tenantId: string;
@@ -93,9 +97,9 @@ export class DecisionQueryService {
     return decisions.map((d) => this.toDecisionExplanation(d));
   }
 
-  /* -------------------------------------------------------------------------- */
-  /* Q3 — Lifecycle Explanation + Projection Drift Detection                    */
-  /* -------------------------------------------------------------------------- */
+  ////////////////////////////////////////////////////////////////
+  // Q3 — Lifecycle Explanation + Drift Detection
+  ////////////////////////////////////////////////////////////////
 
   async explainLifecycle(params: { tenantId: string; caseId: string }) {
     const caseRow = await prisma.case.findFirst({
@@ -110,7 +114,10 @@ export class DecisionQueryService {
       throw new Error("Case not found");
     }
 
-    // Replay immutable ledger facts (ordered ASC for deterministic projection)
+    ////////////////////////////////////////////////////////////////
+    // Ledger Replay (deterministic projection)
+    ////////////////////////////////////////////////////////////////
+
     const ledgerEvents = await prisma.ledgerCommit.findMany({
       where: {
         tenantId: params.tenantId,
@@ -128,6 +135,10 @@ export class DecisionQueryService {
 
     const drift = derivedLifecycle !== caseRow.lifecycle;
 
+    ////////////////////////////////////////////////////////////////
+    // Causal decision
+    ////////////////////////////////////////////////////////////////
+
     const decision = await prisma.decision.findFirst({
       where: {
         tenantId: params.tenantId,
@@ -140,14 +151,14 @@ export class DecisionQueryService {
     return {
       lifecycle: caseRow.lifecycle,
       ledgerDerivedLifecycle: derivedLifecycle,
-      drift, // true = projection inconsistency
+      drift,
       causedByDecision: decision ? this.toDecisionExplanation(decision) : null,
     };
   }
 
-  /* -------------------------------------------------------------------------- */
-  /* Q4 — Immutable Ledger Trail                                                */
-  /* -------------------------------------------------------------------------- */
+  ////////////////////////////////////////////////////////////////
+  // Q4 — Ledger Trail
+  ////////////////////////////////////////////////////////////////
 
   async getLedgerTrail(params: { tenantId: string; caseId: string }) {
     return prisma.ledgerCommit.findMany({
@@ -159,9 +170,9 @@ export class DecisionQueryService {
     });
   }
 
-  /* -------------------------------------------------------------------------- */
-  /* Counterfactual — Read-Only Simulation Record                               */
-  /* -------------------------------------------------------------------------- */
+  ////////////////////////////////////////////////////////////////
+  // Counterfactual
+  ////////////////////////////////////////////////////////////////
 
   async getRoutingCounterfactual(params: { tenantId: string; caseId: string }) {
     return prisma.counterfactualRecord.findFirst({
@@ -174,37 +185,45 @@ export class DecisionQueryService {
   }
 }
 
-/*
-Architectural Position
-----------------------
-This layer governs read-side truth validation.
-
-The lifecycle stored on Case is a projection.
-The ledger is the source of truth.
-This service proves the projection still matches the source.
-
-Non-Goals
----------
-- No projection repair
-- No write-path coupling
-- No hidden side effects
-
-Operational Model
------------------
-Drift detection enables:
-- Observability alerts
-- Background reconciliation jobs
-- Safe governance audits
-- Horizontal read scaling
-
-Failure Behavior
-----------------
-If drift is true:
-- The system is still operational.
-- The ledger remains canonical.
-- Repair must occur in a separate reconciliation workflow.
-
-Ownership
----------
-Governance / Read-model integrity boundary.
-*/
+/**
+ * ============================================================
+ * Design reasoning
+ * ------------------------------------------------------------
+ * Fixes strict typing mismatches between Prisma model and
+ * DecisionExplanation DTO. Prisma uses Date | null and Json | null,
+ * while DTO expects controlled union types. Mapping normalizes this.
+ *
+ * ============================================================
+ * Structure
+ * ------------------------------------------------------------
+ * - DTO mapper
+ * - Authoritative decision query
+ * - Decision chain query
+ * - Lifecycle explainability
+ * - Ledger trail
+ * - Counterfactual lookup
+ *
+ * ============================================================
+ * Implementation guidance
+ * ------------------------------------------------------------
+ * Used by:
+ * - decision.query.controller.ts
+ * - explain.case.Controller.ts
+ * - governance monitoring
+ *
+ * Example:
+ *
+ * const service = new DecisionQueryService()
+ * const result = await service.getAuthoritativeDecision({
+ *   tenantId,
+ *   caseId,
+ *   decisionType: DecisionType.ROUTING
+ * })
+ *
+ * ============================================================
+ * Scalability insight
+ * ------------------------------------------------------------
+ * Ledger replay is O(n). For large ledgers add snapshot
+ * checkpoints every N events to avoid full replay.
+ * ============================================================
+ */

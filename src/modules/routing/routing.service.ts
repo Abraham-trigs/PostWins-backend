@@ -35,7 +35,9 @@ export class RoutingService {
    * - Deterministic
    * - Idempotent
    * - Ledger commit atomic
+   * fallback
    */
+
   async routeCase(input: unknown) {
     const { tenantId, caseId, intentCode } = RouteCaseSchema.parse(input);
 
@@ -44,9 +46,12 @@ export class RoutingService {
       // 1️⃣ Ensure case exists
       ////////////////////////////////////////////////////////////////
 
-      await tx.case.findFirstOrThrow({
+      const caseRow = await tx.case.findFirstOrThrow({
         where: { id: caseId, tenantId },
-        select: { id: true },
+        select: {
+          id: true,
+          originExecutionBodyId: true, // ← new
+        },
       });
 
       ////////////////////////////////////////////////////////////////
@@ -93,14 +98,16 @@ export class RoutingService {
         },
       }));
 
-      const fallback = bodies.find((b) => b.isFallback === true);
-
+      const fallback = [...bodies]
+        .filter((b) => b.isFallback === true)
+        .sort((a, b) => a.id.localeCompare(b.id))[0];
       ////////////////////////////////////////////////////////////////
       // 5️⃣ Canonical routing computation
       ////////////////////////////////////////////////////////////////
 
       const result = computeRouting({
         intentCode,
+        originExecutionBodyId: caseRow.originExecutionBodyId ?? undefined,
         candidateExecutionBodies: candidates,
         fallbackExecutionBodyId: fallback?.id,
       });

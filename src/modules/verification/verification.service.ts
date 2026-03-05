@@ -1,20 +1,56 @@
-// src/modules/verification/verification.service.ts
+// filepath: apps/backend/src/modules/verification/verification.service.ts
+// Purpose: Record verification votes, enforce authorization + invariants, commit authoritative ledger facts, and trigger decisions.
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// Verification is governance: votes must be durable, auditable, and replayable.
+// This service enforces:
+// - execution completion invariant
+// - verifier role authorization via requiredRoles
+// - duplicate vote prevention
+// - ledger fact emission through the single constitutional commit entrypoint (commitLedgerEvent)
+// - decision orchestration upon consensus (no UI-driven lifecycle mutation)
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// - VerificationService
+//   - getVerificationRecordById()
+//   - recordVerification()
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// - Always call recordVerification() inside HTTP controller with idempotencyGuard.
+// - Ensure VerificationRequestService creates requiredRoles before voting begins.
+// - Ledger commits must go through commitLedgerEvent (single entrypoint), not LedgerService.appendEntry.
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// Centralizing commitLedgerEvent usage allows adding tracing, metrics,
+// and additional ledger invariants without touching each domain service.
+// You can extend quorum logic (e.g., weighted roles, stake, conflict disclosures) here safely.
 
 import { prisma } from "@/lib/prisma";
-import { LedgerService } from "@/modules/intake/ledger/ledger.service";
+import { z } from "zod";
+
 import { buildAuthorityEnvelopeV1 } from "@/modules/intake/ledger/authorityEnvelope";
+import { commitLedgerEvent } from "@/modules/intake/ledger/commitLedgerEvent";
+
 import {
-  VerificationStatus,
   ActorKind,
-  VerificationRecord,
+  DecisionType,
   ExecutionStatus,
   LedgerEventType,
   Prisma,
-  DecisionType,
+  VerificationRecord,
+  VerificationStatus,
 } from "@prisma/client";
+
 import { LifecycleInvariantViolationError } from "@/modules/cases/case.errors";
 import { DecisionService } from "@/modules/decision/decision.service";
-import { z } from "zod";
 
 ////////////////////////////////////////////////////////////////
 // Validation
@@ -24,7 +60,7 @@ const RecordVerificationSchema = z.object({
   verificationRecordId: z.string().uuid(),
   verifierUserId: z.string().uuid(),
   status: z.nativeEnum(VerificationStatus),
-  note: z.string().optional(),
+  note: z.string().max(4000).optional(),
 });
 
 type VerificationResult = {
@@ -38,7 +74,8 @@ type VerificationResult = {
 
 export class VerificationService {
   constructor(
-    private ledger: LedgerService,
+    // NOTE: LedgerService is intentionally not injected here anymore.
+    // All commits must go through commitLedgerEvent to prevent API drift.
     private decisionService: DecisionService,
   ) {}
 
@@ -69,23 +106,16 @@ export class VerificationService {
         },
       });
 
-      if (!record) {
-        throw new Error("Verification record not found");
-      }
-
-      if (record.consensusReached) {
+      if (!record) throw new Error("Verification record not found");
+      if (record.consensusReached)
         throw new Error("Verification already finalized");
-      }
 
       ////////////////////////////////////////////////////////////////
-      // 2️⃣ Execution invariant
+      // 2️⃣ Execution invariant (must be completed)
       ////////////////////////////////////////////////////////////////
 
       const execution = await tx.execution.findFirst({
-        where: {
-          caseId: record.caseId,
-          tenantId: record.tenantId,
-        },
+        where: { caseId: record.caseId, tenantId: record.tenantId },
         select: { status: true },
       });
 
@@ -96,7 +126,7 @@ export class VerificationService {
       }
 
       ////////////////////////////////////////////////////////////////
-      // 3️⃣ Role authorization
+      // 3️⃣ Role authorization (verifier must hold one of required roles)
       ////////////////////////////////////////////////////////////////
 
       const verifierRoles = await tx.userRole.findMany({
@@ -112,10 +142,8 @@ export class VerificationService {
       const authorized = verifierRoles.some((ur) =>
         allowedRoles.has(ur.role.key),
       );
-
-      if (!authorized) {
+      if (!authorized)
         throw new Error("User not authorized to verify this claim");
-      }
 
       ////////////////////////////////////////////////////////////////
       // 4️⃣ Prevent duplicate vote
@@ -124,10 +152,7 @@ export class VerificationService {
       const alreadyVoted = record.receivedVerifications.some(
         (v) => v.verifierUserId === verifierUserId,
       );
-
-      if (alreadyVoted) {
-        throw new Error("Verifier has already voted");
-      }
+      if (alreadyVoted) throw new Error("Verifier has already voted");
 
       ////////////////////////////////////////////////////////////////
       // 5️⃣ Persist vote
@@ -144,17 +169,21 @@ export class VerificationService {
       });
 
       ////////////////////////////////////////////////////////////////
-      // 6️⃣ Ledger — VERIFICATION_SUBMITTED (fact only)
+      // 6️⃣ Ledger — VERIFICATION_SUBMITTED (fact only) via commitLedgerEvent
       ////////////////////////////////////////////////////////////////
+      // AuthorityProof: keep minimal + deterministic. If you later want idempotency binding,
+      // pass idempotency meta from controller into recordVerification input.
 
-      await this.ledger.appendEntry(
+      await commitLedgerEvent(
         {
           tenantId: record.tenantId,
           caseId: record.caseId,
           eventType: LedgerEventType.VERIFICATION_SUBMITTED,
-          actorKind: ActorKind.HUMAN,
-          actorUserId: verifierUserId,
-          authorityProof: "VERIFICATION_VOTE",
+          actor: {
+            kind: ActorKind.HUMAN,
+            userId: verifierUserId,
+            authorityProof: `HUMAN:${verifierUserId}:VERIFICATION_VOTE`,
+          },
           payload: buildAuthorityEnvelopeV1({
             domain: "VERIFICATION",
             event: "VERIFICATION_SUBMITTED",
@@ -186,12 +215,16 @@ export class VerificationService {
         }),
       ]);
 
+      // NOTE: Currently quorum is “approvedCount >= requiredVerifiers”.
+      // rejectedCount is computed for future policy expansion (e.g., early fail thresholds).
+      void rejectedCount;
+
       if (approvedCount < record.requiredVerifiers) {
         return { consensusReached: false, record: null };
       }
 
       ////////////////////////////////////////////////////////////////
-      // 8️⃣ Finalize consensus (no lifecycle change)
+      // 8️⃣ Finalize consensus (no lifecycle change here)
       ////////////////////////////////////////////////////////////////
 
       const finalized = await tx.verificationRecord.update({
@@ -203,7 +236,7 @@ export class VerificationService {
       });
 
       ////////////////////////////////////////////////////////////////
-      // 9️⃣ Trigger authoritative decision
+      // 9️⃣ Trigger authoritative decision (state transitions live in decision domain)
       ////////////////////////////////////////////////////////////////
 
       await this.decisionService.applyDecision(
@@ -214,20 +247,26 @@ export class VerificationService {
           actorKind: ActorKind.HUMAN,
           actorUserId: verifierUserId,
           reason: "Verification consensus reached",
-          intentContext: {
-            verificationRecordId: record.id,
-          },
-          effect: {
-            kind: "EXECUTION_VERIFIED",
-          },
+          intentContext: { verificationRecordId: record.id },
+          effect: { kind: "EXECUTION_VERIFIED" },
         },
         tx,
       );
 
-      return {
-        consensusReached: true,
-        record: finalized,
-      };
+      return { consensusReached: true, record: finalized };
     });
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Example usage (service-level)
+////////////////////////////////////////////////////////////////
+/*
+const svc = new VerificationService(decisionService);
+await svc.recordVerification({
+  verificationRecordId,
+  verifierUserId,
+  status: VerificationStatus.APPROVED,
+  note: "Reviewed documents, looks valid.",
+});
+*/

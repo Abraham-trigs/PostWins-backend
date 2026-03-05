@@ -1,9 +1,3 @@
-// apps/backend/src/modules/routing/journey.service.ts
-// Stateless helper service.
-// No lifecycle mutation.
-// No in-memory persistence.
-// No governance authority.
-
 import { ExecutionBody, PostWin } from "@posta/core";
 
 export class JourneyService {
@@ -12,9 +6,9 @@ export class JourneyService {
   ////////////////////////////////////////////////////////////////
 
   public isBodyCapable(body: ExecutionBody, postWin: PostWin): boolean {
-    if (!postWin.sdgGoals?.length) return false;
+    if (!postWin.sdgGoal) return false;
 
-    return postWin.sdgGoals.every((goal) => body.capabilities.includes(goal));
+    return body.capabilities.includes(postWin.sdgGoal);
   }
 
   ////////////////////////////////////////////////////////////////
@@ -22,7 +16,14 @@ export class JourneyService {
   ////////////////////////////////////////////////////////////////
 
   public calculateProximity(body: ExecutionBody, postWin: PostWin): number {
-    if (!postWin.location || !body.location) return Infinity;
+    if (
+      !postWin.location ||
+      !body.location ||
+      postWin.location.lat == null ||
+      postWin.location.lng == null
+    ) {
+      return Infinity;
+    }
 
     return Math.sqrt(
       Math.pow(body.location.lat - postWin.location.lat, 2) +

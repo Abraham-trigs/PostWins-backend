@@ -1,25 +1,24 @@
 // apps/backend/src/modules/cases/cases.controller.ts
-// Purpose: List cases with authoritative lifecycle + latest message signal + stable composite cursor pagination (JWT + middleware derived tenant isolation).
+// Purpose: List cases with authoritative lifecycle + workflow pointer + latest message + stable cursor pagination.
 
 import type { Request, Response } from "express";
 import { prisma } from "../../lib/prisma";
 import { validate as isUuid } from "uuid";
-import type {
-  CaseListItem,
-  RoutingOutcome,
-  ListCasesResponse,
-} from "@posta/core";
+import type { ListCasesResponse } from "@posta/core";
+import {
+  mapCaseListItems,
+  type CaseListQueryRow,
+} from "../../shared/mappers/caseList.mapper";
 
 /* ============================================================
-   Design reasoning
+   Assumptions
    ------------------------------------------------------------
-   - Tenant is derived strictly from req.user (JWT middleware).
-   - Removes client-controlled X-Tenant-Id header (security hardening).
-   - Stable composite ordering: createdAt DESC, id DESC.
-   - Cursor uses unique id for safety.
-   - take = limit + 1 to detect next page.
-   - Explicit DTO mapping.
-   - ISO serialization at boundary.
+   - Case model uses `currentTaskDefinitionId`
+   - Relation name: currentTaskDefinition
+   - JWT middleware attaches req.user.tenantId
+   - Composite index exists:
+     @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)])
+   - CaseListItem DTO is defined in @posta/core
    ============================================================ */
 
 const DEFAULT_LIMIT = 20;
@@ -30,7 +29,7 @@ export async function listCases(
   res: Response<ListCasesResponse | { ok: false; error: string }>,
 ): Promise<Response<ListCasesResponse | { ok: false; error: string }>> {
   ////////////////////////////////////////////////////////////
-  // Auth (derived from JWT middleware)
+  // Auth
   ////////////////////////////////////////////////////////////
 
   const auth = (req as any).user;
@@ -65,7 +64,7 @@ export async function listCases(
   }
 
   ////////////////////////////////////////////////////////////
-  // Query (tenant isolated)
+  // Query (tenant isolated + workflow aligned)
   ////////////////////////////////////////////////////////////
 
   const rows = await prisma.case.findMany({
@@ -81,18 +80,27 @@ export async function listCases(
     select: {
       id: true,
       lifecycle: true,
-      currentTask: true,
       type: true,
       scope: true,
       sdgGoal: true,
       summary: true,
       createdAt: true,
       updatedAt: true,
+
+      currentTaskDefinitionId: true,
+      currentTaskDefinition: {
+        select: {
+          id: true,
+          label: true,
+        },
+      },
+
       routingDecisions: {
         orderBy: { decidedAt: "desc" },
         take: 1,
         select: { routingOutcome: true },
       },
+
       messages: {
         orderBy: { createdAt: "desc" },
         take: 1,
@@ -113,37 +121,10 @@ export async function listCases(
   const trimmed = hasMore ? rows.slice(0, limit) : rows;
 
   ////////////////////////////////////////////////////////////
-  // DTO mapping
+  // DTO mapping (strict boundary via shared mapper)
   ////////////////////////////////////////////////////////////
 
-  const cases: CaseListItem[] = trimmed.map((row) => {
-    const routingOutcome: RoutingOutcome =
-      (row.routingDecisions[0]?.routingOutcome as RoutingOutcome) ??
-      "UNASSIGNED";
-
-    const lastMessage =
-      row.messages[0] !== undefined
-        ? {
-            body: row.messages[0].body,
-            type: row.messages[0].type,
-            createdAt: row.messages[0].createdAt.toISOString(),
-          }
-        : null;
-
-    return {
-      id: row.id,
-      lifecycle: row.lifecycle,
-      currentTask: row.currentTask,
-      routingOutcome,
-      type: row.type,
-      scope: row.scope,
-      sdgGoal: row.sdgGoal,
-      summary: row.summary,
-      createdAt: row.createdAt.toISOString(),
-      updatedAt: row.updatedAt.toISOString(),
-      lastMessage,
-    };
-  });
+  const cases = mapCaseListItems(trimmed as CaseListQueryRow[]);
 
   const nextCursor =
     hasMore && trimmed.length > 0 ? trimmed[trimmed.length - 1].id : null;
@@ -163,20 +144,47 @@ export async function listCases(
 }
 
 /* ============================================================
+   Design reasoning
+   ------------------------------------------------------------
+   The controller now strictly orchestrates:
+   - Authentication
+   - Query normalization
+   - Tenant-isolated data retrieval
+   - Pagination control
+
+   All projection logic has been delegated to a shared mapper,
+   enforcing a clean separation between persistence and transport
+   contracts. This prevents DTO drift and duplicated mapping logic.
+   ============================================================ */
+
+/* ============================================================
    Structure
    ------------------------------------------------------------
-   - Auth via req.user (JWT middleware)
-   - Cursor + limit normalization
-   - Stable composite ordering
-   - Explicit DTO mapping
-   - Cursor metadata return
+   - Auth guard
+   - Query normalization
+   - Tenant-isolated Prisma query
+   - Stable cursor trim
+   - Shared DTO mapping layer
+   - Structured JSON response
+   ============================================================ */
+
+/* ============================================================
+   Implementation guidance
+   ------------------------------------------------------------
+   If additional fields are added to CaseListItem:
+   1. Update the Prisma select here.
+   2. Update CaseListQueryRow in the mapper.
+   3. Update mapCaseListItem().
+   The controller should never shape DTO fields directly.
    ============================================================ */
 
 /* ============================================================
    Scalability insight
    ------------------------------------------------------------
-   Ensure composite index exists:
-   @@index([tenantId, createdAt, id])
+   This structure allows:
+   - Swapping Prisma with a read-model cache later
+   - Moving to projection tables without API changes
+   - Centralized DTO evolution
 
-   Without it, pagination performance degrades under large tenants.
+   The controller remains stable even if storage changes.
    ============================================================ */

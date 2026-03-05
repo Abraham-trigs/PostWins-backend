@@ -5,6 +5,7 @@ import {
   PolicySimulationInput,
   PolicySimulationResult,
 } from "./simulation.types";
+import { TaskId } from "@prisma/client";
 
 export class PolicySimulationService {
   async simulate(
@@ -16,7 +17,9 @@ export class PolicySimulationService {
       where: { id: caseId, tenantId },
       select: {
         lifecycle: true,
-        currentTask: true,
+        currentTaskDefinition: {
+          select: { key: true },
+        },
       },
     });
 
@@ -24,16 +27,14 @@ export class PolicySimulationService {
       throw new Error("Case not found");
     }
 
+    const currentTask: TaskId =
+      (caseRow.currentTaskDefinition?.key as TaskId) ?? TaskId.START;
+
     const results: PolicySimulationResult[] = [];
 
-    /**
-     * 🔮 Simulation: Auto-task advancement
-     * Reuses the same pure policy logic as production.
-     * Hypothetical facts override absence, not reality.
-     */
     const taskResult = autoTaskAdvance({
       lifecycle: caseRow.lifecycle,
-      currentTask: caseRow.currentTask,
+      currentTask,
       hasRoutingDecision: hypotheticalFacts.routingOutcome === "MATCHED",
       hasDeliveryRecorded: !!hypotheticalFacts.deliveryRecorded,
     });
@@ -47,7 +48,7 @@ export class PolicySimulationService {
           ? {
               kind: "ADVANCE_TASK",
               details: {
-                from: caseRow.currentTask,
+                from: currentTask,
                 to: taskResult.to,
               },
             }

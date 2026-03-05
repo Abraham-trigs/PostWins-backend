@@ -7,7 +7,7 @@ import { assertUuid } from "@/utils/uuid";
 import { decodeCursor, encodeCursor } from "./cursor";
 
 ////////////////////////////////////////////////////////////////
-// Validation Schemas  findMany
+// Validation Schemas  findMany   kind: e.kind as any,
 ////////////////////////////////////////////////////////////////
 
 export const NavigationContextSchema = z.object({
@@ -155,8 +155,8 @@ export class MessageService {
         await tx.evidence.createMany({
           data: evidence.map((e) => ({
             tenantId,
-            timelineEntryId: createdMessage.id,
-            kind: e.kind as any,
+            messageId: createdMessage.id,
+            kind: e.kind.toUpperCase() as any,
             storageKey: e.storageKey,
             sha256: e.sha256,
             mimeType: e.mimeType ?? null,

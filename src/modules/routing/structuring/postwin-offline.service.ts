@@ -1,8 +1,4 @@
 // filepath: apps/backend/src/modules/routing/structuring/postwin-offline.service.ts
-// Purpose: Offline intake queue for Case creation replay.
-// Transport-only. No lifecycle mutation.
-// No verification logic.
-// No ledger logic.
 
 import { IntakeService } from "../../intake/intake.service";
 import { PostWinRoutingService } from "./postwin-routing.service";
@@ -26,7 +22,7 @@ export class PostWinOfflineService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Enqueue raw intake command (transport only)
+  // Enqueue raw intake command
   ////////////////////////////////////////////////////////////////
 
   async enqueueIntake(params: OfflineIntakeItem) {
@@ -51,7 +47,7 @@ export class PostWinOfflineService {
       for (const item of itemsToSync) {
         try {
           ////////////////////////////////////////////////////////////////
-          // 1️⃣ Intake (domain command)
+          // 1️⃣ Intake processing
           ////////////////////////////////////////////////////////////////
 
           const intakeResult = await this.intake.handleIntake(
@@ -60,33 +56,40 @@ export class PostWinOfflineService {
           );
 
           ////////////////////////////////////////////////////////////////
-          // 2️⃣ Projection-only routing (no lifecycle mutation)
+          // 2️⃣ Minimal projection (transport-safe PostWin stub)
           ////////////////////////////////////////////////////////////////
 
           const projectedPostWin: PostWin = {
-            id: intakeResult.id ?? "offline_projection",
-            beneficiaryId: item.beneficiaryId,
-            taskId: intakeResult.taskId,
+            id: "offline_projection",
+            referenceCode: "OFFLINE",
+            status: "INTAKED",
+            lifecycle: "INTAKE",
+            type: intakeResult.intent,
             mode: intakeResult.mode,
             scope: intakeResult.scope,
-            intent: intakeResult.intent,
-            sdgGoals: intakeResult.sdgGoals ?? [],
-            routingStatus: "PENDING",
+            beneficiaryId: item.beneficiaryId,
+            routingStatus: "UNASSIGNED",
+            summary: intakeResult.description,
+            createdAt: new Date().toISOString(),
           };
+
+          ////////////////////////////////////////////////////////////////
+          // 3️⃣ Routing projection
+          ////////////////////////////////////////////////////////////////
 
           const availableBodies: ExecutionBody[] = [];
 
           await this.router.processPostWin(
             projectedPostWin,
             availableBodies,
-            intakeResult.sdgGoals ?? [],
+            projectedPostWin.sdgGoal ? [projectedPostWin.sdgGoal] : [],
           );
 
           console.log(`Synced intake for beneficiary ${item.beneficiaryId}`);
         } catch (err) {
           console.error(`Failed to sync intake for ${item.beneficiaryId}`, err);
 
-          // Safe requeue
+          // Requeue safely
           this.queue.push(item);
         }
       }

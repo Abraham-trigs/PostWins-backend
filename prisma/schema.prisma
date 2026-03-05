@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  model TaskDefinition 
+//  model ledgerCommit
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -711,10 +711,10 @@ model BeneficiaryProfile {
   payeeType         String?
   accountName       String?
   accountNumber     String?
-  bankName          String?
+  decisionName          String?
   mobileMoneyNumber String?
   mobileNetwork     String? // Added for MoMo API integration
-  bankable          Boolean? @default(false)
+  decisionable          Boolean? @default(false)
 
   // Compliance
   consentToDataStorage  Boolean? @default(false)
@@ -744,6 +744,10 @@ model Case {
   tenantId      String  @db.Uuid
   authorUserId  String  @db.Uuid
   beneficiaryId String? @db.Uuid
+
+  // Organization that originated the case (used by routing engine)
+  originExecutionBodyId String? @db.Uuid
+
   referenceCode String
 
   mode  OperationalMode
@@ -773,6 +777,10 @@ model Case {
 
   tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   author      User         @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  // NEW: origin organization relation
+  originExecutionBody ExecutionBody? @relation("CaseOriginExecutionBody", fields: [originExecutionBodyId], references: [id], onDelete: SetNull)
+
   beneficiary Beneficiary? @relation("CaseBeneficiary", fields: [beneficiaryId], references: [id], onDelete: SetNull)
 
   approvalRequests ApprovalRequest[]
@@ -800,6 +808,9 @@ model Case {
   @@index([beneficiaryId, createdAt])
   @@index([tenantId, currentTaskDefinitionId])
   @@index([tenantId, lifecycle, status])
+
+  // NEW: routing optimization
+  @@index([tenantId, originExecutionBodyId])
 }
 
 ////////////////////////////////////////////////////////////////
@@ -870,6 +881,8 @@ model ExecutionBody {
 
   assignments      CaseAssignment[]
   routingDecisions RoutingDecision[]
+
+  originatedCases Case[] @relation("CaseOriginExecutionBody")
 
   members ExecutionBodyMember[]
 
@@ -1037,21 +1050,21 @@ model Decision {
 
   decisionType DecisionType
   actorKind    ActorKind
-  actorUserId  String?      @db.Uuid
+  actorUserId  String? @db.Uuid
 
   reason        String?
   intentContext Json?
   decidedAt     DateTime @default(now())
 
-  supersedesDecisionId String?   @unique @db.Uuid
+  supersedesDecisionId String? @db.Uuid
   supersededAt         DateTime?
 
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
-  supersedes   Decision? @relation("DecisionSupersession", fields: [supersedesDecisionId], references: [id], onDelete: Restrict)
-  supersededBy Decision? @relation("DecisionSupersession")
+  supersedes   Decision?  @relation("DecisionSupersession", fields: [supersedesDecisionId], references: [id], onDelete: Restrict)
+  supersededBy Decision[] @relation("DecisionSupersession")
 
   @@index([caseId, decidedAt])
   @@index([tenantId, decisionType, decidedAt])
@@ -1100,6 +1113,7 @@ model LedgerCommit {
   actor  User?  @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, ts])
+  @@unique([tenantId, requestId])
   @@index([tenantId, caseId, ts])
   @@index([tenantId, ts])
   @@index([caseId, ts])

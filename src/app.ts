@@ -25,6 +25,7 @@ import authRoutes from "./modules/auth/auth.routes";
 import { evidenceRoutes } from "./modules/evidence";
 import { getCurrentUser } from "./modules/auth/auth.controller";
 import messageRoutes from "./modules/message/message.routes";
+import disbursementRoutes from "./modules/disbursement/disbursement.routes";
 
 import { withRequestContext } from "@/lib/observability/request-context";
 import { log } from "@/lib/observability/logger";
@@ -95,6 +96,8 @@ app.use(
       "Authorization",
       "X-Tenant-Id",
       "X-Request-Id",
+      "X-Actor-Id",
+      "X-Device-Id",
     ],
   }),
 );
@@ -186,6 +189,7 @@ app.use("/api", decisionQueryRoutes);
 app.use("/api/execution", executionRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/evidence", evidenceRoutes);
+app.use("/api/disbursement", disbursementRoutes);
 
 ////////////////////////////////////////////////////////////////
 // 8. Error Handling

@@ -6,10 +6,12 @@ import type { RoutingResult } from "./routing.types";
 
 export function computeRouting({
   intentCode,
+  originExecutionBodyId,
   candidateExecutionBodies,
   fallbackExecutionBodyId,
 }: {
   intentCode: string;
+  originExecutionBodyId?: string;
   candidateExecutionBodies: Array<{
     id: string;
     supportsIntent: (intentCode: string) => boolean;
@@ -24,8 +26,26 @@ export function computeRouting({
     a.id.localeCompare(b.id),
   );
 
+  const byId = new Map(sorted.map((b) => [b.id, b]));
+
+  const origin = originExecutionBodyId
+    ? byId.get(originExecutionBodyId)
+    : undefined;
+
   ////////////////////////////////////////////////////////////////
-  // 2️⃣ Attempt match
+  // 2️⃣ Prefer originator if capable
+  ////////////////////////////////////////////////////////////////
+
+  if (origin && origin.supportsIntent(intentCode)) {
+    return {
+      executionBodyId: origin.id,
+      outcome: RoutingOutcome.MATCHED,
+      reason: "ORIGINATOR_CAPABLE",
+    };
+  }
+
+  ////////////////////////////////////////////////////////////////
+  // 3️⃣ Attempt normal capability match
   ////////////////////////////////////////////////////////////////
 
   const matched = sorted.find((b) => b.supportsIntent(intentCode));
@@ -39,7 +59,7 @@ export function computeRouting({
   }
 
   ////////////////////////////////////////////////////////////////
-  // 3️⃣ Fallback logic
+  // 4️⃣ Fallback logic
   ////////////////////////////////////////////////////////////////
 
   if (!fallbackExecutionBodyId) {

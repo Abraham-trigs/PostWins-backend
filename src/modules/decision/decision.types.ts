@@ -1,11 +1,10 @@
 // apps/backend/src/modules/decision/decision.types.ts
-// Purpose: Canonical decision input + explanation contracts aligned strictly with Prisma schema.
 
 import { ActorKind, DecisionType } from "@prisma/client";
 import { z } from "zod";
 
 ////////////////////////////////////////////////////////////////
-// Decision Effect Schema (Authoritative Effect Contract)
+// Decision Effect Schema
 ////////////////////////////////////////////////////////////////
 
 export const DecisionEffectSchema = z.discriminatedUnion("kind", [
@@ -31,11 +30,11 @@ export const ApplyDecisionSchema = z
     actorUserId: z.string().uuid().optional(),
 
     reason: z.string().trim().min(1).optional(),
-    intentContext: z.record(z.unknown()).optional(),
+
+    intentContext: z.record(z.string(), z.unknown()).optional(),
 
     supersedesDecisionId: z.string().uuid().optional(),
 
-    // 🔑 Required authoritative effect
     effect: DecisionEffectSchema,
   })
   .superRefine((data, ctx) => {
@@ -63,7 +62,7 @@ export const ApplyDecisionSchema = z
 export type ApplyDecisionParams = z.infer<typeof ApplyDecisionSchema>;
 
 ////////////////////////////////////////////////////////////////
-// Read Model (DTO Only)
+// Read Model
 ////////////////////////////////////////////////////////////////
 
 export interface DecisionExplanation {
@@ -71,15 +70,15 @@ export interface DecisionExplanation {
   decisionType: DecisionType;
 
   authoritative: boolean;
-  supersededAt?: Date;
+  supersededAt: Date | null;
 
   actorKind: ActorKind;
-  actorUserId?: string;
+  actorUserId?: string | null;
 
   decidedAt: Date;
-  reason?: string;
+  reason?: string | null;
 
-  intentContext?: unknown;
+  intentContext?: Record<string, unknown> | null;
 }
 
 ////////////////////////////////////////////////////////////////

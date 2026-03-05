@@ -1,4 +1,18 @@
 import { prisma } from "../../lib/prisma";
+import { Prisma } from "@prisma/client";
+
+/**
+ * Ensures the input is valid JSON and compatible with Prisma JSON fields.
+ */
+function normalizeJson(input: unknown): Prisma.InputJsonValue | undefined {
+  if (input === undefined) return undefined;
+
+  try {
+    return JSON.parse(JSON.stringify(input)) as Prisma.InputJsonValue;
+  } catch {
+    throw new Error("Invalid JSON payload");
+  }
+}
 
 /**
  * PolicyEvaluationService
@@ -19,16 +33,21 @@ export class PolicyEvaluationService {
     policyKey: string;
     version: string;
     result: unknown;
-    context?: unknown; // ← matches schema Json?
+    context?: unknown;
   }) {
     return prisma.policyEvaluation.create({
       data: {
         tenantId: params.tenantId,
         caseId: params.caseId,
         policyKey: params.policyKey,
-        version: params.version, // ✅ matches schema
-        result: params.result as any, // ✅ Json
-        context: params.context as any, // ✅ Json?
+        version: params.version,
+
+        result: normalizeJson(params.result) as Prisma.JsonObject,
+
+        context:
+          params.context === undefined
+            ? undefined
+            : normalizeJson(params.context),
       },
     });
   }

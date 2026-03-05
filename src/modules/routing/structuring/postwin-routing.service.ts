@@ -105,7 +105,7 @@ export class PostWinRoutingService extends EventEmitter {
       return {
         ...postWin,
         routingStatus: "BLOCKED",
-        notes: `Cannot perform task ${taskId} before completing required dependencies.`,
+        summary: `Cannot perform task ${taskId} before completing required dependencies.`,
       };
     }
 

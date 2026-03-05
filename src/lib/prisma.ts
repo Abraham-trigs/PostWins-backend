@@ -1,8 +1,24 @@
-// src/lib/prisma.ts
-// Prisma client singleton with domain guard extensions and stable Transaction typing
+// filepath: apps/backend/src/lib/prisma.ts
+// Purpose: Prisma client singleton with strict domain lifecycle enforcement.
+
+////////////////////////////////////////////////////////////////
+// Assumptions
+////////////////////////////////////////////////////////////////
+// - Case.lifecycle MUST only change via transitionCaseLifecycleWithLedger()
+// - All other writes must be blocked
+// - Internal domain services may use prismaUnsafe
+// - No unsafe casts allowed
+
+////////////////////////////////////////////////////////////////
+// Imports
+////////////////////////////////////////////////////////////////
 
 import { PrismaClient } from "@prisma/client";
 import type { PrismaClient as PrismaClientType } from "@prisma/client";
+
+////////////////////////////////////////////////////////////////
+// Global Singleton Declaration
+////////////////////////////////////////////////////////////////
 
 declare global {
   // eslint-disable-next-line no-var
@@ -10,7 +26,7 @@ declare global {
 }
 
 ////////////////////////////////////////////////////////////////
-// Prisma Base Client
+// Base Prisma Client (UNGUARDED)
 ////////////////////////////////////////////////////////////////
 
 const basePrisma = new PrismaClient({
@@ -18,29 +34,58 @@ const basePrisma = new PrismaClient({
 });
 
 ////////////////////////////////////////////////////////////////
-// Domain Guard Extensions
+// Lifecycle Enforcement Guard
 ////////////////////////////////////////////////////////////////
-//
-// DOMAIN INVARIANTS (DO NOT VIOLATE):
-// - Case.lifecycle is AUTHORITATIVE and governed by transition helpers
-// - Case.status is advisory / derived (UI + ops only)
-// - RoutingOutcome is decision metadata, not lifecycle
-//
-// IMPORTANT:
-// Lifecycle mutation enforcement is handled at the domain layer
-// (transitionCaseLifecycleWithLedger). We no longer warn at ORM level
-// because Prisma middleware cannot reliably distinguish authorized writes.
-//
+
+function enforceLifecycleLaw(data: unknown) {
+  if (!data || typeof data !== "object") return;
+
+  if ("lifecycle" in (data as Record<string, unknown>)) {
+    throw new Error(
+      "Case.lifecycle MUST NOT be written directly. Use transitionCaseLifecycleWithLedger().",
+    );
+  }
+}
+
+////////////////////////////////////////////////////////////////
+// Advisory Guards
+////////////////////////////////////////////////////////////////
+
+function warnOnCaseAdvisoryWrite(data: unknown) {
+  if (!data || typeof data !== "object") return;
+
+  if ("status" in (data as Record<string, unknown>)) {
+    console.warn(
+      "[domain-warning] Direct write to Case.status detected.",
+      "Case.status must be derived from Case.lifecycle.",
+    );
+  }
+}
+
+function warnOnRoutingOutcomeWrite(data: unknown) {
+  if (!data || typeof data !== "object") return;
+
+  if ("routingOutcome" in (data as Record<string, unknown>)) {
+    console.warn(
+      "[domain-warning] Direct write to RoutingDecision.routingOutcome detected.",
+    );
+  }
+}
+
+////////////////////////////////////////////////////////////////
+// Guarded Prisma Client
 ////////////////////////////////////////////////////////////////
 
 const prismaWithGuards = basePrisma.$extends({
   query: {
     case: {
       async update({ args, query }) {
+        enforceLifecycleLaw(args.data);
         warnOnCaseAdvisoryWrite(args.data);
         return query(args);
       },
       async updateMany({ args, query }) {
+        enforceLifecycleLaw(args.data);
         warnOnCaseAdvisoryWrite(args.data);
         return query(args);
       },
@@ -59,62 +104,40 @@ const prismaWithGuards = basePrisma.$extends({
 });
 
 ////////////////////////////////////////////////////////////////
-// Case.status Guard (Advisory Field)
-////////////////////////////////////////////////////////////////
-//
-// Case.status must be derived from Case.lifecycle.
-// Direct writes are discouraged.
-//
-////////////////////////////////////////////////////////////////
-
-function warnOnCaseAdvisoryWrite(data: unknown) {
-  if (!data || typeof data !== "object") return;
-
-  const keys = Object.keys(data as Record<string, unknown>);
-
-  if (keys.includes("status")) {
-    console.warn(
-      "[domain-warning] Direct write to Case.status detected.",
-      "Case.status is NON-AUTHORITATIVE and must be derived from Case.lifecycle.",
-      "Use deriveCaseStatus(...) and centralized helpers.",
-    );
-  }
-}
-
-////////////////////////////////////////////////////////////////
-// RoutingOutcome Guard
-////////////////////////////////////////////////////////////////
-//
-// RoutingOutcome is decision metadata, not lifecycle state.
-//
-////////////////////////////////////////////////////////////////
-
-function warnOnRoutingOutcomeWrite(data: unknown) {
-  if (!data || typeof data !== "object") return;
-
-  const keys = Object.keys(data as Record<string, unknown>);
-
-  if (keys.includes("routingOutcome")) {
-    console.warn(
-      "[domain-warning] Direct write to RoutingDecision.routingOutcome detected.",
-      "RoutingOutcome is decision metadata, not lifecycle state.",
-    );
-  }
-}
-
-////////////////////////////////////////////////////////////////
-// Prisma Singleton Export
-////////////////////////////////////////////////////////////////
-//
-// $extends() changes inferred type and breaks transaction overloads.
-// We cast back to PrismaClientType for stability.
-//
+// Public Export (Guarded Client)
 ////////////////////////////////////////////////////////////////
 
 export const prisma: PrismaClientType =
-  (globalThis.prisma as PrismaClientType | undefined) ??
-  (prismaWithGuards as unknown as PrismaClientType);
+  globalThis.prisma ?? (prismaWithGuards as PrismaClientType);
+
+////////////////////////////////////////////////////////////////
+// Internal Unsafe Client (Domain Only)
+////////////////////////////////////////////////////////////////
+//
+// IMPORTANT:
+// Only lifecycle domain services may import this.
+// Never use in controllers or general services.
+//
+
+export const prismaUnsafe: PrismaClientType = basePrisma;
 
 if (process.env.NODE_ENV !== "production") {
   globalThis.prisma = prisma;
 }
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+//
+// - prisma: protected client for all services
+// - prismaUnsafe: internal-only client for governance services
+// - No bypass flags
+// - No schema hacks
+// - Structural enforcement at ORM boundary
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+//
+// As system grows, accidental lifecycle writes remain impossible.
+// Governance safety is enforced structurally, not culturally.

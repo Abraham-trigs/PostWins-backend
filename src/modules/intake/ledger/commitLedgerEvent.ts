@@ -1,11 +1,39 @@
-// apps/backend/src/modules/intake/ledger/commitLedgerEvent.ts
-// Canonical functional ledger entry point.
-// Wraps LedgerService.commit() with structured actor input,
-// transaction support, and stable typing.
+// filepath: apps/backend/src/modules/intake/ledger/commitLedgerEvent.ts
+// Purpose: Canonical functional ledger entry point with strict validation, JSON normalization,
+// and safe Prisma transaction support.
+
+////////////////////////////////////////////////////////////////
+// Assumptions
+////////////////////////////////////////////////////////////////
+// - Prisma schema includes LedgerCommit model using JSON columns
+// - LedgerService.appendEntry persists the authoritative ledger record
+// - All domain modules must call this wrapper instead of LedgerService directly
+
+////////////////////////////////////////////////////////////////
+// Imports
+////////////////////////////////////////////////////////////////
 
 import { LedgerService } from "./ledger.service";
 import { Prisma, LedgerEventType, ActorKind } from "@prisma/client";
 import { z } from "zod";
+
+////////////////////////////////////////////////////////////////
+// Helper: JSON normalization (prevents unsafe Prisma JSON writes)
+////////////////////////////////////////////////////////////////
+
+/**
+ * Ensures value is JSON-serializable before sending to Prisma.
+ * Prevents runtime failures caused by Date, BigInt, Map, functions, etc.
+ */
+function normalizeJson(input: unknown): Prisma.InputJsonValue | null {
+  if (input === undefined || input === null) return null;
+
+  try {
+    return JSON.parse(JSON.stringify(input));
+  } catch {
+    throw new Error("Ledger payload must be JSON serializable");
+  }
+}
 
 ////////////////////////////////////////////////////////////////
 // Actor Schema (Structured Authority)
@@ -26,10 +54,14 @@ export type LedgerActor = z.infer<typeof ActorSchema>;
 const CommitLedgerEventSchema = z.object({
   tenantId: z.string().uuid(),
   caseId: z.string().uuid().nullable().optional(),
+
   eventType: z.nativeEnum(LedgerEventType),
+
   actor: ActorSchema,
+
   intentContext: z.unknown().optional(),
   payload: z.unknown().optional(),
+
   supersedesCommitId: z.string().uuid().nullable().optional(),
 });
 
@@ -64,15 +96,21 @@ export async function commitLedgerEvent(
     {
       tenantId: parsed.tenantId,
       caseId: parsed.caseId ?? null,
+
       eventType: parsed.eventType,
+
       actorKind: parsed.actor.kind,
       actorUserId:
         parsed.actor.kind === ActorKind.HUMAN
           ? (parsed.actor.userId ?? null)
           : null,
+
       authorityProof: parsed.actor.authorityProof,
-      intentContext: parsed.intentContext ?? null,
-      payload: parsed.payload ?? {},
+
+      // JSON normalization boundary
+      intentContext: normalizeJson(parsed.intentContext),
+      payload: normalizeJson(parsed.payload ?? {}),
+
       supersedesCommitId: parsed.supersedesCommitId ?? null,
     },
     tx,
@@ -106,33 +144,44 @@ await commitLedgerEvent(
 ////////////////////////////////////////////////////////////////
 // Design reasoning
 ////////////////////////////////////////////////////////////////
-// This wrapper prevents ledger API drift.
-// All domain modules use structured actor objects.
-// LedgerService remains constitutional core.
-// Functional wrapper stabilizes import surface.
+// Ledger commits are the constitutional audit record of the system.
+// This wrapper ensures:
+//
+// - strict enum validation via Zod
+// - structured actor authority
+// - JSON serialization safety
+// - single import surface for all domain modules
+//
+// By normalizing JSON here we prevent Prisma runtime failures
+// caused by non-serializable objects entering the ledger.
 
 ////////////////////////////////////////////////////////////////
 // Structure
 ////////////////////////////////////////////////////////////////
-// - Zod boundary validation
-// - Structured actor enforcement
-// - Singleton LedgerService
-// - Transaction-aware delegation
-// - Zero business logic
+// - Zod schemas enforce boundary validation
+// - normalizeJson() guarantees Prisma-safe JSON
+// - Singleton LedgerService prevents repeated instantiation
+// - commitLedgerEvent() acts as the canonical entry point
 
 ////////////////////////////////////////////////////////////////
 // Implementation guidance
 ////////////////////////////////////////////////////////////////
-// - Replace all commitLedgerEvent imports across codebase.
-// - Remove any routing-level commit wrappers.
-// - Never call LedgerService directly from domain modules.
-// - All payloads must be envelope-wrapped before commit.
+// Domain modules should never call LedgerService directly.
+// Always import:
+//
+// import { commitLedgerEvent } from "@/modules/intake/ledger/commitLedgerEvent";
+//
+// This keeps governance, metrics, and tracing centralized.
 
 ////////////////////////////////////////////////////////////////
 // Scalability insight
 ////////////////////////////////////////////////////////////////
-// Centralizing commit access prevents future API drift.
-// Enables audit hooks, metrics, or tracing without touching 30 files.
-// Authority remains cryptographically enforced at LedgerService layer.
-// This is now the single constitutional entry point.
-////////////////////////////////////////////////////////////////
+// Because every ledger write flows through this function,
+// you can later introduce:
+//
+// - distributed tracing
+// - audit hooks
+// - metrics instrumentation
+// - signature verification
+//
+// without modifying dozens of domain modules.

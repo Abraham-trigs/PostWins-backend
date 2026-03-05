@@ -17,6 +17,7 @@ import {
   DecisionType,
   DisbursementStatus,
 } from "@prisma/client";
+import { ExplainabilityRole } from "@/modules/explainability/explainability.types";
 
 ////////////////////////////////////////////////////////////////
 // Types (strict projection boundary)
@@ -85,7 +86,7 @@ type AuthorityDecision = {
 };
 
 ////////////////////////////////////////////////////////////////
-// Disbursement Domain Builder (Date-based)
+// Disbursement Domain Builder (Date-based)   viewerRole
 ////////////////////////////////////////////////////////////////
 
 function buildDisbursementDomainExplanation(
@@ -150,7 +151,7 @@ function buildDisbursementDomainExplanation(
 
 export function mapExplainableCaseToResponse(
   payload: ExplainableCasePayload,
-  viewerRole?: any,
+  viewerRole?: ExplainabilityRole,
 ): ExplainCaseResponse {
   ////////////////////////////////////////////////////////////////
   // Authority Projection

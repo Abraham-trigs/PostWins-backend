@@ -48,7 +48,7 @@ export class SDGMapperService {
    */
   public async mapImpact(postWin: PostWin): Promise<string[]> {
     const tags: string[] = [];
-    const text = (postWin.description ?? "").toLowerCase();
+    const text = (postWin.summary ?? "").toLowerCase();
 
     // Mapping to SDG 4 Sub-Targets via [Posta Core Constants](url)
     if (text.includes("school") || text.includes("uniform")) {
