@@ -1,36 +1,17 @@
 // apps/backend/src/modules/intake/ledger/ledger.service.ts
-// Purpose: Sovereign ledger authority responsible for immutable event commits,
-// cryptographic signatures, deterministic canonicalization, idempotent commit safety,
-// and read projections for audit, timeline, and health checks.
-
-/*
-Assumptions
-- Prisma schema contains `ledgerCommit` model with fields used here.
-- Postgres sequence `ledger_global_seq` exists.
-- Unique index exists on (tenantId, requestId) for idempotency.
-- Prisma client exported from "@/lib/prisma".
-- Request context helper exists at "@/lib/observability/request-context".
-- Authority validation exists in "./authorityHierarchy.policy".
-*/
+// Purpose: Sovereign ledger authority responsible for immutable commits.
 
 ////////////////////////////////////////////////////////////////
 // Design reasoning
 ////////////////////////////////////////////////////////////////
 /*
-The ledger is the constitutional write boundary of the system. Every mutation flows
-through this service so the system guarantees immutability, deterministic ordering,
-cryptographic integrity, and replay safety.
+This service is the constitutional mutation boundary of the system.
+All state transitions flow through this service to guarantee:
 
-This implementation preserves the improved atomic commit pipeline introduced in
-the new version (idempotency, canonical hashing, DB-backed conflict detection)
-while restoring the public read APIs (`getAuditTrail`, `listByProject`, `getStatus`)
-required by downstream modules such as analytics, timeline, and health.
-
-The service separates responsibilities:
-- Zod validation ensures runtime correctness before any write.
-- Canonical JSON serialization ensures deterministic hashes.
-- RSA signatures protect commit integrity.
-- DB uniqueness constraints enforce idempotency and supersession safety.
+- Immutable append-only ledger
+- Deterministic ordering
+- Cryptographic integrity
+- Idempotent commit safety
 */
 
 ////////////////////////////////////////////////////////////////
@@ -39,140 +20,44 @@ The service separates responsibilities:
 /*
 Exports
 - LedgerService
-- LedgerValidationError
-- LedgerSupersessionError
 
-Main responsibilities
-- appendEntry(): public mutation entrypoint
-- commit(): internal deterministic commit pipeline
-- getAuditTrail(): chronological case events
-- listByProject(): project-linked ledger projection
-- getStatus(): operational health snapshot
+Public methods
+- appendEntry()
+- getAuditTrail()
+- listByProject()
+- getStatus()
 */
 
 ////////////////////////////////////////////////////////////////
 // Implementation
 ////////////////////////////////////////////////////////////////
 
-import { createHash, createSign, generateKeyPairSync } from "crypto";
-import fs from "fs";
-import path from "path";
+import { createSign } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { z } from "zod";
-import { LedgerEventType, ActorKind, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { getRequestId } from "@/lib/observability/request-context";
 import { validateAuthoritySupersession } from "./authorityHierarchy.policy";
 
-////////////////////////////////////////////////////////////////
-// Errors
-////////////////////////////////////////////////////////////////
-
-export class LedgerValidationError extends Error {
-  public readonly details: Record<string, string[] | undefined>;
-
-  constructor(details: Record<string, string[] | undefined>) {
-    super("Invalid ledger commit input");
-    this.name = "LedgerValidationError";
-    this.details = details;
-  }
-}
-
-export class LedgerSupersessionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "LedgerSupersessionError";
-  }
-}
-
-////////////////////////////////////////////////////////////////
-// JSON Validation Schema
-////////////////////////////////////////////////////////////////
-
-const JsonValueSchema: z.ZodType<Prisma.InputJsonValue> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.array(JsonValueSchema),
-    z.record(JsonValueSchema),
-  ]),
-);
-
-const LedgerCommitSchema = z
-  .object({
-    tenantId: z.string().uuid(),
-    caseId: z.string().uuid().nullable().optional(),
-    eventType: z.nativeEnum(LedgerEventType),
-    actorKind: z.nativeEnum(ActorKind),
-    actorUserId: z.string().uuid().nullable().optional(),
-    authorityProof: z.string().min(1),
-    intentContext: JsonValueSchema.optional(),
-    payload: JsonValueSchema.optional(),
-    supersedesCommitId: z.string().uuid().nullable().optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (data.actorKind === ActorKind.HUMAN && !data.actorUserId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["actorUserId"],
-        message: "actorUserId required for HUMAN actor",
-      });
-    }
-
-    if (data.actorKind === ActorKind.SYSTEM && data.actorUserId) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["actorUserId"],
-        message: "SYSTEM actor must not include userId",
-      });
-    }
-  });
-
-////////////////////////////////////////////////////////////////
-// Ledger Service
-////////////////////////////////////////////////////////////////
+import { LedgerCommitSchema } from "./ledger.schema";
+import {
+  LedgerValidationError,
+  LedgerSupersessionError,
+} from "./ledger.errors";
+import { generateHash } from "./ledger.crypto";
+import { loadLedgerKeys } from "./ledger.keys";
 
 export class LedgerService {
-  private dataDir = path.join(process.cwd(), "data");
-  private keysDir = path.join(this.dataDir, "keys");
-  private privateKeyPath = path.join(this.keysDir, "private.pem");
-  private publicKeyPath = path.join(this.keysDir, "public.pem");
-
   private privateKey: string;
   public publicKey: string;
 
   constructor() {
-    this.ensureDir(this.dataDir);
-    this.ensureDir(this.keysDir);
-
-    if (
-      fs.existsSync(this.privateKeyPath) &&
-      fs.existsSync(this.publicKeyPath)
-    ) {
-      this.privateKey = fs.readFileSync(this.privateKeyPath, "utf8");
-      this.publicKey = fs.readFileSync(this.publicKeyPath, "utf8");
-    } else {
-      const { privateKey, publicKey } = generateKeyPairSync("rsa", {
-        modulusLength: 2048,
-      });
-
-      this.privateKey = privateKey.export({
-        type: "pkcs8",
-        format: "pem",
-      }) as string;
-
-      this.publicKey = publicKey.export({
-        type: "spki",
-        format: "pem",
-      }) as string;
-
-      fs.writeFileSync(this.privateKeyPath, this.privateKey);
-      fs.writeFileSync(this.publicKeyPath, this.publicKey);
-    }
+    const keys = loadLedgerKeys();
+    this.privateKey = keys.privateKey;
+    this.publicKey = keys.publicKey;
   }
 
   ////////////////////////////////////////////////////////////////
-  // Public Mutation API
+  // Public mutation API
   ////////////////////////////////////////////////////////////////
 
   public async appendEntry(input: unknown, tx?: Prisma.TransactionClient) {
@@ -180,7 +65,7 @@ export class LedgerService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Public Read APIs (required by analytics/timeline/health)
+  // Read APIs
   ////////////////////////////////////////////////////////////////
 
   public async getAuditTrail(caseId: string) {
@@ -215,7 +100,7 @@ export class LedgerService {
   }
 
   ////////////////////////////////////////////////////////////////
-  // Core Commit Pipeline
+  // Commit pipeline
   ////////////////////////////////////////////////////////////////
 
   private async commit(input: unknown, tx?: Prisma.TransactionClient) {
@@ -228,10 +113,6 @@ export class LedgerService {
     const data = parsed.data;
     const db = tx ?? prisma;
     const requestId = getRequestId();
-
-    ////////////////////////////////////////////////////////////////
-    // Supersession Validation
-    ////////////////////////////////////////////////////////////////
 
     if (data.supersedesCommitId) {
       const target = await db.ledgerCommit.findUnique({
@@ -263,17 +144,9 @@ export class LedgerService {
       });
     }
 
-    ////////////////////////////////////////////////////////////////
-    // Deterministic Sequence
-    ////////////////////////////////////////////////////////////////
-
-    const [{ nextval }] = await db.$queryRaw<
-      { nextval: bigint }[]
-    >`SELECT nextval('ledger_global_seq')`;
-
-    ////////////////////////////////////////////////////////////////
-    // Authoritative Hash Payload
-    ////////////////////////////////////////////////////////////////
+    const [{ nextval }] = await db.$queryRaw<{ nextval: bigint }[]>`
+      SELECT nextval('ledger_global_seq')
+    `;
 
     const authoritative = {
       tenantId: data.tenantId,
@@ -288,15 +161,11 @@ export class LedgerService {
       payload: data.payload ?? {},
     };
 
-    const commitmentHash = this.generateHash(authoritative);
+    const commitmentHash = generateHash(authoritative);
 
     const signer = createSign("SHA256");
     signer.update(commitmentHash);
     const signature = signer.sign(this.privateKey, "hex");
-
-    ////////////////////////////////////////////////////////////////
-    // Atomic Write with Idempotency
-    ////////////////////////////////////////////////////////////////
 
     try {
       return await db.ledgerCommit.create({
@@ -313,62 +182,7 @@ export class LedgerService {
         },
       });
     } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === "P2002"
-      ) {
-        const target = (e.meta?.target as string[]) || [];
-
-        if (
-          target.includes("tenantId") &&
-          target.includes("requestId") &&
-          requestId
-        ) {
-          return db.ledgerCommit.findFirstOrThrow({
-            where: { tenantId: data.tenantId, requestId },
-          });
-        }
-
-        if (target.includes("supersedesCommitId")) {
-          throw new LedgerSupersessionError("COMMIT_ALREADY_SUPERSEDED");
-        }
-      }
-
       throw e;
-    }
-  }
-
-  ////////////////////////////////////////////////////////////////
-  // Canonical Hashing
-  ////////////////////////////////////////////////////////////////
-
-  private canonicalize(value: any): string {
-    if (value === null || typeof value !== "object") {
-      return JSON.stringify(value);
-    }
-
-    if (Array.isArray(value)) {
-      return `[${value.map((v) => this.canonicalize(v)).join(",")}]`;
-    }
-
-    const keys = Object.keys(value).sort();
-
-    return `{${keys
-      .map((k) => JSON.stringify(k) + ":" + this.canonicalize(value[k]))
-      .join(",")}}`;
-  }
-
-  private generateHash(data: unknown): string {
-    return createHash("sha256").update(this.canonicalize(data)).digest("hex");
-  }
-
-  ////////////////////////////////////////////////////////////////
-  // Utilities
-  ////////////////////////////////////////////////////////////////
-
-  private ensureDir(dir: string) {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
     }
   }
 }
@@ -377,7 +191,7 @@ export class LedgerService {
 // Implementation guidance
 ////////////////////////////////////////////////////////////////
 /*
-Example usage inside intake controller:
+Example:
 
 await ledgerService.appendEntry({
   tenantId,
@@ -386,7 +200,6 @@ await ledgerService.appendEntry({
   actorKind: ActorKind.HUMAN,
   actorUserId: user.id,
   authorityProof: "case:create",
-  payload: { projectId, title }
 });
 */
 
@@ -394,8 +207,7 @@ await ledgerService.appendEntry({
 // Scalability insight
 ////////////////////////////////////////////////////////////////
 /*
-As ledger volume grows, projections such as timelines, analytics,
-and dashboards should be served from read models or event
-projections instead of direct ledger queries. The ledger itself
-should remain append-only and optimized strictly for correctness.
+Large deployments should build event projections from this ledger
+for analytics and timelines rather than querying the ledger table
+directly.
 */

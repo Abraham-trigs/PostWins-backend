@@ -1,280 +1,369 @@
-import { IntegrityFlag, PostWin } from "@posta/core";
-import fs from "fs";
-import path from "path";
+// apps/backend/src/modules/intake/integrity/integrity.service.ts
+// Purpose: Public integrity service facade coordinating fraud detection rules and persistence layers with trust-aware auditing
 
-type IdempotencyDb = {
-  keys: Record<
-    string,
-    {
-      requestHash: string;
-      response: unknown;
-      recordedAt: string;
-    }
-  >;
-};
+import { IntegrityFlag, PostWin } from "@posta/core";
+import { performFullAudit } from "./integrity.audit";
+import { RegistryStore } from "./integrity.registry.store";
+import { BlacklistStore } from "./integrity.blacklist.store";
+import { IdempotencyStore } from "./integrity.idempotency.store";
+
+////////////////////////////////////////////////////////////////
+// Integrity Service
+////////////////////////////////////////////////////////////////
 
 export class IntegrityService {
+  //////////////////////////////////////////////////////////////////
+  // Existing in-memory fraud tracking state
+  //////////////////////////////////////////////////////////////////
+
+  /**
+   * Tracks hashes of processed messages to prevent duplicates.
+   * NOTE:
+   * In production this should live in Redis or a distributed cache
+   * if multiple backend instances exist.
+   */
   private processedHashes = new Set<string>();
-  private deviceRegistry = new Map<string, string[]>();
+
+  /**
+   * Device registry mapping:
+   * deviceId -> known device metadata (array allows expansion)
+   */
+  private deviceRegistry: Map<string, string[]>;
+
+  /**
+   * Last activity timestamp for rate-limit style checks
+   */
   private lastActivity = new Map<string, number>();
-  private violationCounters = new Map<string, number>(); // Section M.5: Tracks HIGH severity counts
-  private blacklist = new Set<string>(); // Section M.5: Permanent ban list
 
-  // IMPORTANT: use process.cwd() (works in dev + dist builds)
-  private registryPath = path.join(process.cwd(), "device_registry.json");
-  private blacklistPath = path.join(process.cwd(), "blacklist.json");
+  /**
+   * Violation counter per device / identity
+   */
+  private violationCounters = new Map<string, number>();
 
-  // NEW: idempotency persistence (used by idempotency.middleware.ts)
-  private dataDir = path.join(process.cwd(), "data");
-  private idempotencyPath = path.join(this.dataDir, "idempotency.json");
+  /**
+   * Permanent blacklist
+   */
+  private blacklist: Set<string>;
+
+  //////////////////////////////////////////////////////////////////
+  // Beneficiary → Device tracking
+  //////////////////////////////////////////////////////////////////
+
+  /**
+   * Tracks total device usage per beneficiary
+   *
+   * beneficiaryId -> Set<deviceId>
+   *
+   * Used to detect identity farming / shared device abuse
+   */
+  private beneficiaryDeviceMap = new Map<string, Set<string>>();
+
+  //////////////////////////////////////////////////////////////////
+  // Time-window tracking (device rotation detection)
+  //////////////////////////////////////////////////////////////////
+
+  /**
+   * beneficiaryId -> device activity events
+   *
+   * Used to detect rapid device switching.
+   */
+  private beneficiaryActivity = new Map<
+    string,
+    Array<{ deviceId: string; timestamp: number }>
+  >();
+
+  //////////////////////////////////////////////////////////////////
+  // Configuration
+  //////////////////////////////////////////////////////////////////
 
   private readonly COOLDOWN_MS = 30000;
   private readonly MAX_VIOLATIONS = 5;
 
-  constructor() {
-    this.ensureDir(this.dataDir);
-    this.ensureIdempotencyFile();
-
-    this.loadRegistry();
-    this.loadBlacklist();
-  }
+  private readonly MAX_DEVICES_PER_BENEFICIARY = 3;
 
   /**
-   * Section F & M: Multi-layered integrity check with Blacklist Enforcement
+   * Device rotation rule window
+   */
+  private readonly DEVICE_ROTATION_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+  /**
+   * Maximum devices within the window before flagging
+   */
+  private readonly DEVICE_ROTATION_THRESHOLD = 3;
+
+  //////////////////////////////////////////////////////////////////
+  // Persistence Stores
+  //////////////////////////////////////////////////////////////////
+
+  private registryStore = new RegistryStore();
+  private blacklistStore = new BlacklistStore();
+  private idempotencyStore = new IdempotencyStore();
+
+  //////////////////////////////////////////////////////////////////
+  // Constructor
+  //////////////////////////////////////////////////////////////////
+
+  constructor() {
+    /**
+     * Load persisted state.
+     *
+     * Device registry and blacklist are durable.
+     * Runtime maps remain ephemeral.
+     */
+    this.deviceRegistry = this.registryStore.load();
+    this.blacklist = this.blacklistStore.load();
+  }
+
+  //////////////////////////////////////////////////////////////////
+  // Main Integrity Audit
+  //////////////////////////////////////////////////////////////////
+
+  /**
+   * Performs full integrity audit for a PostWin narrative.
+   *
+   * @param postWin - PostWin data structure
+   * @param rawMessage - original narrative text
+   * @param deviceId - optional device identifier
+   * @param isTrusted - indicates logged-in / verified author
+   *
+   * Trusted users skip certain anti-spam heuristics but
+   * security rules still apply.
    */
   public async performFullAudit(
     postWin: PostWin,
     rawMessage: string,
     deviceId?: string,
+    isTrusted = false,
   ): Promise<IntegrityFlag[]> {
-    // 1. Section M.5: Instant rejection if on Blacklist
-    if (deviceId && this.blacklist.has(deviceId)) {
-      return [
-        {
-          type: "IDENTITY_MISMATCH",
-          severity: "HIGH",
-          timestamp: Date.now(),
-        },
-      ];
-    }
-
     const flags: IntegrityFlag[] = [];
+    const beneficiaryId = postWin.beneficiaryId;
 
-    // 2. Rate Limit / Cooldown Check (Section M.4)
-    if (deviceId) {
-      const cooldownFlag = this.checkCooldown(deviceId);
-      if (cooldownFlag) flags.push(cooldownFlag);
+    ////////////////////////////////////////////////////////////////
+    // RULE 1
+    // Beneficiary → Device tracking
+    // (Skipped or relaxed for trusted users)
+    ////////////////////////////////////////////////////////////////
+
+    if (deviceId && beneficiaryId && !isTrusted) {
+      let deviceSet = this.beneficiaryDeviceMap.get(beneficiaryId);
+
+      if (!deviceSet) {
+        deviceSet = new Set<string>();
+        this.beneficiaryDeviceMap.set(beneficiaryId, deviceSet);
+      }
+
+      deviceSet.add(deviceId);
+
+      /**
+       * Flag if a beneficiary uses too many devices.
+       * This does NOT block the request.
+       */
+      if (deviceSet.size > this.MAX_DEVICES_PER_BENEFICIARY) {
+        flags.push({
+          type: "IDENTITY_MISMATCH",
+          severity: "LOW",
+          timestamp: Date.now(),
+        });
+      }
     }
 
-    // 3. Basic Duplicate Check (Section F)
-    const duplicate = this.checkDuplicate(rawMessage);
-    if (duplicate) flags.push(duplicate);
+    ////////////////////////////////////////////////////////////////
+    // RULE 2
+    // Device rotation detection
+    ////////////////////////////////////////////////////////////////
 
-    // 4. Ghost Beneficiary Detection (Section M.1)
-    if (deviceId) {
-      const ghostFlag = this.detectGhostBeneficiary(
+    if (deviceId && beneficiaryId && !isTrusted) {
+      const now = Date.now();
+
+      let activity = this.beneficiaryActivity.get(beneficiaryId) ?? [];
+
+      activity.push({
         deviceId,
-        postWin.beneficiaryId ?? "unknown",
+        timestamp: now,
+      });
+
+      /**
+       * Remove events outside the time window.
+       */
+      activity = activity.filter(
+        (entry) => now - entry.timestamp < this.DEVICE_ROTATION_WINDOW_MS,
       );
 
-      if (ghostFlag) flags.push(ghostFlag);
+      this.beneficiaryActivity.set(beneficiaryId, activity);
+
+      const uniqueDevices = new Set(activity.map((a) => a.deviceId));
+
+      if (uniqueDevices.size > this.DEVICE_ROTATION_THRESHOLD) {
+        flags.push({
+          type: "SUSPICIOUS_TONE",
+          severity: "LOW",
+          timestamp: now,
+        });
+      }
     }
 
-    // 5. Adversarial Input Shield (Section M.2)
-    if (this.isAdversarial(rawMessage)) {
-      flags.push({
-        type: "SUSPICIOUS_TONE",
-        severity: "HIGH",
-        timestamp: Date.now(),
-      });
-    }
+    ////////////////////////////////////////////////////////////////
+    // Existing Integrity Audit Logic
+    ////////////////////////////////////////////////////////////////
 
-    // 6. Section M.5: Update Violation Counters and trigger Blacklist
-    if (deviceId && flags.some((f) => f.severity === "HIGH")) {
-      this.handleViolation(deviceId);
-    }
+    /**
+     * Delegates to core audit engine.
+     *
+     * The audit engine performs:
+     *  - duplicate detection
+     *  - blacklist checks
+     *  - cooldown checks
+     *  - rule-based fraud heuristics
+     */
 
-    return flags;
+    const existingFlags = performFullAudit(
+      {
+        blacklist: this.blacklist,
+        lastActivity: this.lastActivity,
+        processedHashes: this.processedHashes,
+        deviceRegistry: this.deviceRegistry,
+        violationCounters: this.violationCounters,
+
+        COOLDOWN_MS: this.COOLDOWN_MS,
+        MAX_VIOLATIONS: this.MAX_VIOLATIONS,
+
+        /**
+         * NEW: trust context
+         * Enables relaxed rules for authenticated actors
+         */
+        isTrusted,
+
+        saveRegistry: () => this.registryStore.save(this.deviceRegistry),
+        saveBlacklist: () => this.blacklistStore.save(this.blacklist),
+      },
+      postWin,
+      rawMessage,
+      deviceId,
+    );
+
+    return [...flags, ...existingFlags];
   }
 
-  private handleViolation(deviceId: string): void {
-    const count = (this.violationCounters.get(deviceId) || 0) + 1;
-    this.violationCounters.set(deviceId, count);
-
-    if (count >= this.MAX_VIOLATIONS) {
-      this.blacklist.add(deviceId);
-      this.saveBlacklist();
-    }
-  }
-
-  private checkCooldown(deviceId: string): IntegrityFlag | null {
-    const now = Date.now();
-    const lastTime = this.lastActivity.get(deviceId) || 0;
-    if (now - lastTime < this.COOLDOWN_MS) {
-      return { type: "SUSPICIOUS_TONE", severity: "LOW", timestamp: now };
-    }
-    this.lastActivity.set(deviceId, now);
-    return null;
-  }
-
-  public checkDuplicate(message: string): IntegrityFlag | null {
-    const hash = message.toLowerCase().trim();
-    if (this.processedHashes.has(hash)) {
-      return {
-        type: "DUPLICATE_CLAIM",
-        severity: "HIGH",
-        timestamp: Date.now(),
-      };
-    }
-    this.processedHashes.add(hash);
-    return null;
-  }
-
-  private detectGhostBeneficiary(
-    deviceId: string,
-    beneficiaryId: string,
-  ): IntegrityFlag | null {
-    const linkedBeneficiaries = this.deviceRegistry.get(deviceId) || [];
-    if (!linkedBeneficiaries.includes(beneficiaryId)) {
-      linkedBeneficiaries.push(beneficiaryId);
-      this.deviceRegistry.set(deviceId, linkedBeneficiaries);
-      this.saveRegistry();
-    }
-    if (linkedBeneficiaries.length > 3) {
-      return {
-        type: "IDENTITY_MISMATCH",
-        severity: "HIGH",
-        timestamp: Date.now(),
-      };
-    }
-    return null;
-  }
-
-  private isAdversarial(message: string): boolean {
-    const patterns = [
-      /ignore previous instructions/i,
-      /system override/i,
-      /<script/i,
-    ];
-    return patterns.some((pattern) => pattern.test(message));
-  }
-
-  // ==========================================================================
-  // NEW: Idempotency persistence API (used by idempotency.middleware.ts)
-  // ==========================================================================
+  //////////////////////////////////////////////////////////////////
+  // Idempotency Store API
+  //////////////////////////////////////////////////////////////////
 
   /**
-   * Get an idempotency record by key.
-   * Returns null if not found.
+   * Retrieves an idempotent response record
    */
   public async get(
     key: string,
   ): Promise<{ requestHash: string; response: unknown } | null> {
-    const db = this.loadIdempotency();
+    const db = this.idempotencyStore.load();
     const record = db.keys[key];
+
     if (!record) return null;
-    return { requestHash: record.requestHash, response: record.response };
+
+    return {
+      requestHash: record.requestHash,
+      response: record.response,
+    };
   }
 
   /**
-   * Save an idempotency record (key -> requestHash + response).
-   * This allows safe retry + replay across restarts.
+   * Saves idempotent response
    */
   public async save(
     key: string,
     requestHash: string,
     response: unknown,
   ): Promise<void> {
-    const db = this.loadIdempotency();
+    const db = this.idempotencyStore.load();
+
     db.keys[key] = {
       requestHash,
       response,
       recordedAt: new Date().toISOString(),
     };
-    this.writeIdempotency(db);
-  }
 
-  private ensureIdempotencyFile(): void {
-    try {
-      if (!fs.existsSync(this.idempotencyPath)) {
-        const init: IdempotencyDb = { keys: {} };
-        fs.writeFileSync(this.idempotencyPath, JSON.stringify(init, null, 2));
-      }
-    } catch (e) {
-      // If this fails, idempotency becomes best-effort (but we try hard to persist).
-      console.error("Idempotency store init failed:", e);
-    }
-  }
-
-  private loadIdempotency(): IdempotencyDb {
-    try {
-      if (!fs.existsSync(this.idempotencyPath)) return { keys: {} };
-      const raw = fs.readFileSync(this.idempotencyPath, "utf8");
-      const parsed = JSON.parse(raw);
-      return {
-        keys:
-          typeof parsed?.keys === "object" && parsed?.keys ? parsed.keys : {},
-      };
-    } catch {
-      return { keys: {} };
-    }
-  }
-
-  private writeIdempotency(db: IdempotencyDb): void {
-    try {
-      fs.writeFileSync(this.idempotencyPath, JSON.stringify(db, null, 2));
-    } catch (e) {
-      console.error("Idempotency store save failed:", e);
-    }
-  }
-
-  private ensureDir(dir: string) {
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  }
-
-  // --- Persistence Methods (existing) ---------------------------------------
-
-  private saveRegistry(): void {
-    try {
-      const data = JSON.stringify(
-        Object.fromEntries(this.deviceRegistry),
-        null,
-        2,
-      );
-      fs.writeFileSync(this.registryPath, data);
-    } catch (e) {
-      console.error("Registry save failed:", e);
-    }
-  }
-
-  private saveBlacklist(): void {
-    try {
-      const data = JSON.stringify(Array.from(this.blacklist), null, 2);
-      fs.writeFileSync(this.blacklistPath, data);
-    } catch (e) {
-      console.error("Blacklist save failed:", e);
-    }
-  }
-
-  private loadRegistry(): void {
-    try {
-      if (fs.existsSync(this.registryPath)) {
-        const data = JSON.parse(fs.readFileSync(this.registryPath, "utf8"));
-        this.deviceRegistry = new Map(Object.entries(data));
-      }
-    } catch {
-      this.deviceRegistry = new Map();
-    }
-  }
-
-  private loadBlacklist(): void {
-    try {
-      if (fs.existsSync(this.blacklistPath)) {
-        const data = JSON.parse(fs.readFileSync(this.blacklistPath, "utf8"));
-        this.blacklist = new Set(data);
-      }
-    } catch {
-      this.blacklist = new Set();
-    }
+    this.idempotencyStore.save(db);
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+
+/**
+ * This service acts as a coordination layer between:
+ *
+ * - fraud detection logic (integrity.audit.ts)
+ * - persistence layers (registry + blacklist stores)
+ * - runtime fraud heuristics (device rotation, device count)
+ *
+ * Introducing `isTrusted` allows the system to treat
+ * authenticated users differently from anonymous users
+ * without weakening core security protections.
+ *
+ * Security-critical checks remain active for both paths.
+ */
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+
+/**
+ * IntegrityService
+ *
+ * performFullAudit() → orchestrates all fraud rules
+ * get()              → idempotency retrieval
+ * save()             → idempotency persistence
+ */
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+
+/**
+ * Controller usage example:
+ *
+ * const flags = await integrityService.performFullAudit(
+ *   postWin,
+ *   narrative,
+ *   deviceId,
+ *   isTrusted
+ * );
+ *
+ * Governance layer decides:
+ *
+ * if flags contain HIGH severity → block or verify
+ * if LOW severity → allow but monitor
+ */
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+
+/**
+ * The following structures should migrate to Redis for
+ * horizontally scaled deployments:
+ *
+ * - processedHashes
+ * - beneficiaryActivity
+ * - beneficiaryDeviceMap
+ *
+ * Doing so ensures fraud detection works consistently
+ * across multiple API instances.
+ */
+
+////////////////////////////////////////////////////////////////
+// Example usage (test snippet)
+////////////////////////////////////////////////////////////////
+
+/**
+ * const integrityService = new IntegrityService();
+ *
+ * const flags = await integrityService.performFullAudit(
+ *   { beneficiaryId: "user_123" } as PostWin,
+ *   "My community needs clean water access",
+ *   "device_abc",
+ *   false
+ * );
+ *
+ * console.log(flags);
+ */

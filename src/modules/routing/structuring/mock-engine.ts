@@ -35,7 +35,7 @@
 //////////////////////////////////////////////////////////////////
 
 import { prisma } from "@/lib/prisma";
-import { IntakeService } from "../../intake/intake.service";
+import { IntakeService } from "../../intake/services/intake.service";
 import { VerificationService } from "../../verification/verification.service";
 import { completeExecution } from "@/modules/execution/completeExecution.service";
 import { transitionCaseLifecycleWithLedger } from "@/modules/cases/transitionCaseLifecycleWithLedger";
@@ -114,9 +114,16 @@ export class PostaMockEngine {
     // 4️⃣ Intake classification
     ////////////////////////////////////////////////////////////////
 
+    const trust = {
+      tenantId: tenant.id,
+      actorUserId: author.id,
+      deviceId: "device_mock_001",
+      isTrusted: true,
+    };
+
     const intakeResult = await this.intake.handleIntake(
       "I need support for school enrollment",
-      "device_mock_001",
+      trust,
     );
 
     ////////////////////////////////////////////////////////////////

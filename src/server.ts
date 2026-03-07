@@ -207,6 +207,16 @@ server.on("upgrade", async (request, socket, head) => {
     // Tenant Isolation
     ////////////////////////////////////////////////////////////
 
+    function isUuid(value: string) {
+      return /^[0-9a-fA-F-]{36}$/.test(value);
+    }
+
+    if (!isUuid(caseId)) {
+      socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
     const caseExists = await prisma.case.findFirst({
       where: {
         id: caseId,

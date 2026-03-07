@@ -4,7 +4,7 @@
 // PostgreSQL Notes:
 // - Enable pgcrypto for UUID generation:
 //     CREATE EXTENSION IF NOT EXISTS pgcrypto;
-//  model ledgerCommit
+//  model message
 // - Sensitive PII is isolated in BeneficiaryPII to support:
 //     • Redaction
 //     • Least privilege access
@@ -510,6 +510,7 @@ enum MessageType {
   VERIFICATION_REQUEST
   COUNTER_CLAIM
   EVIDENCE_SUBMISSION
+  SYSTEM_EVENT
 }
 
 model Message {
@@ -711,10 +712,10 @@ model BeneficiaryProfile {
   payeeType         String?
   accountName       String?
   accountNumber     String?
-  decisionName          String?
+  decisionName      String?
   mobileMoneyNumber String?
   mobileNetwork     String? // Added for MoMo API integration
-  decisionable          Boolean? @default(false)
+  decisionable      Boolean? @default(false)
 
   // Compliance
   consentToDataStorage  Boolean? @default(false)
@@ -775,8 +776,8 @@ model Case {
   updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
 
-  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  author      User         @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  author User   @relation("CaseAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
 
   // NEW: origin organization relation
   originExecutionBody ExecutionBody? @relation("CaseOriginExecutionBody", fields: [originExecutionBodyId], references: [id], onDelete: SetNull)
@@ -808,7 +809,6 @@ model Case {
   @@index([beneficiaryId, createdAt])
   @@index([tenantId, currentTaskDefinitionId])
   @@index([tenantId, lifecycle, status])
-
   // NEW: routing optimization
   @@index([tenantId, originExecutionBodyId])
 }
@@ -1050,13 +1050,13 @@ model Decision {
 
   decisionType DecisionType
   actorKind    ActorKind
-  actorUserId  String? @db.Uuid
+  actorUserId  String?      @db.Uuid
 
   reason        String?
   intentContext Json?
   decidedAt     DateTime @default(now())
 
-  supersedesDecisionId String? @db.Uuid
+  supersedesDecisionId String?   @db.Uuid
   supersededAt         DateTime?
 
   case   Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)

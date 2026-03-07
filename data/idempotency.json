@@ -197,6 +197,19 @@
         }
       },
       "recordedAt": "2026-02-21T17:45:55.455Z"
+    },
+    "8cc45377-4e30-4fed-acfe-cd9e91dc2a87": {
+      "requestHash": "2fc81b8655081f53a00a14614fa1b471c29654a0fd82b7991107bdcf68bad3a1",
+      "response": {
+        "requestHash": "2fc81b8655081f53a00a14614fa1b471c29654a0fd82b7991107bdcf68bad3a1",
+        "status": 200,
+        "response": {
+          "ok": true,
+          "caseId": "9fa80b31-317f-4a6e-9f01-0cf759dd1669",
+          "referenceCode": "CASE-1772875493705-F62BD5"
+        }
+      },
+      "recordedAt": "2026-03-07T09:24:53.903Z"
     }
   }
 }
