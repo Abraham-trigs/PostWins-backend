@@ -1,188 +1,229 @@
-🚀 PostWins Backend
+Overview 🧭
 
-Governed execution engine for case and grant lifecycle management.
+The backend is organized into roughly 10 domain modules including cases,
+verification, routing, evidence, execution, disbursement, decisioning,
+intake, messaging, and authentication. Each domain owns its routes,
+controllers, services, policies, and orchestration logic, allowing the
+system to scale without tightly coupling unrelated concerns.
 
-This backend enforces deterministic workflow progression, multi-tenant isolation, policy-aligned routing, and audit-backed traceability across operational lifecycles.
+The architecture follows a domain-modular service design where each
+domain module encapsulates its own behavior while sharing common
+infrastructure such as database access, observability, authentication
+middleware, and system policies.
 
-It is not a CRUD API.
-It is a stateful execution system.
+This backend powers the Posta platform, providing workflow
+orchestration, verification processes, evidence tracking, lifecycle
+transitions, and communication capabilities.
 
-🧭 Core Principles
+Architecture 🏗️
 
-Deterministic state transitions (no arbitrary routing)
+The backend is implemented as a Node.js TypeScript API server using
+modular domain architecture.
 
-Multi-tenant isolation
+Core responsibilities include:
 
-Role-based capability enforcement (RBAC)
+Authentication and identity verification 🔐 Workflow orchestration 🔄
+Case lifecycle management 📂 Evidence and verification handling 🧾
+Messaging and collaboration 💬 Decision evaluation 🧠 Routing and task
+progression 🧭 Ledger-backed system explainability 📜 Observability and
+audit logging 👁️
 
-Immutable ledger-backed audit logging
+The architecture prioritizes:
 
-Explainable decision modeling
+Domain ownership Explicit system behavior auditable decision systems
+strong boundaries between modules
 
-Lifecycle reconciliation & integrity validation
+Backend Structure 🧩
 
-🏗 System Overview
+High-level layout:
 
-The backend models operational workflows as structured lifecycle transitions:
+apps/backend │ ├── prisma │ ├── schema.prisma │ └── seed.ts │ ├── src │
+├── constants │ ├── domain │ ├── lib │ ├── middleware │ ├── modules │
+├── shared │ ├── types │ ├── utils │ │ │ ├── app.ts │ ├── server.ts │
+└── index.ts
 
-Intake → Classification → Routing → Verification → Approval → Disbursement → Execution → Reconciliation
+Core Infrastructure ⚙️
 
-Each transition:
+Prisma (Database Layer) 🗄️ prisma/schema.prisma
 
-Is validated at the service layer
+Defines relational data models used across domains.
 
-Is constrained by relational schema guarantees
+Handles:
 
-Is recorded in an audit ledger
+database relations migrations transactional writes seed data
 
-Can be reconstructed through explainability endpoints
+Shared Libraries 🧰 src/lib
 
-🧩 Architecture
-📦 Monorepo Structure
+Includes:
 
-apps/backend
+prisma client redis logging observability cookie utilities websocket
+authentication S3 integration
 
-prisma/ → schema + seed
+Example:
 
-src/domain → domain-level actors and task identifiers
+src/lib/prisma.ts src/lib/logger.ts src/lib/request-context.ts
 
-src/modules → bounded operational modules
+Middleware 🛡️ src/middleware
 
-src/middleware → access enforcement & idempotency
+Responsible for request validation and contextual guards.
 
-src/lib → observability + Prisma client
+Examples:
 
-src/utils → hashing, UUIDs, helpers
+auth.middleware.ts idempotency.middleware.ts requireTenantId.ts
+resolveExplainabilityRole.ts
 
-⚙️ Key Modules
-📁 Cases
+These ensure:
 
-Lifecycle modeling, transition enforcement, explainability mapping, reconciliation jobs.
+tenant safety request deduplication authentication enforcement access
+control
 
-🧠 Decision Engine
+Domain Modules 🧩
 
-Deterministic evaluation of routing and verification logic.
+The system is organized into domain modules inside:
 
-✅ Verification
+src/modules
 
-Consensus modeling and timeout handling for multi-actor verification flows.
+Each module encapsulates a business capability.
 
-💳 Disbursement
+Example module structure:
 
-Authorization, execution, and reconciliation of disbursement states.
+modules/cases │ ├── cases.controller.ts ├── cases.routes.ts ├──
+transitionCaseLifecycle.ts ├── deriveCaseCapabilities.service.ts ├──
+caseTag.service.ts ├── case.errors.ts
 
-📥 Intake
+Modules generally include:
 
-Structured intake processing with ledger commit enforcement.
+routes controllers services domain logic policy evaluation lifecycle
+transitions
 
-📜 Policies
+Primary Domains 🌐
 
-Auto-routing, task orchestration, and simulation services.
+Cases 📂
 
-🔍 Explainability
+Handles the lifecycle of cases from creation to resolution.
 
-Redaction-aware explanation rendering for role-scoped decision visibility.
+Includes:
 
-🏢 Multi-Tenancy
+lifecycle transitions tagging case capabilities explanation mapping
+reconciliation jobs
 
-Tenant isolation is enforced through:
+Verification ✔️
 
-Tenant-aware lifecycle jobs
+Handles consensus-based verification flows.
 
-Service-layer validation
+Includes:
 
-Middleware-level tenant resolution
+verification orchestration verification requests timeout handling
+consensus evaluation
 
-Policy scoping per tenant
+Routing 🧭
 
-No cross-tenant mutation is permitted.
+Responsible for determining where work should go.
 
-📚 Audit & Ledger
+Includes:
 
-All significant lifecycle transitions are recorded through ledger commit services.
+routing orchestration task progression journey modeling routing
+simulation
 
-This enables:
+Evidence 🧾
 
-Event reconstruction
+Handles evidence submission and validation.
 
-State derivation
+Includes:
 
-Lifecycle reconciliation
+evidence upload evidence validation evidence processing
 
-Explainable decision auditing
+Execution 🚧
 
-The ledger is treated as authoritative history.
+Manages execution of approved work.
 
-🛡 Integrity Enforcement
+Includes:
 
-Integrity is enforced at multiple layers:
+milestone completion progress tracking execution verification
 
-Relational schema constraints (Prisma + PostgreSQL)
+Disbursement 💰
 
-Service-layer validation pipelines
+Handles financial disbursement flows.
 
-Deterministic policy evaluation
+Includes:
 
-Lifecycle reconciliation jobs
+authorization execution reconciliation jobs
 
-Invalid transitions are rejected.
+Decision 🧠
 
-▶️ Running the Backend
-Install
-pnpm install
+Handles decision orchestration and queries.
 
-Setup Environment
+Includes:
 
-Create a .env file with:
+decision resolution decision explanation decision query APIs
 
-DATABASE_URL=postgresql://...
-PORT=...
+Intake 📥
 
-Migrate & Seed
-pnpm prisma migrate dev
-pnpm prisma db seed
+Handles case intake and data collection.
 
-Start Server
-pnpm dev
+Includes:
 
-📊 Observability
+intake bootstrapping intake delivery flows integrity checks location
+detection
 
-Request context tracking and structured logging are implemented in:
+Messaging 💬
+
+Handles system communication.
+
+Includes:
+
+message sending read positions websocket events message receipts
+
+Authentication 🔐
+
+Handles identity and access.
+
+Includes:
+
+login flows invite acceptance refresh tokens trust context building
+
+Ledger and Explainability 📜
+
+The system includes a ledger-based explainability model.
+
+Key components:
+
+modules/intake/ledger modules/explainability modules/security
+
+The ledger records:
+
+authoritative decisions policy evaluations routing events verification
+outcomes
+
+This allows:
+
+deterministic audit trails explainable system behavior dispute
+resolution support
+
+Observability 👁️
+
+System observability is implemented through:
 
 src/lib/observability
 
-Idempotency middleware prevents duplicate state mutations.
+Includes:
 
-🧪 Testing
+structured logging request context tracking traceable event logs
 
-Execution and lifecycle integrity tests are located under:
+Running the Backend 🚀
 
-modules/execution/test
+From the monorepo root:
 
-Run tests with:
+pnpm install pnpm --filter backend dev
 
-pnpm test
+or run the entire platform:
 
-🎯 Design Goals
+pnpm dev
 
-Enforce correctness over convenience
+Backend Development Principles 🧠
 
-Model workflow explicitly, not implicitly
+The backend is designed with the following principles:
 
-Prefer deterministic transitions over manual overrides
-
-Treat auditability as a first-class concern
-
-Keep domain boundaries explicit
-
-🌍 Intended Use
-
-This backend is designed for:
-
-NGO case management platforms
-
-Grant lifecycle enforcement systems
-
-Regulated workflow platforms
-
-Multi-role operational governance systems
+Domain ownership over layer ownership Services over large controllers
+Explicit system policies Explainable decisions Deterministic workflows
+Strong observability
