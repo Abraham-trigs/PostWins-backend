@@ -1,6 +1,6 @@
 Overview 🧭
 
-The backend is organized into roughly 10 domain modules including cases,
+The backend is organized into roughly 10+ domain modules including cases,
 verification, routing, evidence, execution, disbursement, decisioning,
 intake, messaging, and authentication. Each domain owns its routes,
 controllers, services, policies, and orchestration logic, allowing the
