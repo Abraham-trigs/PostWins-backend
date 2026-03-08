@@ -7,10 +7,10 @@ The Posta backend is a domain-driven TypeScript API designed to power a determin
 The system is implemented as a Node.js TypeScript server following a **Domain-Modular Architecture**. Each module encapsulates a specific business capability, maintaining strong boundaries while sharing a robust infrastructure layer.
 
 ### Core Priorities
-*   **Domain Ownership:** Clear separation of concerns between business logic.
-*   **Explainability:** Ledger-backed audit trails for every authoritative action.
-*   **Explicit Policy:** Decisions are driven by logic policies, not hidden condition chains.
-*   **Resilience:** Idempotent request handling and multi-tenant isolation.
+* **Domain Ownership:** Clear separation of concerns between business logic.
+* **Explainability:** Ledger-backed audit trails for every authoritative action.
+* **Explicit Policy:** Decisions are driven by logic policies, not hidden condition chains.
+* **Resilience:** Idempotent request handling and multi-tenant isolation.
 
 ---
 
@@ -26,8 +26,8 @@ apps/backend
 │   ├── shared/         # Common types and utilities
 │   ├── app.ts          # Express/Server configuration
 │   └── server.ts       # Entry point
+```
 
-
-
-<img width="848" height="470" alt="Screenshot 2026-03-08 151726" src="https://github.com/user-attachments/assets/a71224d2-a7ac-43a8-bbfb-1e4c3d4b0db2" />
-
+<p align="center">
+  <img width="848" alt="Posta Backend Architecture" src="https://github.com/user-attachments/assets/a71224d2-a7ac-43a8-bbfb-1e4c3d4b0db2" />
+</p>
