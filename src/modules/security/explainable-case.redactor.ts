@@ -1,7 +1,7 @@
 // src/modules/security/explainable-case.redactor.ts
 
-import { resolveRedactionPolicy } from "../security/redaction.policy";
-import { ViewerContext } from "../security/viewer-context";
+import { resolveRedactionPolicy } from "./redaction.policy";
+import { ViewerContext } from "./viewer-context";
 
 export class ExplainableCaseRedactor {
   redact(payload: any, viewer: ViewerContext) {

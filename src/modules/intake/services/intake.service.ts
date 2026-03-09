@@ -4,7 +4,7 @@ import { IntegrityService } from "../intergrity/integrity.service";
 import { IntakeMetadata, IntakeResult } from "../domain/intake.types";
 import { detectContext } from "../domain/intake.context.detector";
 import { TrustContext } from "@/modules/auth/trust/trust.context";
-import { resolveGhanaPostAddress } from "./../domain/ghanaPost.resolver";
+import { resolveGhanaPostAddress } from "../domain/ghanaPost.resolver";
 import { enforceIntegrityGate } from "../../policies/integrity-gate.policy";
 
 export class IntakeService {

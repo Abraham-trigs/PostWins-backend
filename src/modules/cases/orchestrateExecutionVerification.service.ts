@@ -1,9 +1,9 @@
 // apps/backend/src/modules/orchestrator/orchestrator.service.ts
 
 import { Prisma, ActorKind, ExecutionStatus } from "@prisma/client";
-import { CaseLifecycle } from "../cases/CaseLifecycle";
-import { transitionCaseLifecycleWithLedger } from "../cases/transitionCaseLifecycleWithLedger";
-import { InvariantViolationError } from "../cases/case.errors";
+import { CaseLifecycle } from "./CaseLifecycle";
+import { transitionCaseLifecycleWithLedger } from "./transitionCaseLifecycleWithLedger";
+import { InvariantViolationError } from "./case.errors";
 import { DecisionEffect } from "../decision/decision.types";
 
 type ExecuteEffectParams = {

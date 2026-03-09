@@ -9,7 +9,7 @@ The platform behaves as a **policy-driven workflow engine** where system
 decisions are evaluated through explicit policies rather than hidden
 conditional logic.
 
-------------------------------------------------------------------------
+---
 
 # Architecture 🏗️
 
@@ -34,7 +34,7 @@ implicit condition chains.
 Tenant isolation, request idempotency, and observability are enforced
 through middleware and system infrastructure.
 
-------------------------------------------------------------------------
+---
 
 # Domain Map 🌐
 
@@ -43,18 +43,20 @@ capabilities.
 
 Core domains include:
 
-  Domain         Responsibility
-  -------------- ------------------------------------------------
-  Cases          Lifecycle transitions, tagging, reconciliation
-  Verification   Consensus-based verification flows
-  Routing        Task progression and workflow routing
-  Evidence       Evidence submission, validation, processing
-  Execution      Milestone completion and execution progress
-  Disbursement   Financial authorization and settlement
-  Decision       Decision orchestration and explainability
-  Intake         Case intake, integrity validation
-  Messaging      WebSocket communication and message handling
-  Auth           Identity, trust context, invite flows
+Domain Responsibility
+
+---
+
+Cases Lifecycle transitions, tagging, reconciliation
+Verification Consensus-based verification flows
+Routing Task progression and workflow routing
+Evidence Evidence submission, validation, processing
+Execution Milestone completion and execution progress
+Disbursement Financial authorization and settlement
+Decision Decision orchestration and explainability
+Intake Case intake, integrity validation
+Messaging WebSocket communication and message handling
+Auth Identity, trust context, invite flows
 
 Each domain is implemented inside:
 
@@ -69,7 +71,7 @@ domain logic\
 policies\
 jobs
 
-------------------------------------------------------------------------
+---
 
 # Backend Structure 🧩
 
@@ -80,7 +82,7 @@ utilities │ ├── types/ \# Global typings │ ├── utils/ \# System 
 │ │ │ ├── app.ts \# Express app setup │ ├── server.ts \# Server entry
 point │ └── index.ts \# Bootstrapping
 
-------------------------------------------------------------------------
+---
 
 # Infrastructure & Observability ⚙️
 
@@ -92,12 +94,12 @@ prisma/schema.prisma
 
 Responsibilities include:
 
--   relational modeling
--   transactional writes
--   migrations
--   seed data
+- relational modeling
+- transactional writes
+- migrations
+- seed data
 
-------------------------------------------------------------------------
+---
 
 ## Middleware & Safety 🛡️
 
@@ -112,12 +114,12 @@ resolveExplainabilityRole.ts
 
 Responsibilities:
 
--   authentication enforcement
--   tenant isolation
--   request deduplication
--   access control
+- authentication enforcement
+- tenant isolation
+- request deduplication
+- access control
 
-------------------------------------------------------------------------
+---
 
 ## Observability 👁️
 
@@ -127,14 +129,14 @@ src/lib/observability
 
 Capabilities include:
 
--   structured logging
--   request tracing
--   contextual event tracking
+- structured logging
+- request tracing
+- contextual event tracking
 
 This allows the platform to maintain a **full audit trail of system
 behavior**.
 
-------------------------------------------------------------------------
+---
 
 # Request Lifecycle 🔄
 
@@ -158,11 +160,11 @@ Response
 
 This model ensures:
 
--   deterministic execution
--   explainable system decisions
--   auditable system state transitions
+- deterministic execution
+- explainable system decisions
+- auditable system state transitions
 
-------------------------------------------------------------------------
+---
 
 # Ledger & Explainability 🔐
 
@@ -170,18 +172,18 @@ The system includes a **ledger-based audit mechanism**.
 
 Ledger components track:
 
--   authoritative decisions
--   verification outcomes
--   routing events
--   policy evaluations
+- authoritative decisions
+- verification outcomes
+- routing events
+- policy evaluations
 
 This enables:
 
--   system explainability
--   deterministic dispute resolution
--   historical reconstruction of decisions
+- system explainability
+- deterministic dispute resolution
+- historical reconstruction of decisions
 
-------------------------------------------------------------------------
+---
 
 # Running the Backend 🚀
 
@@ -199,19 +201,19 @@ Run full platform
 
 pnpm dev
 
-------------------------------------------------------------------------
+---
 
 # Development Principles 🧠
 
 The backend follows several engineering principles.
 
--   Domain ownership over layer ownership
--   Services over large controllers
--   Explicit policies over hidden logic
--   Deterministic workflows
--   Strong observability and auditability
+- Domain ownership over layer ownership
+- Services over large controllers
+- Explicit policies over hidden logic
+- Deterministic workflows
+- Strong observability and auditability
 
-------------------------------------------------------------------------
+---
 
 # Quick System Orientation
 
@@ -225,6 +227,7 @@ apps/backend/src/modules/routing/computeRouting.ts
 Together these files reveal the core system architecture:
 
 State machine\
-+ Policy engine\
-+ Routing engine\
-= Posta workflow platform
+
+- Policy engine\
+- Routing engine\
+  = Posta workflow platform
