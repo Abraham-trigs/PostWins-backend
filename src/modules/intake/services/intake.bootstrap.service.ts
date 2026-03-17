@@ -1,5 +1,5 @@
 // File: apps/backend/src/modules/intake/services/intake.bootstrap.service.ts
-// Purpose: Atomic bootstrap logic for Case creation, Ledgering, and UI Projection.
+// Purpose: Atomic bootstrap logic for Case creation, Beneficiary resolution, Ledgering, and UI Projection.
 
 import { Request } from "express";
 import {
@@ -15,7 +15,6 @@ import { commitLedgerEvent } from "@/modules/intake/ledger/commitLedgerEvent";
 
 import { IntakeService } from "./intake.service";
 import { IntegrityService } from "../intergrity/integrity.service";
-
 import { TaskService } from "@/modules/routing/structuring/task.service";
 
 import {
@@ -28,12 +27,25 @@ import { buildTrustContext } from "@/modules/auth/trust/buildTrustContext";
 import { enforceIntegrityGate } from "@/modules/policies/integrity-gate.policy";
 import { IntegrityFlag } from "@posta/core";
 
-const integrityService = new IntegrityService();
+////////////////////////////////////////////////////////////////
+// Init
+////////////////////////////////////////////////////////////////
 
-/**
- * FIX: IntakeService no longer requires IntegrityService in constructor
- */
+const integrityService = new IntegrityService();
 const intakeService = new IntakeService(integrityService, new TaskService());
+
+////////////////////////////////////////////////////////////////
+// Types
+////////////////////////////////////////////////////////////////
+
+type CreateBeneficiaryInput = {
+  displayName?: string;
+  phone?: string;
+};
+
+////////////////////////////////////////////////////////////////
+// Service
+////////////////////////////////////////////////////////////////
 
 export class IntakeBootstrapService {
   async bootstrap(
@@ -47,70 +59,126 @@ export class IntakeBootstrapService {
     const { narrative, beneficiaryId, category, location, language, sdgGoals } =
       body;
 
-    /* -------------------------------------------------------------------
-    1. Build Unified Trust Context
-    ------------------------------------------------------------------- */
+    ////////////////////////////////////////////////////////////////
+    // 1. Trust Context
+    ////////////////////////////////////////////////////////////////
+
     const authorUserId = await resolveAuthorUserId(req, tenantId, prisma);
     const trust = buildTrustContext(req, tenantId, authorUserId);
 
-    /* -------------------------------------------------------------------
-    2. Run Integrity Policy
-    ------------------------------------------------------------------- */
+    ////////////////////////////////////////////////////////////////
+    // 2. Integrity Gate
+    ////////////////////////////////////////////////////////////////
+
     const integrityFlags: IntegrityFlag[] = await enforceIntegrityGate(
       integrityService,
       narrative,
       trust,
     );
 
-    /* -------------------------------------------------------------------
-    3. Intake Processing
-    ------------------------------------------------------------------- */
+    ////////////////////////////////////////////////////////////////
+    // 3. Intake Processing
+    ////////////////////////////////////////////////////////////////
+
     const intakeResult = await intakeService.handleIntake(narrative, trust);
     const referenceCode = generateReferenceCode();
 
-    /* -------------------------------------------------------------------
-    4. Transaction
-    ------------------------------------------------------------------- */
+    ////////////////////////////////////////////////////////////////
+    // 4. Transaction (ATOMIC)
+    ////////////////////////////////////////////////////////////////
+
     const responsePayload = await prisma.$transaction(async (tx) => {
       let finalBeneficiaryId: string | null = null;
+      let newBeneficiaryCreated = false;
 
-      // Resolve or Create Beneficiary
+      ////////////////////////////////////////////////////////////////
+      // BENEFICIARY RESOLUTION (SELECT OR CREATE)
+      ////////////////////////////////////////////////////////////////
+
       if (beneficiaryId) {
-        const isJson = beneficiaryId.trim().startsWith("{");
+        const isJson =
+          typeof beneficiaryId === "string" &&
+          beneficiaryId.trim().startsWith("{");
 
+        /**
+         * CASE 1: CREATE NEW BENEFICIARY
+         */
         if (isJson) {
-          const data = JSON.parse(beneficiaryId);
+          let data: CreateBeneficiaryInput;
 
-          if (data.phone) {
-            const existing = await tx.beneficiaryPII.count({
+          try {
+            data = JSON.parse(beneficiaryId);
+          } catch {
+            throw new Error("Invalid beneficiary payload");
+          }
+
+          // Normalize inputs
+          const phone = data.phone?.trim() || null;
+          const displayName = data.displayName?.trim() || null;
+
+          /**
+           * Prevent duplicate phone within tenant
+           */
+          if (phone) {
+            const existing = await tx.beneficiaryPII.findFirst({
               where: {
-                phone: data.phone,
+                phone,
                 beneficiary: { tenantId: trust.tenantId },
               },
+              select: { beneficiaryId: true },
             });
 
-            if (existing > 0) {
-              throw new Error(`Phone ${data.phone} already exists.`);
+            if (existing) {
+              // Instead of throwing → SELECT existing (better UX)
+              finalBeneficiaryId = existing.beneficiaryId;
             }
           }
 
-          const newBeni = await tx.beneficiary.create({
-            data: {
+          /**
+           * Create only if not resolved
+           */
+          if (!finalBeneficiaryId) {
+            const newBeni = await tx.beneficiary.create({
+              data: {
+                tenantId: trust.tenantId,
+                displayName,
+                pii: phone ? { create: { phone } } : undefined,
+                profile: {
+                  create: {
+                    consentToDataStorage: true,
+                  },
+                },
+              },
+              select: { id: true },
+            });
+
+            finalBeneficiaryId = newBeni.id;
+            newBeneficiaryCreated = true;
+          }
+        } else {
+          /**
+           * CASE 2: EXISTING BENEFICIARY SELECTED
+           */
+          const exists = await tx.beneficiary.findFirst({
+            where: {
+              id: beneficiaryId,
               tenantId: trust.tenantId,
-              displayName: data.displayName,
-              pii: { create: { phone: data.phone } },
-              profile: { create: { consentToDataStorage: true } },
             },
             select: { id: true },
           });
 
-          finalBeneficiaryId = newBeni.id;
-        } else {
-          finalBeneficiaryId = beneficiaryId;
+          if (!exists) {
+            throw new Error("Beneficiary not found");
+          }
+
+          finalBeneficiaryId = exists.id;
         }
       }
 
-      // Resolve System Actor for Projection
+      ////////////////////////////////////////////////////////////////
+      // SYSTEM ACTOR
+      ////////////////////////////////////////////////////////////////
+
       const systemActor = await tx.user.findFirst({
         where: {
           tenantId: trust.tenantId,
@@ -119,17 +187,22 @@ export class IntakeBootstrapService {
         select: { id: true },
       });
 
-      /**
-       * FIX: avoid empty string fallback
-       */
       const systemActorUserId =
         systemActor?.id ?? trust.actorUserId ?? authorUserId ?? null;
+
+      ////////////////////////////////////////////////////////////////
+      // TASK DEFINITIONS
+      ////////////////////////////////////////////////////////////////
 
       const taskDefs = await tx.taskDefinition.findMany({
         where: { tenantId: trust.tenantId, isActive: true },
         orderBy: [{ order: "asc" }, { createdAt: "asc" }],
         select: { id: true },
       });
+
+      ////////////////////////////////////////////////////////////////
+      // EXECUTION BODY CONTEXT
+      ////////////////////////////////////////////////////////////////
 
       const membership = await tx.executionBodyMember.findFirst({
         where: { tenantId: trust.tenantId, userId: trust.actorUserId },
@@ -138,7 +211,10 @@ export class IntakeBootstrapService {
 
       const originExecutionBodyId = membership?.executionBodyId ?? null;
 
-      // Create Case Record
+      ////////////////////////////////////////////////////////////////
+      // CREATE CASE
+      ////////////////////////////////////////////////////////////////
+
       const createdCase = await tx.case.create({
         data: {
           tenantId: trust.tenantId,
@@ -157,7 +233,10 @@ export class IntakeBootstrapService {
         select: { id: true },
       });
 
-      // Scaffold Case Tasks
+      ////////////////////////////////////////////////////////////////
+      // TASK SCAFFOLDING
+      ////////////////////////////////////////////////////////////////
+
       if (taskDefs.length > 0) {
         await tx.caseTask.createMany({
           data: taskDefs.map((td) => ({
@@ -168,7 +247,10 @@ export class IntakeBootstrapService {
         });
       }
 
-      // Scaffold Verification
+      ////////////////////////////////////////////////////////////////
+      // VERIFICATION
+      ////////////////////////////////////////////////////////////////
+
       const verificationRecord = await tx.verificationRecord.create({
         data: {
           tenantId: trust.tenantId,
@@ -180,7 +262,10 @@ export class IntakeBootstrapService {
         select: { id: true },
       });
 
-      // Commit Authoritative Ledger Event
+      ////////////////////////////////////////////////////////////////
+      // LEDGER EVENT
+      ////////////////////////////////////////////////////////////////
+
       await commitLedgerEvent(
         {
           tenantId: trust.tenantId,
@@ -192,7 +277,7 @@ export class IntakeBootstrapService {
             authorityProof: `HUMAN:${trust.actorUserId || "guest"}:${idempotencyKey}:${requestHash ?? "no-hash"}`,
           },
           intentContext: {
-            idempotencyKey: idempotencyKey,
+            idempotencyKey,
             requestHash: requestHash ?? "no-hash",
           },
           payload: {
@@ -200,6 +285,7 @@ export class IntakeBootstrapService {
             referenceCode,
             narrative: intakeResult.description,
             beneficiaryId: finalBeneficiaryId ?? undefined,
+            newBeneficiaryCreated,
             category: category ?? null,
             location: location ?? null,
             language: language ?? null,
@@ -214,7 +300,10 @@ export class IntakeBootstrapService {
         tx,
       );
 
-      // Insert UI Projection Message
+      ////////////////////////////////////////////////////////////////
+      // UI PROJECTION
+      ////////////////////////////////////////////////////////////////
+
       await tx.message.create({
         data: {
           tenantId: trust.tenantId,
@@ -225,9 +314,54 @@ export class IntakeBootstrapService {
         },
       });
 
-      return { ok: true, caseId: createdCase.id, referenceCode };
+      ////////////////////////////////////////////////////////////////
+      // RESPONSE
+      ////////////////////////////////////////////////////////////////
+
+      return {
+        ok: true,
+        caseId: createdCase.id,
+        referenceCode,
+        beneficiaryId: finalBeneficiaryId,
+        newBeneficiaryCreated,
+      };
     });
 
     return responsePayload;
   }
 }
+
+////////////////////////////////////////////////////////////////
+// Design reasoning
+////////////////////////////////////////////////////////////////
+// Keeps beneficiary logic inside bootstrap to preserve atomicity.
+// Prevents duplicate PII by resolving existing before creation.
+// Avoids throwing on duplicate phone → improves UX by auto-selecting existing.
+
+////////////////////////////////////////////////////////////////
+// Structure
+////////////////////////////////////////////////////////////////
+// bootstrap()
+// ├── trust context
+// ├── integrity
+// ├── beneficiary resolve/create
+// ├── case creation
+// ├── ledger commit
+// └── response
+
+////////////////////////////////////////////////////////////////
+// Implementation guidance
+////////////////////////////////////////////////////////////////
+// Frontend flow:
+// 1. GET /intake/beneficiaries (search/select)
+// 2. OR send JSON string as beneficiaryId
+// 3. POST /intake/bootstrap
+
+////////////////////////////////////////////////////////////////
+// Scalability insight
+////////////////////////////////////////////////////////////////
+// This pattern supports future:
+// - deduplication via nationalId
+// - fuzzy matching
+// - external identity verification
+// - beneficiary audit ledger (separate event)

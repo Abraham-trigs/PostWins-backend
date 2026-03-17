@@ -8,6 +8,7 @@ import { idempotencyGuard } from "@/middleware/idempotency.middleware";
 import { handleIntakeBootstrap } from "./controllers/intake.bootstrap.controller";
 import { handleIntakeDelivery } from "./controllers/intake.delivery.controller";
 import { handleResolveLocation } from "./controllers/intake.location.controller";
+import { handleFetchBeneficiaries } from "./controllers/intake.beneficiary.controller";
 
 ////////////////////////////////////////////////////////////////
 // Router
@@ -32,6 +33,11 @@ router.post("/delivery", idempotencyGuard, handleIntakeDelivery);
  */
 router.get("/resolve-location", handleResolveLocation);
 
+/**
+ * Fetch existing beneficiaries for selection
+ */
+router.get("/beneficiaries", handleFetchBeneficiaries);
+
 export default router;
 
 ////////////////////////////////////////////////////////////////
@@ -47,6 +53,7 @@ export default router;
 // POST /bootstrap         -> handleIntakeBootstrap
 // POST /delivery          -> handleIntakeDelivery
 // GET  /resolve-location  -> handleResolveLocation
+// GET  /beneficiaries     -> handleFetchBeneficiaries
 
 ////////////////////////////////////////////////////////////////
 // Implementation guidance
